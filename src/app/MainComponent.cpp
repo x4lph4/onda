@@ -33,6 +33,56 @@ MainComponent::MainComponent(audio::AudioEngine& engine,
             bridge_->ports().loadTrack(0, t.path);
     };
 
+    // ---- Phase 9: controller engine — same ports the UI uses ----
+    const auto profileDir =
+        config.file().getSiblingFile("controllers")
+            .getFullPathName().toStdString();
+    ctrl_ = std::make_unique<ctrl::ControllerEngine>(profileDir);
+    {
+        ctrl::ControllerEngine::Ports p;
+        p.sendCommand = [this](uint32_t id, float v) {
+            commands_.invoke(id, ui::CommandSource::Midi, v);
+        };
+        p.commandState = [this](uint32_t id) {
+            return commands_.state(id);
+        };
+        p.commandIdFor = [this](const std::string& n) {
+            return commands_.idFor(n);
+        };
+        p.setParam = [&engine](uint16_t id, float v) {
+            engine.mixerCtl().setParam(id, v);
+        };
+        p.paramState = [&engine](uint16_t id) {
+            return engine.mixerCtl().value(id);
+        };
+        // jog → same rt queue the UI waveforms use
+        p.jog = [&engine](int deck, int mode, double delta) {
+            auto* q = &engine.commands();
+            if (mode == (int)ctrl::JogMode::JogPitchBend) {
+                q->tryPush(rt::SetPitchBend{
+                    (uint8_t)deck,
+                    (float)juce::jlimit(-8.0, 8.0, delta * 0.25)});
+            } else { // JogSeek / JogScratch: nudge position
+                const auto& ds = engine.deckStats(deck);
+                const double cur = ds.positionSec.load();
+                const double scale =
+                    mode == (int)ctrl::JogMode::JogScratch ? 0.10 : 0.04;
+                q->tryPush(rt::DeckSeek{
+                    (uint8_t)deck, cur + delta * scale});
+            }
+        };
+        p.notify = [this](const std::string& t,
+                          const std::string& d, int lvl) {
+            if (lvl == 2)      notes_.warn(t, d);
+            else if (lvl == 1) notes_.info(t, d);
+            else               notes_.info(t, d);
+        };
+        ctrl_->setPorts(std::move(p));
+    }
+    midi_ = std::make_unique<ctrl::MidiManager>(*ctrl_);
+    midi_->start();
+    startTimerHz(20);   // feedback poll + engine housekeeping
+
     shell_->attachSettings(std::make_unique<ui::SettingsView>(
         theme_, commands_, shortcuts_, engine.deviceManager(), config,
         lib));
@@ -57,6 +107,11 @@ void MainComponent::paint(juce::Graphics& g) {
 
 void MainComponent::resized() {
     if (shell_) shell_->setBounds(getLocalBounds());
+}
+
+void MainComponent::timerCallback() {
+    if (ctrl_)
+        ctrl_->tick(juce::Time::getMillisecondCounterHiRes() / 1000.0);
 }
 
 } // namespace onda

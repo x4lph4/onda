@@ -2,6 +2,42 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 9 (controller engine: MIDI/HID + mapping)
+
+Universal, vendor-neutral controller layer. `src/controller/` is a
+**JUCE-free core**; `src/platform/midi/JuceMidi.*` adapts OS devices.
+Hardware input travels `MidiManager → ControllerEngine → MappingEngine
+→ CommandManager / MixerController / rt::CommandQueue` — the same
+ports the UI uses, never a direct path into the engines.
+
+- `MappingEngine`: Note/CC/PC/PitchBend → command|param|jog; modes
+  Toggle/Momentary/Absolute/Relative/IncDec/Pickup; curves
+  linear/inverse/square/sqrt; 4 encoder decodes (absolute,
+  64-offset, 7-bit two's-complement, sign-magnitude); jog modes
+  scratch/pitch-bend/seek + touch events.
+- `FeedbackEngine`: state→LED/motor watches polled at ~20 Hz, per-
+  output throttle, 150 ms echo window — motorized-fader echoes are
+  dropped and counted, never re-dispatched.
+- `ControllerProfile` (JSON v1, pure data) + `ProfileManager`:
+  install/load/import/export/delete, per-device assign, name-contains
+  auto-match; command *names* persist, ids resolve at load.
+- `DeviceManager` + JUCE device-list poll: connect/disconnect/
+  reconnect, feedback restore on reconnect — no crash on unplug.
+- `LearnMode` (arm → next control captured → mapping), `MidiClock`
+  (in tracker + out generator, decoupled from MasterClock),
+  `ControllerDiagnostics` (rolling MIDI monitor + latency counters),
+  `HidManager` seam for a future documented/vendor-allowed driver.
+- `VirtualMidiController` test device simulates every control type
+  and captures all outbound traffic.
+
+Tests: 15 `[ctrl]` cases (163 total, 1.59M assertions) — dispatch,
+scaling, pickup, encoders, feedback/echo, diagnostics, learn, profile
+roundtrip+validation (injected `exec` fields ignored), auto-match,
+hot-plug/reconnect, clock, param-name roundtrip; stress: 30 k msgs
+in ~29 ms (~1.05 M msg/s), 0 dropped, sub-µs processing.
+
+*No DDJ-FLX4 profile yet — next phase, documented MIDI only.*
+
 ## Status — Phase 8 (UI framework + live-performance views)
 
 Two-layer UI: `src/ui/` is a **JUCE-free core** (commands, shortcuts,
@@ -278,7 +314,10 @@ cmake --build build
 
 ```
 src/core/       pure C++20 engine primitives (no JUCE)
-src/platform/   JUCE-backed platform layer: audio HAL, log, config
+src/controller/ JUCE-free controller core: MIDI model, mapping,
+                profiles, feedback, diagnostics, learn, clock, HID seam
+src/platform/   JUCE-backed platform layer: audio HAL, log, config,
+                MIDI device adapter (platform/midi/)
 src/ui/         JUCE-free UI core: commands, shortcuts, snapshots,
                 theme, waveform math, virtual table model, layout
 src/app/        JUCE application + UI views (app/ui/)

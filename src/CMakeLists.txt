@@ -42,6 +42,20 @@ target_include_directories(onda_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(onda_ui PUBLIC onda_core)
 target_compile_features(onda_ui PUBLIC cxx_std_20)
 
+# --- controller core (JUCE-free): MIDI model, mapping, profiles ----------
+add_library(onda_ctrl STATIC
+    controller/MiniJson.cpp
+    controller/MappingEngine.cpp
+    controller/ControllerProfile.cpp
+    controller/DeviceManager.cpp
+    controller/FeedbackEngine.cpp
+    controller/ControllerDiagnostics.cpp
+    controller/ProfileManager.cpp
+    controller/ControllerEngine.cpp)
+target_include_directories(onda_ctrl PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(onda_ctrl PUBLIC onda_core onda_ui)
+target_compile_features(onda_ctrl PUBLIC cxx_std_20)
+
 # --- ffmpeg decoder -------------------------------------------------------
 add_library(onda_decode STATIC
     platform/decode/FFmpegDecoder.cpp
@@ -62,6 +76,7 @@ target_sources(onda PRIVATE
     app/Main.cpp
     app/MainComponent.cpp
     app/ui/EngineBridge.cpp
+    platform/midi/JuceMidi.cpp
     platform/log/Log.cpp
     platform/config/Config.cpp
     platform/audio/AudioEngine.cpp)
@@ -77,6 +92,7 @@ target_compile_definitions(onda PRIVATE
 target_link_libraries(onda PRIVATE
     onda_core
     onda_ui
+    onda_ctrl
     onda_decode
     juce::juce_audio_basics
     juce::juce_audio_devices
