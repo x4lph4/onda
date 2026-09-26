@@ -4,16 +4,20 @@
 
 #include "../config/Config.h"
 #include "../log/Log.h"
+#include "core/dsp/WsolaStretcher.h"
 
 namespace onda::audio {
 
 AudioEngine::AudioEngine(Config& config, DecoderFactory decoderFactory)
     : config_(config) {
-    for (auto& s : streamers_)
-        s = std::make_unique<AudioFileStreamer>(decoderFactory);
-    for (int i = 0; i < kNumDecks; ++i)
-        decks_[(size_t)i].bind(&streamers_[(size_t)i]->fifo(),
-                               &streamers_[(size_t)i]->stats());
+    for (int i = 0; i < kNumDecks; ++i) {
+        auto& d = decks_[(size_t)i];
+        d.bind(&deckStats_[(size_t)i]);
+        d.setStretcher(std::make_unique<WsolaStretcher>());
+        loaders_[(size_t)i] = std::make_unique<TrackLoader>(
+            decoderFactory, &deckStats_[(size_t)i],
+            &d.pendingTrack_, &d.retiredTrack_);
+    }
 }
 
 AudioEngine::~AudioEngine() { shutdown(); }
@@ -24,7 +28,7 @@ void AudioEngine::start() {
     if (xmlString.isNotEmpty())
         saved = juce::XmlDocument::parse(xmlString);
 
-    const auto err = deviceManager_.initialise(0, 2, saved.get(), true);
+    const auto err = deviceManager_.initialise(0, 4, saved.get(), true);
     if (err.isNotEmpty())
         log::error("Audio device init failed: " + err);
 
@@ -39,12 +43,10 @@ void AudioEngine::shutdown() {
     started_ = false;
     // Capture state before removing the callback: the device manager stops
     // the device when its last callback goes away.
-    if (auto xml = deviceManager_.createStateXml()) {
-        const auto str = xml->toString();
-        config_.setAudioDeviceStateXml(str);
-    } else {
+    if (auto xml = deviceManager_.createStateXml())
+        config_.setAudioDeviceStateXml(xml->toString());
+    else
         log::info("No explicit device selection to persist (defaults in use)");
-    }
     deviceManager_.removeAudioCallback(this);
     deviceManager_.closeAudioDevice();
     log::info("Audio engine stopped");
@@ -54,25 +56,32 @@ void AudioEngine::loadTrack(int deck, const juce::String& path) {
     if (deck < 0 || deck >= kNumDecks)
         return;
     const double rate = sampleRate_ > 0.0 ? sampleRate_ : 48000.0;
-    streamers_[(size_t)deck]->requestLoad(path.toStdString(), rate);
+    loaders_[(size_t)deck]->requestLoad(path.toStdString(), rate);
     log::info("Deck " + juce::String(deck) + " loading: " + path);
 }
 
 void AudioEngine::unloadTrack(int deck) {
-    if (deck < 0 || deck >= kNumDecks)
-        return;
-    streamers_[(size_t)deck]->requestUnload();
+    commandQueue_.tryPush(rt::DeckUnload{(uint8_t)deck});
+}
+
+void AudioEngine::cancelLoad(int deck) {
+    if (deck >= 0 && deck < kNumDecks)
+        loaders_[(size_t)deck]->cancel();
 }
 
 void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device) {
     sampleRate_ = device->getCurrentSampleRate();
     for (auto& d : decks_)
         d.setDeviceRate(sampleRate_);
+    for (auto& d : decks_)
+        d.prepareDsp(sampleRate_);
+    mixer_.prepare(sampleRate_);
     stats_.sampleRate.store(sampleRate_, std::memory_order_relaxed);
     stats_.bufferSize.store(device->getCurrentBufferSizeSamples(), std::memory_order_relaxed);
     stats_.running.store(true, std::memory_order_relaxed);
     stats_.xrunCount.store(0, std::memory_order_relaxed);
     stats_.clipCount.store(0, std::memory_order_relaxed);
+    stats_.maxCallbackMs.store(0.0f, std::memory_order_relaxed);
     haveLastCb_ = false;
     smoothedLoad_ = 0.0f;
     log::info("Audio device started: " + device->getName()
@@ -99,14 +108,13 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
         applyCommand(cmd);
 
     mixer_.render(outputChannelData, numOutputChannels, numSamples,
-                  decks_.data(), decks_.size(), stats_);
+                  decks_.data(), (int)decks_.size(), stats_);
 
     // ---- diagnostics (atomics only) ----
     const double periodSec = sampleRate_ > 0.0 ? numSamples / sampleRate_ : 0.0;
 
     if (haveLastCb_ && periodSec > 0.0) {
         const double gapSec = std::chrono::duration<double>(start - lastCbStart_).count();
-        // A gap well above one period means the driver starved the RT thread.
         if (gapSec > periodSec * 1.75)
             stats_.xrunCount.fetch_add(1, std::memory_order_relaxed);
     }
@@ -116,6 +124,10 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     const auto end = std::chrono::steady_clock::now();
     const double durSec = std::chrono::duration<double>(end - start).count();
     stats_.lastCallbackMs.store((float)(durSec * 1000.0), std::memory_order_relaxed);
+    float prev = stats_.maxCallbackMs.load(std::memory_order_relaxed);
+    while ((float)(durSec * 1000.0) > prev &&
+           !stats_.maxCallbackMs.compare_exchange_weak(prev, (float)(durSec * 1000.0),
+                                                       std::memory_order_relaxed)) {}
 
     if (periodSec > 0.0) {
         const float load = (float)(durSec / periodSec);
@@ -128,24 +140,40 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
 void AudioEngine::applyCommand(const rt::Command& cmd) noexcept {
     std::visit([this](const auto& c) {
         using T = std::decay_t<decltype(c)>;
-        if constexpr (std::is_same_v<T, rt::SetMasterGain>)
-            masterGain_ = c.gain;
-        else if constexpr (std::is_same_v<T, rt::SetCueMix>)
-            cueMix_ = c.mix;
-        else if constexpr (std::is_same_v<T, rt::SetLimiterOn>) {
-            limiterEnabled_ = c.enabled;
-            mixer_.setLimiterEnabled(c.enabled);
-        }
+        const int deck = [&] { if constexpr (requires { c.deck; }) return (int)c.deck;
+                               else return 0; }();
+
+        if constexpr (std::is_same_v<T, rt::SetMasterGain>)   mixer_.setMasterGain(c.gain);
+        else if constexpr (std::is_same_v<T, rt::SetLimiterOn>)   mixer_.setLimiterEnabled(c.enabled);
+        else if constexpr (std::is_same_v<T, rt::SetCueVol>)      mixer_.setCueVol(c.vol);
+        else if constexpr (std::is_same_v<T, rt::SetCueMix>)      mixer_.setCueMix(c.mix);
+        else if constexpr (std::is_same_v<T, rt::SetCrossfader>)  mixer_.setCrossfader(c.pos);
+        else if constexpr (std::is_same_v<T, rt::SetXfCurve>)     mixer_.setXfCurve(c.curve);
+        else if constexpr (std::is_same_v<T, rt::SetPfl>)      mixer_.setPfl(deck, c.on);
+        else if constexpr (std::is_same_v<T, rt::SetFader>)    mixer_.setFader(deck, c.gain);
+        else if (deck < 0 || deck >= kNumDecks) { /* invalid deck */ }
         else if constexpr (std::is_same_v<T, rt::DeckTransport>) {
-            if (c.deck < kNumDecks)
-                decks_[c.deck].setPlaying(c.playing);
+            auto& d = decks_[(size_t)deck];
+            if (c.action == 1) d.setPlaying(true);
+            else if (c.action == 0) d.setPlaying(false);
+            else d.stop();
         }
-        else if constexpr (std::is_same_v<T, rt::SetDeckGain>) {
-            if (c.deck < kNumDecks)
-                decks_[c.deck].setGain(c.gain);
-        }
+        else if constexpr (std::is_same_v<T, rt::DeckSeek>)     decks_[(size_t)deck].seekSec(c.sec);
+        else if constexpr (std::is_same_v<T, rt::DeckUnload>)   decks_[(size_t)deck].unloadTrack();
+        else if constexpr (std::is_same_v<T, rt::SetDeckGain>)  decks_[(size_t)deck].setGain(c.gain);
+        else if constexpr (std::is_same_v<T, rt::SetTrackGain>) decks_[(size_t)deck].setTrackGain(c.gain);
+        else if constexpr (std::is_same_v<T, rt::SetPitch>)     decks_[(size_t)deck].setPitchPercent(c.pct);
+        else if constexpr (std::is_same_v<T, rt::SetPitchRange>)decks_[(size_t)deck].setPitchRange(c.pct);
+        else if constexpr (std::is_same_v<T, rt::SetPitchBend>) decks_[(size_t)deck].setPitchBend(c.pct);
+        else if constexpr (std::is_same_v<T, rt::SetKeyLock>)   decks_[(size_t)deck].setKeyLock(c.on);
+        else if constexpr (std::is_same_v<T, rt::SetReverse>)   decks_[(size_t)deck].setReverse(c.on);
+        else if constexpr (std::is_same_v<T, rt::SetQuantize>)  decks_[(size_t)deck].setQuantize(c.on);
+        else if constexpr (std::is_same_v<T, rt::SetLoop>)      decks_[(size_t)deck].setLoop(c.inSec, c.outSec);
+        else if constexpr (std::is_same_v<T, rt::SetLoopOn>)    decks_[(size_t)deck].setLoopEnabled(c.on);
+        else if constexpr (std::is_same_v<T, rt::SetLoopSize>)  decks_[(size_t)deck].setLoopSizeSec(c.sizeSec);
+        else if constexpr (std::is_same_v<T, rt::SetEqBand>)    decks_[(size_t)deck].setEqDb(c.band, c.db);
+        else if constexpr (std::is_same_v<T, rt::SetFilter>)    decks_[(size_t)deck].setFilterPos(c.pos);
     }, cmd);
-    mixer_.setMasterGain(masterGain_);
 }
 
 } // namespace onda::audio

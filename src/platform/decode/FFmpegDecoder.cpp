@@ -8,6 +8,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/avutil.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/dict.h>
 #include <libswresample/swresample.h>
 }
 
@@ -59,6 +60,12 @@ bool FFmpegDecoder::open(const std::string& path, double targetSampleRate) {
     info_.sampleRate = codec_->sample_rate;
     info_.channels   = codec_->ch_layout.nb_channels;
     info_.codecName  = codec->name;
+    if (AVDictionaryEntry* e = av_dict_get(fmt_->metadata, "title", nullptr, 0))
+        info_.title = e->value;
+    if (AVDictionaryEntry* e = av_dict_get(fmt_->metadata, "artist", nullptr, 0))
+        info_.artist = e->value;
+    if (AVDictionaryEntry* e = av_dict_get(fmt_->metadata, "album", nullptr, 0))
+        info_.album = e->value;
     if (st->duration != AV_NOPTS_VALUE)
         info_.totalFrames = (int64_t)(st->duration * av_q2d(st->time_base) * info_.sampleRate);
     else if (fmt_->duration != AV_NOPTS_VALUE)

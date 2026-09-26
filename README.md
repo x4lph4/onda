@@ -2,17 +2,31 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
-## Status — Phase F3 (mini-player)
+## Status — Phase 2 (audio engine + deck engine)
 
-Real audio playback end to end: ffmpeg decode on streamer threads → lock-free
-AudioFifo → RT deck (gain + level) → mixer (sum, master gain, clip count) → out.
+Full-track-in-RAM playback engine: worker `TrackLoader` (ffmpeg decode,
+progress, cancel, errors) → atomic handoff → `DeckEngine` ×4 →
+`MixerEngine` (faders, crossfader curves, cue bus, master, limiter,
+meters) → out.
 
-- `core/audio/AudioFifo`: SPSC bulk ring of interleaved float frames
-- `core/decode/IDecoder` + `platform/decode/FFmpegDecoder` (ffmpeg 9 shared build, `third_party/ffmpeg`, gitignored)
-- `core/engine/AudioFileStreamer`: per-deck decode thread, ~8 s prebuffer
-- `core/engine/DeckEngine` ×4 (2 exposed), `MixerEngine` (sum, master, clip detect)
-- UI: per-deck LOAD/PLAY/gain strip + live state/position; header shows DSP %, XRUN, CLIP
-- Tests: 15 Catch2 cases incl. full non-UI playback chain against a generated WAV
+- `core/audio/TrackAudio`: whole track decoded to device-rate stereo float in RAM
+- `core/engine/TrackLoader`: async decode/metadata/progress/cancel; never in RT
+- `core/engine/DeckEngine`: transport, musical clock, varispeed cubic,
+  pitch/range/bend, key lock (`ITimeStretcher`), loops, seek, reverse,
+  quantize flag, EQ 3-band + DJ filter + gains; states
+  Empty/Loading/Ready/Playing/Paused/Seeking/Error
+- `core/engine/ITimeStretcher` + `core/dsp/WsolaStretcher`: replaceable
+  WSOLA (zero-alloc circular buffers)
+- `core/engine/MixerEngine`: channel faders, crossfader
+  (linear / equal-power / cut), PFL cue bus + cue vol/mix on outs 2-3,
+  master gain, optional peak limiter, peak/RMS meters, clip counter
+- `core/dsp/`: Biquad, ThreeBandEq, DjFilter, PeakLimiter,
+  CrossfaderCurves, cubic resample
+- UI shell: full functional controls per deck (seek, pitch+range, bend,
+  KEY, loops IN/OUT//2/x2, REV, PFL, trim, EQ, filter, fader) + mixer
+  column (master, cue vol/mix, crossfader + curve) + live master meters
+- Tests: 31 Catch2 cases incl. RT zero-allocation probe and a ~110 s
+  stress scenario (2 decks, loops, keylock, moving crossfader, cue)
 
 Requires `third_party/ffmpeg` = gyan.dev `ffmpeg-release-full-shared.7z` (dev headers + import libs + DLLs).
 

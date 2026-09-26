@@ -1,9 +1,10 @@
 # RT-safe core: pure C++20, zero JUCE, zero ffmpeg.
 add_library(onda_core STATIC
     core/audio/AudioFifo.cpp
-    core/engine/AudioFileStreamer.cpp
+    core/dsp/WsolaStretcher.cpp
     core/engine/DeckEngine.cpp
-    core/engine/MixerEngine.cpp)
+    core/engine/MixerEngine.cpp
+    core/engine/TrackLoader.cpp)
 target_include_directories(onda_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(onda_core PUBLIC cxx_std_20)
 

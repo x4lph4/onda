@@ -11,6 +11,9 @@ struct StreamInfo {
     int         channels    { 0 };
     int64_t     totalFrames { -1 };   // in file frames; -1 = unknown
     std::string codecName;
+    std::string title;
+    std::string artist;
+    std::string album;
 };
 
 /// Decodes an audio file into interleaved stereo float at a requested

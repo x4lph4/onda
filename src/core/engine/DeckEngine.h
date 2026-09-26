@@ -1,44 +1,133 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
+#include <memory>
 #include <vector>
 
+#include "../audio/TrackAudio.h"
+#include "../dsp/DjFilter.h"
+#include "../dsp/ThreeBandEq.h"
 #include "../model/DeckStats.h"
 
 namespace onda {
 
-class AudioFifo;
+class ITimeStretcher;
 
-/// RT-side deck. Pulls device-rate stereo audio from its streamer's fifo
-/// and adds it (gain-staged, level-metered) into the stereo mix bus.
-/// Setters are atomic — callable from any thread. addToMix() is RT-only.
+/// One fully independent deck. Everything inside is owned by the RT audio
+/// thread except the two handoff slots, which implement the lock-free
+/// track-swap protocol with the loader thread:
+///
+///   loader  -- pendingTrack_ (exchange) -->  RT adopts at block top
+///   RT      -- retiredTrack_ (store)   -->  loader frees it
+///
+/// Commands from UI arrive via the engine's command queue and are applied
+/// by calling the public setters *on the RT thread*.
+///
+/// Processing order per block:
+///   source read (varispeed cubic | WSOLA key-lock) -> fade
+///   -> trackGain -> deckGain -> 3-band EQ -> DJ filter
+///   -> [mixer applies channel fader, crossfader, master]
 class DeckEngine {
 public:
-    static constexpr size_t kMaxBlockFrames = 8192;
-
     DeckEngine();
 
-    /// Setup only (engine start); never on the RT path.
-    void bind(AudioFifo* fifo, DeckStats* stats) noexcept;
+    // ---- setup (non-RT) ----
+    void bind(DeckStats* stats) noexcept;
     void setDeviceRate(double rate) noexcept;
+    void setStretcher(std::unique_ptr<ITimeStretcher> s) noexcept;
+    void prepareDsp(double rate) noexcept;
 
+    // ---- track lifecycle (RT) ----
+    void adoptPendingTrack() noexcept;   // called at the top of every render
+    void unloadTrack() noexcept;
+
+    // ---- transport (RT setters) ----
     void setPlaying(bool playing) noexcept;
-    void setGain(float gain) noexcept;
-    bool isPlaying() const noexcept { return playing_.load(std::memory_order_acquire); }
+    void stop() noexcept;                       // pause + back to start
+    void seekSec(double sec) noexcept;
+    void setReverse(bool on) noexcept;
+    bool isPlaying() const noexcept { return playing_; }
 
-    /// RT. Adds this deck's output into the mix buffers (pre-cleared).
-    void addToMix(float* mixL, float* mixR, int numSamples) noexcept;
+    // ---- pitch (RT setters) ----
+    void setTrackGain(float g) noexcept { trackGain_ = g; }
+    void setGain(float g) noexcept      { gain_ = g; }
+    void setPitchPercent(float pct) noexcept;
+    void setPitchRange(float pct) noexcept;
+    void setPitchBend(float pct) noexcept { bendPct_ = pct; }
+    void setKeyLock(bool on) noexcept;
+    void setQuantize(bool on) noexcept { quantize_ = on; }
+
+    // ---- loop (RT setters) ----
+    void setLoop(double inSec, double outSec) noexcept;
+    void setLoopEnabled(bool on) noexcept;
+    void setLoopSizeSec(double sizeSec) noexcept;
+    void exitLoop() noexcept { loopOn_ = false; }
+
+    // ---- channel DSP (RT setters) ----
+    void setEqDb(int band, float db) noexcept;
+    void setFilterPos(float pos) noexcept;
+
+    /// RT. Writes this deck's stereo, post-EQ/filter (pre-fader) audio.
+    void renderPcm(float* l, float* r, int n) noexcept;
+
+    // ---- loader <-> RT handoff slots ----
+    std::atomic<const TrackAudio*> pendingTrack_{nullptr};
+    std::atomic<const TrackAudio*> retiredTrack_{nullptr};
 
 private:
-    AudioFifo* fifo_   { nullptr };
-    DeckStats* stats_  { nullptr };
-    double     deviceRate_ { 48000.0 };
+    // render paths
+    void renderVarispeed(float* l, float* r, int n) noexcept;
+    void renderStretch(float* l, float* r, int n) noexcept;
+    void applyPostChain(float* l, float* r, int n) noexcept;
 
-    std::atomic<bool>  playing_{false};
-    std::atomic<float> gain_{1.0f};
-    float smoothedGain_{1.0f};
+    // transport helpers
+    double resolvedRate() const noexcept;   // signed consumption rate
+    int64_t framesToBoundary() const noexcept;
+    void wrapLoop() noexcept;
+    bool pastEnd() const noexcept;
+    void bumpFade(float amount = 1.0f / 256.0f) noexcept;
+    void publishStats() noexcept;
+    double displayedPos() const noexcept;   // position shown to UI
+    void advanceDisp(int produced) noexcept; // keylock transport clock
+    int64_t clampPos(double p) const noexcept;
 
-    std::vector<float> scratch_; // interleaved, kMaxBlockFrames * 2
+    DeckStats* stats_ { nullptr };
+    double deviceRate_ { 48000.0 };
+
+    // ============ RT-owned state ============
+    const TrackAudio* track_ { nullptr };
+    double pos_        { 0.0 };   // source read head (device-rate frames)
+    double dispPos_    { 0.0 };   // musical transport clock (UI/sync truth)
+    int64_t feedBase_  { 0 };     // track index when the stretcher was reset
+    int64_t pushed_    { 0 };     // frames fed to the stretcher since reset
+    bool   playing_    { false };
+    bool   seeking_    { false }; // transient, cleared next block
+    bool   reverse_    { false };
+    bool   trackEnded_ { false };
+
+    float trackGain_ { 1.0f }, gain_ { 1.0f };
+    float smGain_    { 1.0f };              // smoothed combined gain
+    float fade_      { 1.0f };              // click-free ramp 0..1
+
+    float pitchPct_  { 0.0f };              // [-pitchRange_, +pitchRange_]
+    float pitchRange_{ 8.0f };              // 8 / 16 / 50 etc.
+    float bendPct_   { 0.0f };              // momentary nudge
+    bool  keylock_   { false };
+    bool  quantize_  { false };
+    bool  stretcherFeedEnded_ { false };
+
+    bool    loopOn_  { false };
+    int64_t loopIn_  { 0 };
+    int64_t loopOut_ { 0 };
+
+    float eqDb_[3]   { 0.0f, 0.0f, 0.0f };
+    float filterPos_ { 0.0f };
+
+    std::unique_ptr<ITimeStretcher> stretcher_;
+    ThreeBandEq eq_;
+    DjFilter    filter_;
+    std::vector<float> scratch_;            // stretcher pull buffer
 };
 
 } // namespace onda

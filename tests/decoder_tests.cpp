@@ -1,14 +1,19 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <thread>
 #include <vector>
 
 #include "platform/decode/FFmpegDecoder.h"
-#include "core/engine/AudioFileStreamer.h"
+#include "core/engine/TrackLoader.h"
 #include "core/engine/DeckEngine.h"
+#include "core/dsp/WsolaStretcher.h"
+#include "core/model/DeckStats.h"
 
 using namespace onda;
 using Catch::Approx;
@@ -80,7 +85,7 @@ TEST_CASE("FFmpegDecoder rejects a nonexistent file") {
     REQUIRE_FALSE(dec.open("C:/definitely/not/here.mp3", 48000));
 }
 
-TEST_CASE("Streamer + decoder + deck: full non-UI playback chain") {
+TEST_CASE("TrackLoader -> deck handoff: full non-UI playback chain") {
     const int fileRate = 48000, channels = 2;
     const int fileFrames = fileRate / 4; // 0.25 s
 
@@ -94,29 +99,59 @@ TEST_CASE("Streamer + decoder + deck: full non-UI playback chain") {
     const auto wav = dir / "chain.wav";
     writeWav(wav, fileRate, channels, pcm);
 
-    AudioFileStreamer streamer([] { return std::make_unique<FFmpegDecoder>(); });
-    DeckEngine deck;
-    deck.bind(&streamer.fifo(), &streamer.stats());
-    deck.setDeviceRate(48000.0);
+    DeckStats stats;
+    std::atomic<const TrackAudio*> pending{nullptr};
+    std::atomic<const TrackAudio*> retired{nullptr};
+    TrackLoader loader([] { return std::make_unique<FFmpegDecoder>(); },
+                       &stats, &pending, &retired);
 
-    streamer.requestLoad(wav.string(), 48000.0);
+    loader.requestLoad(wav.string(), 48000.0);
 
-    // wait for the streamer thread to reach Ready (poll, bounded)
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (streamer.stats().state.load() != (int)DeckState::Ready &&
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    while (stats.state.load() != (int)DeckState::Ready &&
+           stats.state.load() != (int)DeckState::Error &&
            std::chrono::steady_clock::now() < deadline)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    REQUIRE(streamer.stats().state.load() == (int)DeckState::Ready);
-    REQUIRE(streamer.stats().durationSec.load() == Approx(0.25).margin(0.05));
+    REQUIRE(stats.state.load() == (int)DeckState::Ready);
+    REQUIRE(stats.durationSec.load() == Approx(0.25).margin(0.05));
+    REQUIRE(stats.loadProgress.load() > 0.9f);
+    REQUIRE(pending.load() != nullptr);
 
+    // adopt into a deck exactly like the RT thread does
+    DeckEngine deck;
+    DeckStats dstats;
+    deck.bind(&dstats);
+    deck.setDeviceRate(48000.0);
+    deck.setStretcher(std::make_unique<WsolaStretcher>());
+    deck.prepareDsp(48000.0);
+    deck.pendingTrack_ = pending.load();
+    pending.store(nullptr);
+
+    float zl[8]{}, zr[8]{};
+    deck.renderPcm(zl, zr, 8); // adopt pending -> Paused
     deck.setPlaying(true);
-    std::vector<float> mixL(512, 0.0f), mixR(512, 0.0f);
-    int blocks = 0;
-    while (streamer.stats().positionSec.load() < 0.1 && blocks < 200) {
-        deck.addToMix(mixL.data(), mixR.data(), 512);
-        ++blocks;
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    }
-    REQUIRE(streamer.stats().positionSec.load() > 0.0);
-    REQUIRE(streamer.stats().levelL.load() > 0.1f); // real audio arrived
+    std::vector<float> l(512, 0.0f), r(512, 0.0f);
+    for (int i = 0; i < 10; ++i) deck.renderPcm(l.data(), r.data(), 512);
+    REQUIRE(dstats.state.load() == (int)DeckState::Playing);
+    REQUIRE(dstats.positionSec.load() > 0.0);
+    REQUIRE(dstats.levelL.load() > 0.1f); // real audio arrived
+
+    deck.unloadTrack();
+    delete deck.retiredTrack_.exchange(nullptr); // adopted track retired by deck
+    delete pending.exchange(nullptr);            // never adopted (already consumed)
+}
+
+TEST_CASE("TrackLoader reports Error for a missing file") {
+    DeckStats stats;
+    std::atomic<const TrackAudio*> pending{nullptr};
+    std::atomic<const TrackAudio*> retired{nullptr};
+    TrackLoader loader([] { return std::make_unique<FFmpegDecoder>(); },
+                       &stats, &pending, &retired);
+
+    loader.requestLoad("C:/definitely/not/here.mp3", 48000.0);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (stats.state.load() != (int)DeckState::Error &&
+           std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    REQUIRE(stats.state.load() == (int)DeckState::Error);
 }

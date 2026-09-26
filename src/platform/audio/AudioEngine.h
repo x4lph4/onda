@@ -6,9 +6,10 @@
 
 #include <juce_audio_devices/juce_audio_devices.h>
 
-#include "core/engine/AudioFileStreamer.h"
 #include "core/engine/DeckEngine.h"
 #include "core/engine/MixerEngine.h"
+#include "core/engine/TrackLoader.h"
+#include "core/model/MasterStats.h"
 #include "core/rt/AudioStats.h"
 #include "core/rt/CommandQueue.h"
 
@@ -16,31 +17,32 @@ namespace onda { class Config; }
 
 namespace onda::audio {
 
-/// Real-time audio engine. Owns the device manager, the RT callback path,
-/// the deck array and the streamer threads feeding them.
-/// RT rules inside the callback: no allocation, no locks, no syscalls,
-/// no logging, no exceptions escaping. All state is preallocated.
+/// Real-time audio engine: device manager + RT callback + deck array +
+/// loader threads + mixer. RT rules inside the callback: no allocation,
+/// no locks, no syscalls, no logging, no exceptions escaping.
 class AudioEngine : private juce::AudioIODeviceCallback {
 public:
-    static constexpr int kNumDecks = 4; // engine is 4-deck from day one; UI shows 2
+    static constexpr int kNumDecks = MixerEngine::kMaxDecks;
 
-    /// decoderFactory creates decoders for the streamer threads (e.g. ffmpeg).
+    /// decoderFactory creates decoders for the loader threads (e.g. ffmpeg).
     AudioEngine(Config& config, DecoderFactory decoderFactory);
     ~AudioEngine() override;
 
     /// Opens the audio device (restoring the last persisted setup) and
-    /// starts the RT callback. Call from the UI thread only.
+    /// starts the RT callback. UI thread only.
     void start();
     void shutdown();
 
-    /// UI thread: ask a deck's streamer to load a file.
+    /// UI thread: ask a deck's loader to decode a file (async).
     void loadTrack(int deck, const juce::String& path);
     void unloadTrack(int deck);
+    void cancelLoad(int deck);
 
     juce::AudioDeviceManager& deviceManager() noexcept { return deviceManager_; }
     const rt::AudioStats&   stats()          noexcept { return stats_; }
     rt::CommandQueue&       commands()       noexcept { return commandQueue_; }
-    DeckStats&              deckStats(int i) noexcept { return streamers_[(size_t)i]->stats(); }
+    const MasterStats&      masterStats()    noexcept { return mixer_.masterStats(); }
+    DeckStats&              deckStats(int i) noexcept { return deckStats_[(size_t)i]; }
 
 private:
     // ---- AudioIODeviceCallback (RT thread) ----
@@ -59,14 +61,12 @@ private:
     rt::AudioStats stats_;
     rt::CommandQueue commandQueue_;
 
-    std::array<std::unique_ptr<AudioFileStreamer>, kNumDecks> streamers_;
+    std::array<DeckStats, kNumDecks> deckStats_;
+    std::array<std::unique_ptr<TrackLoader>, kNumDecks> loaders_;
     std::array<DeckEngine, kNumDecks> decks_;
     MixerEngine mixer_;
 
     // ---- state owned by the RT thread ----
-    float masterGain_     { 1.0f };
-    float cueMix_         { 0.5f };
-    bool  limiterEnabled_ { true };
     double sampleRate_    { 0.0 };
     float smoothedLoad_   { 0.0f };
     std::chrono::steady_clock::time_point lastCbStart_ {};

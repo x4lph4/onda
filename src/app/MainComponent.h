@@ -12,10 +12,10 @@ namespace onda {
 
 class DeckStrip;
 
-/// F3 shell: header bar (identity + device + DSP load + xruns + clips),
-/// device configuration panel, and per-deck transport strips that exercise
-/// the streamer -> fifo -> RT deck -> mixer path end to end.
-class MainComponent : public juce::Component {
+/// Phase-2 functional shell: every engine feature gets a control —
+/// deck transport, pitch/keylock/loops/seek, EQ/filter, faders,
+/// crossfader, cue bus, master + meters. Functional layout, not final UX.
+class MainComponent : public juce::Component, private juce::Timer {
 public:
     explicit MainComponent(audio::AudioEngine& engine);
     ~MainComponent() override = default;
@@ -24,15 +24,20 @@ public:
     void resized() override;
 
 private:
+    void timerCallback() override;
+
+private:
     audio::AudioEngine& engine_;
 
     std::unique_ptr<juce::Component> headerBar_;
-    juce::AudioDeviceSelectorComponent deviceSelector_;
     std::vector<std::unique_ptr<DeckStrip>> decks_;
-    juce::Slider masterGain_;
-    juce::Slider cueMix_;
-    juce::Label masterLabel_;
-    juce::Label cueLabel_;
+
+    // mixer column
+    juce::Slider masterGain_, cueVol_, cueMix_, crossfader_;
+    juce::ComboBox xfCurve_;
+    juce::Label masterLabel_, cueVolLabel_, cueMixLabel_, xfLabel_, meterLabel_;
+    juce::TextButton settingsBtn_;
+    std::unique_ptr<juce::Component> devicePanel_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };
