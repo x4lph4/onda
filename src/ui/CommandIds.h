@@ -38,6 +38,14 @@ enum Id : uint32_t {
     DeckHotCueBase   = 0x0020,  // DeckHotCueBase + slot*4 + action
     //   action: 0 trigger, 1 set, 2 delete
 
+    // ---- waveform/deck view actions: +deck*0x400 (Phase 19) ----
+    WaveZoomIn       = 0x0080,  // zoom in at playhead
+    WaveZoomOut      = 0x0081,  // zoom out at playhead
+    WaveZoomFit      = 0x0082,  // fit whole track to the strip
+    WaveAutoScroll   = 0x0083,  // cycle Off → Center → Smart
+    WaveGridEditTgl  = 0x0084,  // grid-edit mode on/off
+    DeckTimeMode     = 0x0085,  // cycle ELAPSED → REMAINING → TOTAL
+
     // ---- mixer: 0x2000 + (ch << 6) | kind ----
     MixChannelBase   = 0x2000,  // channel ops take (ch, kind) — routed via
                                 // MixerController param ids, not commands

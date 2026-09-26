@@ -57,6 +57,10 @@ struct EnginePorts {
     std::function<void(int)>                  applyMixPreset;
     /// () → copyable mixer diagnostics text (MixDiagCopy)
     std::function<void()>                     copyMixDiag;
+    /// Phase 19 — view-local actions routed to the app shell:
+    /// (deck, action id low bits, value). Zoom/autoscroll/grid-edit/
+    /// time-mode are presentation state — they never touch engines.
+    std::function<void(int, int, double)>     viewAction;
 };
 
 /// Register the whole command surface. All commands are POD-safe:

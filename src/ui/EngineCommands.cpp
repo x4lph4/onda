@@ -268,6 +268,23 @@ void registerEngineCommands(CommandManager& cm,
                 if (p.copySyncDiag) p.copySyncDiag(d);
             }));
 
+        // ---- Phase 19: waveform/deck view actions — presentation
+        // state only; the app shell routes them to the views. ----
+        auto view = [&](cmd::Id base, const char* name) {
+            cm.add(mk(cmd::forDeck(base, d), "deck" + dn + "." + name,
+                cat, [p, d, base](float v, CommandSource) {
+                    if (p.viewAction)
+                        p.viewAction(d, (int)cmd::actionOf(
+                            cmd::forDeck(base, d)), (double)v);
+                }));
+        };
+        view(cmd::WaveZoomIn,      "wave.zoomIn");
+        view(cmd::WaveZoomOut,     "wave.zoomOut");
+        view(cmd::WaveZoomFit,     "wave.zoomFit");
+        view(cmd::WaveAutoScroll,  "wave.autoScroll");
+        view(cmd::WaveGridEditTgl, "wave.gridEdit");
+        view(cmd::DeckTimeMode,    "deck.timeMode");
+
         // hot cues: trigger/set/delete per slot
         for (int s = 0; s < 8; ++s) {
             const std::string base =

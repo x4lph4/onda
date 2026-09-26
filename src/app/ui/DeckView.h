@@ -12,6 +12,7 @@
 #include "controls/StateButton.h"
 #include "ui/CommandIds.h"
 #include "ui/UiState.h"
+#include "core/library/KeyNotation.h"
 #include "core/model/DeckStats.h"
 
 namespace onda::ui {
@@ -115,6 +116,40 @@ public:
         }
     }
 
+    // ---- Phase 19: display preferences (view-local state) ----
+    /// §24 — time readout mode; click on the time row or the
+    /// deck.timeMode command cycles it.
+    enum class TimeMode : int { Elapsed = 0, Remaining = 1, Total = 2 };
+    void cycleTimeMode() {
+        timeMode_ = (TimeMode)(((int)timeMode_ + 1) % 3);
+        repaint();
+    }
+    TimeMode timeMode() const { return timeMode_; }
+
+    /// §27 — key notation preference (Standard / Camelot / OpenKey).
+    void setKeyNotation(int n) {
+        keyNotation_ = (library::KeyNotation)std::clamp(n, 0, 2);
+        repaint();
+    }
+
+    /// §37 — artwork thumbnail (host loads it off-thread and passes
+    /// a scaled image; the view keeps a copy, empty clears).
+    void setArtwork(const juce::Image& img) {
+        art_ = img; repaint();
+    }
+
+    void mouseDown(const juce::MouseEvent& e) override {
+        const Metrics m = theme_->metrics();
+        // time row band — click cycles the display mode (§24)
+        const int timeY = 3 + m.gap6 + m.fontLg + m.fontMd * 2
+                          + m.fontMd + m.gap3 * 2;
+        if (e.y >= timeY && e.y <= timeY + m.fontXl + m.gap4) {
+            cycleTimeMode();
+            return;
+        }
+        Component::mouseDown(e);
+    }
+
     void paint(juce::Graphics& g) override {
         const Palette& p = theme_->theme().palette;
         const Metrics m = theme_->metrics();
@@ -132,6 +167,14 @@ public:
             (float)m.fontLg, juce::Font::bold)));
         g.drawText(juce::String::charToString((juce::juce_wchar)('A' + deck_)),
                    meta.removeFromLeft(m.gap6), juce::Justification::centredLeft);
+        // §37 artwork — square thumb left of the title when loaded
+        if (art_.isValid()) {
+            const int aw = meta.getHeight();
+            auto ar = meta.removeFromLeft(aw + m.gap2)
+                          .withSizeKeepingCentre(aw, aw).toFloat();
+            g.drawImage(art_, ar, juce::RectanglePlacement::centred
+                        | juce::RectanglePlacement::onlyReduceInSize);
+        }
         g.setColour(col(p.text));
         g.drawText(snap_.title.empty() ? "(no track)" : snap_.title,
                    meta.removeFromTop(m.fontLg + 2),
@@ -157,11 +200,27 @@ public:
             r.removeFromLeft(m.gap2);
         };
         char num[64];
-        std::snprintf(num, sizeof num, "%.2f BPM",
-                      snap_.bpm > 0.0 ? snap_.bpm : 0.0);
-        badge(badges, num, p.accent);
-        if (!snap_.keyText.empty())
+        // §25-26 — show effective/target BPM when they differ from
+        // the grid BPM (sync active); raw grid BPM otherwise.
+        if (snap_.syncMode != 0 && snap_.targetBpm > 0.0 &&
+            std::abs(snap_.effBpm - snap_.bpm) > 0.05) {
+            std::snprintf(num, sizeof num, "%.2f→%.2f",
+                          snap_.effBpm, snap_.targetBpm);
+            badge(badges, num, p.accent);
+        } else {
+            std::snprintf(num, sizeof num, "%.2f BPM",
+                          snap_.effBpm > 0.0 ? snap_.effBpm
+                                             : snap_.bpm);
+            badge(badges, num, p.accent);
+        }
+        // §27 — key in the configured notation; keyText fallback
+        if (snap_.keyIndex >= 0) {
+            badge(badges, library::KeyNotationConverter::name(
+                              snap_.keyIndex, keyNotation_),
+                          p.deckColor(deck_));
+        } else if (!snap_.keyText.empty()) {
             badge(badges, snap_.keyText, p.deckColor(deck_));
+        }
         std::snprintf(num, sizeof num, "%+.2f%%", snap_.pitchPct);
         badge(badges, num, p.textDim);
         // Phase 15 §28/§30: master role + uncertain-sync surface —
@@ -171,14 +230,21 @@ public:
         else if (snap_.syncMode != 0 && snap_.syncConf > 0.0f &&
                  snap_.syncConf < 0.45f)
             badge(badges, "SYNC UNCERTAIN", p.warn);
-        // state/error badge
+        // state/error badge (§38-39 — non-color indicators)
         const auto st = (DeckState)snap_.state;
         if (st == DeckState::Loading)
             badge(badges, "LOADING", p.warn);
         else if (st == DeckState::Error)
             badge(badges, "ERROR", p.danger);
+        else if (st == DeckState::Paused)
+            badge(badges, "PAUSED", p.textDim);
+        else if (st == DeckState::Ready)
+            badge(badges, "READY", p.textDim);
+        else if (st == DeckState::Seeking)
+            badge(badges, "SEEK", p.accent);
         else if (snap_.syncLimited)
             badge(badges, "SYNC LIMITED", p.warn);
+        if (snap_.pfl) badge(badges, "PFL", p.accent);
         // Phase 14 §31: unanalyzed tracks advertise it — sync/quantize
         // wait for real data instead of trusting nothing.
         if (!snap_.path.empty() && !snap_.analyzed &&
@@ -206,7 +272,8 @@ public:
             }
         }
 
-        // ---- time readout (elapsed / remaining) ----
+        // ---- time readout — §23-24: elapsed / remaining / total,
+        // mode label on the right; click row (mouseDown) cycles ----
         auto tr = b.removeFromTop(m.fontXl + m.gap4);
         tr.reduce(m.gap3, 0);
         const auto tstr = [](double s) {
@@ -215,15 +282,25 @@ public:
                                       (int)(s / 60.0), std::fmod(s, 60.0));
             return juce::String(t);
         };
-        g.setColour(col(p.text));
+        const double main_ =
+            timeMode_ == TimeMode::Elapsed   ? snap_.positionSec
+          : timeMode_ == TimeMode::Remaining ? snap_.durationSec
+                                                - snap_.positionSec
+                                             : snap_.durationSec;
+        const char* tag = timeMode_ == TimeMode::Elapsed   ? "EL"
+                        : timeMode_ == TimeMode::Remaining ? "REM"
+                                                           : "TOT";
+        g.setColour(col(timeMode_ == TimeMode::Remaining ? p.warn
+                                                         : p.text));
         g.setFont(juce::Font(juce::FontOptions((float)m.fontXl,
                                              juce::Font::bold)));
-        g.drawText(tstr(snap_.positionSec),
-                   tr.removeFromLeft(tr.getWidth() / 2),
+        g.drawText((timeMode_ == TimeMode::Remaining ? "-" : "")
+                       + tstr(main_),
+                   tr.removeFromLeft(tr.getWidth() - 34),
                    juce::Justification::centredLeft);
-        g.setColour(col(p.warn));
-        g.drawText("-" + tstr(snap_.durationSec - snap_.positionSec),
-                   tr, juce::Justification::centredRight);
+        g.setColour(col(p.textDim));
+        g.setFont(juce::Font(juce::FontOptions((float)m.fontMd)));
+        g.drawText(tag, tr, juce::Justification::centredRight);
     }
 
     void resized() override {
@@ -288,6 +365,9 @@ private:
     MeterBar   meters_;
     juce::ComboBox range_;
     std::array<std::unique_ptr<StateButton>, 8> pads_;
+    TimeMode timeMode_ = TimeMode::Elapsed;
+    library::KeyNotation keyNotation_ = library::KeyNotation::Camelot;
+    juce::Image art_;
 };
 
 } // namespace onda::ui

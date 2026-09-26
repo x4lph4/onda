@@ -36,6 +36,29 @@ public:
     /// [startFrame, endFrame). Picks the cheapest pyramid level that
     /// satisfies the requested resolution; aggregates adjacent bins
     /// when the budget is smaller than the raw count.
+    /// Which pyramid level a query would use: 0 overview, 1 mid,
+    /// 2 detail, -1 when the request can't be served (empty/invalid).
+    /// Mirrors the selection inside query() — used by the view layer
+    /// for diagnostics without running the query itself (Phase 19 §3).
+    int queryLevel(int64_t startFrame, int64_t endFrame,
+                   int maxBins) const {
+        if (empty() || maxBins <= 0) return -1;
+        if (endFrame <= startFrame) return -1;
+        startFrame = std::clamp(startFrame, (int64_t)0, numFrames);
+        endFrame   = std::clamp(endFrame, startFrame + 1, numFrames);
+        const double span = (double)(endFrame - startFrame);
+        const auto binsAt = [&](int64_t framesPerBin) -> int64_t {
+            return span > 0.0 ? (int64_t)(span / framesPerBin + 0.5) : 0;
+        };
+        if (binsAt(kDetailFrames) >= 1 &&
+            binsAt(kDetailFrames) <= maxBins * 4 && !detail.empty())
+            return 2;
+        if (binsAt(kMidFrames) >= 1 &&
+            binsAt(kMidFrames) <= maxBins * 4 && !mid.empty())
+            return 1;
+        return 0;
+    }
+
     void query(int64_t startFrame, int64_t endFrame, int maxBins,
                std::vector<WaveformBin>& out, int ch = 0) const {
         out.clear();

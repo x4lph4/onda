@@ -393,8 +393,10 @@ void EngineBridge::refreshDeckMeta(int deck, DeckSnapshot& o) {
     o.artist   = t.artist;
     o.analyzed = t.analysisState == (int)AnalysisState::Analyzed;
     if (t.bpm > 0.0 && o.bpm <= 0.0) o.bpm = t.bpm;
-    if (t.keyIndex >= 0)
+    if (t.keyIndex >= 0) {
+        o.keyIndex = t.keyIndex;
         o.keyText = KeyAnalyzer::camelotName(t.keyIndex);
+    }
 }
 
 void EngineBridge::notifyAnalysis(const std::string& path, bool ok) {

@@ -39,6 +39,7 @@ struct DeckSnapshot {
     bool   streamEnded = false;
     // meta (filled by bridge from track/library, not atomics)
     std::string path, title, artist, keyText;
+    int    keyIndex = -1;               // 0..23 — notation chosen by view
     int64_t trackId = -1;
     bool    analyzed = false;
 };
@@ -82,8 +83,16 @@ struct FxSlotSnapshot {
 };
 
 /// Waveform overlay markers (plain values — views map them to px).
-struct CueMarker { double sec = 0.0; uint32_t argb = 0; std::string label; };
-struct LoopRegion { double inSec = 0.0, outSec = 0.0; bool active = false; };
+/// CueMarker: slot = hot-cue slot 0..7 (-1 unslotted), type mirrors
+/// CueType (0 hot / 1 memory / 2 loop) so views distinguish marker
+/// shapes without including perf headers (Phase 19 §18).
+struct CueMarker { double sec = 0.0; uint32_t argb = 0;
+                   std::string label; int slot = -1; int type = 0; };
+/// LoopRegion: id = saved-loop slot when known; saved distinguishes a
+/// stored loop marker from the live deck loop (Phase 19 §20).
+struct LoopRegion { double inSec = 0.0, outSec = 0.0;
+                    bool active = false; bool saved = false;
+                    int id = -1; };
 
 struct AudioStatus {
     std::string deviceName;

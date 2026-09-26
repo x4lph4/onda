@@ -17,6 +17,7 @@ add_executable(onda_tests
     library_tests.cpp
     library_phase18_tests.cpp
     ui_tests.cpp
+    waveform_phase19_tests.cpp
     controller_tests.cpp
     flx4_tests.cpp
     sampler_tests.cpp

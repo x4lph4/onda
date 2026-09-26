@@ -51,7 +51,7 @@ public:
           topbar_(te, cm), mixer_(te, engine.mixerCtl()),
           browser_(te, cm, lib),
           notifications_(te, notes) {
-        for (int d = 0; d < 2; ++d) {
+        for (int d = 0; d < 4; ++d) {           // §45: 4-deck capable
             decks_[(size_t)d] =
                 std::make_unique<DeckView>(te, cm, d);
             waves_[(size_t)d] =
@@ -66,6 +66,10 @@ public:
             waves_[(size_t)d]->onSeek = [q, d](double sec) {
                 q->tryPush(rt::DeckSeek{(uint8_t)d, sec});
             };
+            // §42 — every other waveform interaction arrives as a
+            // WaveCmd and is routed to the matching engine surface.
+            waves_[(size_t)d]->onWaveCmd = [this, q, d](
+                    const WaveCmd& c) { routeWaveCmd(d, q, c); };
             // Phase 15 §26: user fader moves go through the sync
             // pitch policy (Override/Disable/ManualAsBend), never
             // raw rt::SetPitch — hardware and software can't fight.
@@ -77,6 +81,28 @@ public:
             };
             decks_[(size_t)d]->bindPitch();
         }
+        // Phase 19: deck.*.wave.* / deck.*.deck.timeMode commands land
+        // here — view-local presentation state, no engine calls.
+        bridge_->mutablePorts().viewAction =
+            [this](int d, int action, double) {
+                if (d < 0 || d >= 4) return;
+                switch (action) {
+                    case cmd::WaveZoomIn:
+                        waves_[(size_t)d]->zoomIn(); break;
+                    case cmd::WaveZoomOut:
+                        waves_[(size_t)d]->zoomOut(); break;
+                    case cmd::WaveZoomFit:
+                        waves_[(size_t)d]->zoomFit(); break;
+                    case cmd::WaveAutoScroll:
+                        waves_[(size_t)d]->cycleAutoScroll(); break;
+                    case cmd::WaveGridEditTgl:
+                        waves_[(size_t)d]->setGridEdit(
+                            !waves_[(size_t)d]->gridEdit()); break;
+                    case cmd::DeckTimeMode:
+                        decks_[(size_t)d]->cycleTimeMode(); break;
+                    default: break;
+                }
+            };
         fx_ = std::make_unique<FXView>(te, engine.mixerCtl());
 
         addAndMakeVisible(topbar_);
@@ -213,14 +239,17 @@ public:
         if (L.browserVisible)
             browser_.setBounds(L.browser.x, L.browser.y,
                                L.browser.w, L.browser.h);
-        waves_[0]->setBounds(L.waveA.x, L.waveA.y,
-                             L.waveA.w, L.waveA.h);
-        waves_[1]->setBounds(L.waveB.x, L.waveB.y,
-                             L.waveB.w, L.waveB.h);
-        decks_[0]->setBounds(L.deckA.x, L.deckA.y,
-                             L.deckA.w, L.deckA.h);
-        decks_[1]->setBounds(L.deckB.x, L.deckB.y,
-                             L.deckB.w, L.deckB.h);
+        for (int d = 0; d < 4; ++d) {          // §45: per-deck regions
+            const bool vis = d < L.deckCount;
+            waves_[(size_t)d]->setVisible(vis);
+            decks_[(size_t)d]->setVisible(vis);
+            if (vis) {
+                waves_[(size_t)d]->setBounds(L.waves[d].x, L.waves[d].y,
+                                             L.waves[d].w, L.waves[d].h);
+                decks_[(size_t)d]->setBounds(L.decks[d].x, L.decks[d].y,
+                                             L.decks[d].w, L.decks[d].h);
+            }
+        }
         mixer_.setBounds(L.mixer.x, L.mixer.y, L.mixer.w, L.mixer.h);
         if (settings_ && settings_->isVisible())
             settings_->setBounds(getLocalBounds().reduced(
@@ -248,10 +277,15 @@ public:
         snap_.audio.uiFrameMs =
             (float)(now - t0);
         topbar_.setSnapshot(snap_);
-        for (int d = 0; d < 2; ++d) {
+        const int deckN = std::clamp(snap_.master.deckMode, 2, 4);
+        if (prefs_.deckMode != deckN) {        // 2↔4 deck layout (§45)
+            prefs_.deckMode = deckN;
+            resized();
+        }
+        for (int d = 0; d < 4; ++d) {
             decks_[(size_t)d]->setSnapshot(snap_.deck[d]);
             waves_[(size_t)d]->setSnapshot(snap_.deck[d]);
-            feedDeckVisuals(d);
+            if (d < deckN) feedDeckVisuals(d);
             mixer_.setChannelSnapshot(d, snap_.channel[d],
                                       1.0f / 30.0f);
         }
@@ -320,19 +354,66 @@ private:
             if (c.type == CueType::Loop && c.frame2 > c.frame) {
                 loops.push_back({ sec,
                     wfRate_[(size_t)d] > 0.0
-                        ? c.frame2 / wfRate_[(size_t)d] : sec, true });
+                        ? c.frame2 / wfRate_[(size_t)d] : sec,
+                    true, true, c.slot });   // saved cue-loop
             } else {
                 marks.push_back({ sec, c.argb,
                                   c.label.empty()
                                       ? std::to_string(c.slot + 1)
-                                      : c.label });
+                                      : c.label,
+                                  c.slot,
+                                  c.type == CueType::Memory ? 1 : 0 });
             }
         }
         decks_[(size_t)d]->setCuePads(cols, set);
         waves_[(size_t)d]->setMarkers(marks, loops);
         // active loop from deck stats
         if (ds.loopOn)
-            loops.push_back({ ds.loopInSec, ds.loopOutSec, true });
+            loops.push_back({ ds.loopInSec, ds.loopOutSec, true,
+                              false, -1 });
+        // §37 artwork — cached image per track; loaded once per
+        // trackId (UI thread, small thumb, cache hit afterwards).
+        if (ds.trackId != artTrack_[(size_t)d]) {
+            artTrack_[(size_t)d] = ds.trackId;
+            juce::Image img;
+            if (ds.trackId >= 0) {
+                const std::string ap = lib_->artworkPath(ds.trackId);
+                if (!ap.empty())
+                    img = juce::ImageFileFormat::loadFrom(
+                        juce::File(juce::String::fromUTF8(ap.c_str())));
+            }
+            decks_[(size_t)d]->setArtwork(img);
+        }
+    }
+
+    /// §42 routing — WaveCmd values from WaveformView to the right
+    /// engine surface. No musical logic in the component.
+    void routeWaveCmd(int d, rt::CommandQueue* q, const WaveCmd& c) {
+        switch (c.kind) {
+            case WaveCmdKind::CueTrigger:
+                perf_->triggerCue(d, c.slot); break;
+            case WaveCmdKind::CueSet:
+                if (c.slot >= 0)
+                    perf_->setCue(d, c.slot, CueType::Hot,
+                                  (int64_t)(c.a * wfRate_[(size_t)d]));
+                break;
+            case WaveCmdKind::CueDelete:
+                if (c.slot >= 0) perf_->deleteCue(d, c.slot); break;
+            case WaveCmdKind::LoopSet:
+                q->tryPush(rt::SetLoop{ (uint8_t)d, c.a, c.b });
+                q->tryPush(rt::SetLoopOn{ (uint8_t)d, true });
+                break;
+            case WaveCmdKind::GridNudgeMs:
+                bridge_->mutablePorts().analysisEdit(
+                    d, (int)AnalysisEdit::NudgeGrid, c.a);
+                break;
+            case WaveCmdKind::GridSetFirstBeat:
+                bridge_->mutablePorts().analysisEdit(
+                    d, (int)AnalysisEdit::SetFirstBeat,
+                    c.a * wfRate_[(size_t)d]);
+                break;
+            default: break;   // Seek/ScrubSeek/Zoom/Scroll handled
+        }                     // by the view itself / onSeek
     }
 
     const ThemeEngine* theme_;
@@ -350,17 +431,18 @@ private:
     std::function<std::string()> selPort_;
 
     TopBar topbar_;
-    std::array<std::unique_ptr<DeckView>, 2>     decks_;
-    std::array<std::unique_ptr<WaveformView>, 2> waves_;
+    std::array<std::unique_ptr<DeckView>, 4>     decks_;
+    std::array<std::unique_ptr<WaveformView>, 4> waves_;
     MixerView mixer_;
     std::unique_ptr<FXView>      fx_;
     BrowserView browser_;
     std::unique_ptr<SettingsView> settings_;
     NotificationOverlay notifications_;
 
-    std::string wfPath_[2];
-    std::shared_ptr<AnalysisBundle> bundles_[2];   // keep wave alive
-    double wfRate_[2] = { 0.0, 0.0 };
+    std::string wfPath_[4];
+    std::shared_ptr<AnalysisBundle> bundles_[4];   // keep wave alive
+    double wfRate_[4] = { 0.0, 0.0, 0.0, 0.0 };
+    int64_t artTrack_[4] = { -1, -1, -1, -1 };
     double lastTick_ = 0.0, tickAcc_ = 0.0;
     int    tickN_ = 0;
     float  uiFps_ = 0.0f;

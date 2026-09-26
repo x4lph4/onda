@@ -2,6 +2,44 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 19 (waveform performance view)
+
+Professional deck visualization layer
+(`docs/ui/waveform-performance-view.md`,
+`docs/adr/0019-waveform-performance-view.md`) — a pure render-plan
+engine drives the JUCE shell; zero audio-thread coupling.
+
+- `WaveformViewEngine` (`src/ui`, JUCE-free, unit-tested): viewport,
+  anchored zoom (cursor/playhead/center), auto-scroll
+  Off/Center/Smart, playhead smoother with jump detection, and the
+  full frame plan — normalized columns, beat/bar/downbeat markers
+  with bar numbers + density gating, current-beat/bar band, cue
+  flags (hot/memory types), loop rects, state badges.
+- `WaveformView` renders through a raster cache (`juce::Image` keyed
+  on viewport+data+style+HiDPI scale) — `WaveformData::query` runs
+  only when the key changes; cues/playhead/flashes draw live on top.
+- Interactions → `WaveCmd` values routed by the host (§42): seek,
+  scrub seam, cue trigger/set/armed-delete, loop edge/body drags,
+  grid-edit click/drag → `analysisEdit`, overview pan, wheel zoom.
+- Grid-edit mode (`wave.gridEdit` command) on top of the Phase-14
+  edit surface; markers emphasize, `GRID EDIT` badge, crosshair.
+- `DeckView`: ELAPSED/REMAINING/TOTAL time modes (click or
+  `deck.timeMode`), `eff→target` BPM under sync, key-notation pref,
+  artwork thumb, PAUSED/READY/SEEK/PFL badges.
+- New commands `0x0080+` per deck: `wave.zoomIn/Out/Fit`,
+  `wave.autoScroll`, `wave.gridEdit`, `deck.timeMode` — routed via
+  `EnginePorts::viewAction`.
+- 4-deck real: `LayoutSpec::deckMode` → `waves[4]/decks[4]` (A C |
+  mixer | D B), all four views live up front, visibility follows the
+  master deck-mode toggle; 2-deck geometry unchanged.
+- HiDPI rasters at the display scale factor; `WaveformDiagnostics`
+  per view (build ms, cache hits/misses, level, counters).
+- 19 new tests (**357 cases / 1.64M assertions green**): pyramid
+  selection, zoom anchors, auto-scroll, smoother+jumps, frame
+  contents, interaction state machine, cache keys, 4-deck layout,
+  diagnostics — plus 5 min/30 min/2 h frame-build benchmarks and a
+  4-deck stress loop.
+
 ## Status — Phase 18 (professional music library)
 
 Completed the Phase-7 library into the full professional surface

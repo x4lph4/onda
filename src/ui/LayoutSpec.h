@@ -28,8 +28,13 @@ struct Rect { int x = 0, y = 0, w = 0, h = 0;
 struct ShellLayout {
     Rect topBar;
     Rect deckRow;         // whole performance row
-    Rect waveA, waveB;    // waveform strips over each deck
-    Rect deckA, deckB;    // deck control blocks
+    Rect waveA, waveB;    // waveform strips over each deck (2-deck)
+    Rect deckA, deckB;    // deck control blocks (2-deck)
+    // Phase 19 §45 — 4-deck capable arrays. In 2-deck mode waves[0..1]
+    // mirror waveA/waveB; in 4-deck mode all four split the strip.
+    Rect waves[4];
+    Rect decks[4];        // deck panels: A C | mixer | D B in 4-deck
+    int  deckCount = 2;
     Rect mixer;           // center column
     Rect fx;              // fx strip (h==0 when hidden)
     Rect browser;         // bottom panel (h==0 when hidden)
@@ -43,6 +48,7 @@ struct LayoutPrefs {
     int  fxH         = 96;
     int  waveH       = 84;
     int  mixerW      = 340;
+    int  deckMode    = 2;     // 2 or 4 visible decks (Phase 19 §45)
 };
 
 class LayoutSpec {
@@ -94,6 +100,31 @@ public:
         L.deckB = { winW - deckW, y + waveH, deckW, ctrlH };
         L.waveA = { 0, y, winW / 2, waveH };
         L.waveB = { winW - winW / 2, y, winW - winW / 2, waveH };
+
+        // ---- deck-count-aware arrays (§45) ----
+        L.deckCount = p.deckMode >= 4 ? 4 : 2;
+        if (L.deckCount == 4) {
+            // waves: four equal columns across the window
+            const int qw = winW / 4;
+            for (int i = 0; i < 4; ++i)
+                L.waves[i] = { i * qw, y,
+                               i == 3 ? winW - 3 * qw : qw, waveH };
+            // deck panels: A C left of mixer, D B right — mixer keeps
+            // its preferred width, panels split the remainder evenly
+            const int side = (winW - p.mixerW) / 2;
+            const int pw = side / 2;
+            L.decks[0] = { 0, y + waveH, pw, ctrlH };            // A
+            L.decks[2] = { pw, y + waveH,
+                           side - pw, ctrlH };                  // C
+            L.decks[3] = { winW - side, y + waveH, pw, ctrlH };  // D
+            L.decks[1] = { winW - side + pw, y + waveH,
+                           side - pw, ctrlH };                  // B
+            L.mixer = { side, y + waveH,
+                        winW - 2 * side, ctrlH };
+        } else {
+            L.waves[0] = L.waveA; L.waves[1] = L.waveB;
+            L.decks[0] = L.deckA; L.decks[1] = L.deckB;
+        }
         return L;
     }
 };
