@@ -60,8 +60,9 @@ private:
 // ---------------------------------------------------------------- DeckStrip
 class DeckStrip : public juce::Component, private juce::Timer {
 public:
-    DeckStrip(const juce::String& name, int index, audio::AudioEngine& engine)
-        : engine_(engine), deck_(index) {
+    DeckStrip(const juce::String& name, int index, audio::AudioEngine& engine,
+              AnalysisService& analysis)
+        : engine_(engine), analysis_(analysis), deck_(index) {
         auto L = [this](juce::Label& l, const juce::String& t) {
             l.setText(t, juce::dontSendNotification);
             addAndMakeVisible(l);
@@ -234,7 +235,10 @@ private:
             [this](const juce::FileChooser& fc) {
                 const auto f = fc.getResult();
                 if (f.existsAsFile()) {
-                    engine_.loadTrack(deck_, f.getFullPathName());
+                    trackPath_ = f.getFullPathName();
+                    engine_.loadTrack(deck_, trackPath_);
+                    // Background analysis — workers at low priority.
+                    analysis_.analyzeTrack(trackPath_.toStdString());
                     trackLabel_.setText(f.getFileName(), juce::dontSendNotification);
                     seekSlider_.setRange(0.0, 1.0, 0.0001);
                 }
@@ -245,12 +249,27 @@ private:
         const auto& s = engine_.deckStats(deck_);
         const int state = s.state.load();
         const double dur = s.durationSec.load();
-        stateLabel_.setText(
-            deckStateName(state) + "  " +
+        juce::String info = deckStateName(state) + "  " +
             formatTime(s.positionSec.load()) + " / " + formatTime(dur) +
             "  bufUR " + juce::String((int)s.underruns.load()) +
-            (s.loopOn.load() ? "  [LOOP]" : ""),
-            juce::dontSendNotification);
+            (s.loopOn.load() ? "  [LOOP]" : "");
+        if (trackPath_.isNotEmpty()) {
+            switch (analysis_.stateFor(trackPath_.toStdString())) {
+                case AnalysisState::Analyzed: {
+                    const double bpm = analysis_.getBpm(trackPath_.toStdString());
+                    const auto key = analysis_.getKey(trackPath_.toStdString());
+                    info << "  |  " << juce::String(bpm, 1) << " BPM"
+                         << "  " << juce::String(key.standard);
+                    break;
+                }
+                case AnalysisState::Analyzing: info << "  |  analyzing…"; break;
+                case AnalysisState::Failed:    info << "  |  analysis failed"; break;
+                case AnalysisState::Outdated:  info << "  |  reanalyzing…";
+                    analysis_.analyzeTrack(trackPath_.toStdString()); break;
+                default: break;
+            }
+        }
+        stateLabel_.setText(info, juce::dontSendNotification);
         if (dur > 0.0 && !seekSlider_.isMouseButtonDown())
             seekSlider_.setRange(0.0, dur, juce::dontSendNotification);
         if (dur > 0.0 && !seekSlider_.isMouseButtonDown())
@@ -259,8 +278,10 @@ private:
     }
 
     audio::AudioEngine& engine_;
+    AnalysisService& analysis_;
     int deck_;
     bool pfl_ { false };
+    juce::String trackPath_;
     double loopInSec_ { 0.0 }, loopOutSec_ { 0.0 };
     juce::Label title_, trackLabel_, stateLabel_;
     juce::TextButton loadBtn_, playBtn_, stopBtn_, revBtn_, pflBtn_, keylockBtn_;
@@ -289,16 +310,17 @@ private:
 };
 
 // ---------------------------------------------------------------- MainComponent
-MainComponent::MainComponent(audio::AudioEngine& engine)
-    : engine_(engine),
+MainComponent::MainComponent(audio::AudioEngine& engine,
+                             AnalysisService& analysis)
+    : engine_(engine), analysis_(analysis),
       headerBar_(std::make_unique<HeaderBar>(engine)),
       devicePanel_(std::make_unique<DevicePanel>(engine)) {
     addAndMakeVisible(*headerBar_);
     addChildComponent(*devicePanel_);
     devicePanel_->setVisible(false);
 
-    decks_.push_back(std::make_unique<DeckStrip>("DECK A", 0, engine));
-    decks_.push_back(std::make_unique<DeckStrip>("DECK B", 1, engine));
+    decks_.push_back(std::make_unique<DeckStrip>("DECK A", 0, engine, analysis));
+    decks_.push_back(std::make_unique<DeckStrip>("DECK B", 1, engine, analysis));
     for (auto& d : decks_) addAndMakeVisible(*d);
 
     settingsBtn_.setButtonText("SETTINGS");

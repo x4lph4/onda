@@ -2,6 +2,36 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 3 (music analysis engine)
+
+Background analysis pipeline: decode → onset (spectral flux) → BPM
+(autocorrelation + octave rescoring, ranked candidates, tempo map) →
+key (chromagram + Krumhansl-Schmuckler, standard + Camelot) → silences
+→ waveform (overview 4096 bins + detail 256-frame bins, cached POD
+blobs) → beatgrid (piecewise-constant tempo segments, f64, editable).
+
+- `core/analysis/`: OnsetDetector, BpmAnalyzer, BeatGrid + BeatGridEngine
+  (setFirstBeat/move/nudge/adjustBpm/tempo segments/reset), KeyAnalyzer,
+  WaveformGenerator + WaveformData (region queries), MusicAnalysisEngine
+  (stage pipeline with cooperative cancel), AnalysisQueue (low-priority
+  workers, priority heap, pause/resume/cancel/retry, events)
+- `core/data/`: Database (SQLite wrapper, WAL, versioned migrations),
+  AnalysisStore (fingerprint = size+mtime+head/tail hash; kAnalysisVersion;
+  detected values in `analysis`, user corrections in `user_overrides` —
+  never overwritten)
+- `AnalysisService`: analyzeTrack (bg) / analyzeTrackSync / getAnalysis /
+  getBeatGrid / getWaveform / getKey / getBpm (override-aware) /
+  setUserBpm/setUserKey/saveUserGrid / invalidateStale
+- App: `onda.db` opens beside `config.json`; deck LOAD enqueues analysis;
+  state label shows BPM/key when done
+- Tests: 51 Catch2 cases — BPM 70/128/174 + half/double candidates +
+  tempo-change map, grid math/edits/downbeats/variable tempo, key C/Am,
+  waveform levels + region query, store round-trip/override/fingerprint
+  staleness, queue e2e/failure, cancellation, grid drift
+
+Requires `third_party/sqlite` = SQLite amalgamation (gitignored, public
+domain) and `third_party/ffmpeg` as before.
+
 ## Status — Phase 2 (audio engine + deck engine)
 
 Full-track-in-RAM playback engine: worker `TrackLoader` (ffmpeg decode,

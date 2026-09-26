@@ -1,11 +1,27 @@
+# sqlite3 amalgamation (public domain, third_party, gitignored)
+add_library(sqlite3 STATIC ../third_party/sqlite/sqlite3.c)
+target_include_directories(sqlite3 PUBLIC ../third_party/sqlite)
+target_compile_definitions(sqlite3 PRIVATE SQLITE_ENABLE_FTS5=1)
+
 # RT-safe core: pure C++20, zero JUCE, zero ffmpeg.
 add_library(onda_core STATIC
     core/audio/AudioFifo.cpp
     core/dsp/WsolaStretcher.cpp
     core/engine/DeckEngine.cpp
     core/engine/MixerEngine.cpp
-    core/engine/TrackLoader.cpp)
+    core/engine/TrackLoader.cpp
+    core/analysis/OnsetDetector.cpp
+    core/analysis/BpmAnalyzer.cpp
+    core/analysis/BeatGridEngine.cpp
+    core/analysis/KeyAnalyzer.cpp
+    core/analysis/WaveformGenerator.cpp
+    core/analysis/MusicAnalysisEngine.cpp
+    core/analysis/AnalysisQueue.cpp
+    core/analysis/AnalysisService.cpp
+    core/data/Database.cpp
+    core/data/AnalysisStore.cpp)
 target_include_directories(onda_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(onda_core PUBLIC sqlite3)
 target_compile_features(onda_core PUBLIC cxx_std_20)
 
 # --- ffmpeg decoder -------------------------------------------------------
