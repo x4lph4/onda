@@ -5,6 +5,7 @@
 #include <memory>
 #include <vector>
 
+#include "../analysis/BeatGrid.h"
 #include "../audio/TrackAudio.h"
 #include "../dsp/DjFilter.h"
 #include "../dsp/ThreeBandEq.h"
@@ -46,8 +47,30 @@ public:
     void setPlaying(bool playing) noexcept;
     void stop() noexcept;                       // pause + back to start
     void seekSec(double sec) noexcept;
+    void seekFrame(int64_t frame) noexcept;
     void setReverse(bool on) noexcept;
     bool isPlaying() const noexcept { return playing_; }
+
+    // ---- slip (RT) ----
+    /// Slip: the musical shadow position keeps advancing while the user
+    /// performs temporary actions (roll, hot cue hold, scratch). On
+    /// endSlip the deck jumps to where the track "would have been".
+    void beginSlip() noexcept;
+    void endSlip() noexcept;
+    bool slipActive() const noexcept { return slipActive_; }
+
+    // ---- sync (RT) ----
+    /// mode: 0 off, 1 bpm, 2 beat, 3 phrase (2/3 handled identically on
+    /// RT: continuous phase lock; phrase chooses snap targets upstream).
+    void setSyncMode(int m) noexcept;
+    /// Per-block call from SyncRtCore *before* renderPcm: computes the
+    /// tempo multiplier slew and a bounded phase correction.
+    void applySyncCorrection(double masterEffBpm, double masterPhaseAfter,
+                             int blockFrames) noexcept;
+    /// Master-side helpers for SyncRtCore.
+    bool   hasGrid() const noexcept { return grid_ != nullptr; }
+    double effBpm() const noexcept;             // grid bpm * |rate|
+    double phaseAfter(int blockFrames) const noexcept; // predicted beat phase 0..1
 
     // ---- pitch (RT setters) ----
     void setTrackGain(float g) noexcept { trackGain_ = g; }
@@ -60,6 +83,7 @@ public:
 
     // ---- loop (RT setters) ----
     void setLoop(double inSec, double outSec) noexcept;
+    void setLoopFrames(int64_t inFrame, int64_t outFrame) noexcept;
     void setLoopEnabled(bool on) noexcept;
     void setLoopSizeSec(double sizeSec) noexcept;
     void exitLoop() noexcept { loopOn_ = false; }
@@ -75,6 +99,12 @@ public:
     std::atomic<const TrackAudio*> pendingTrack_{nullptr};
     std::atomic<const TrackAudio*> retiredTrack_{nullptr};
 
+    /// BeatGrid handoff (same pattern as tracks): the performance layer
+    /// keeps the shared_ptr alive; the RT thread borrows the raw pointer.
+    /// Retired grids are published here for the owner to release.
+    std::atomic<const BeatGrid*>  pendingGrid_{nullptr};
+    std::atomic<const BeatGrid*>  retiredGrid_{nullptr};
+
 private:
     // render paths
     void renderVarispeed(float* l, float* r, int n) noexcept;
@@ -83,6 +113,8 @@ private:
 
     // transport helpers
     double resolvedRate() const noexcept;   // signed consumption rate
+    void   adoptPendingGrid() noexcept;
+    void   nudgeFrames(double frames) noexcept; // sync phase snap (keeps playing)
     int64_t framesToBoundary() const noexcept;
     void wrapLoop() noexcept;
     bool pastEnd() const noexcept;
@@ -91,6 +123,7 @@ private:
     double displayedPos() const noexcept;   // position shown to UI
     void advanceDisp(int produced) noexcept; // keylock transport clock
     int64_t clampPos(double p) const noexcept;
+    void   advanceSlip(int produced) noexcept;
 
     DeckStats* stats_ { nullptr };
     double deviceRate_ { 48000.0 };
@@ -120,6 +153,16 @@ private:
     bool    loopOn_  { false };
     int64_t loopIn_  { 0 };
     int64_t loopOut_ { 0 };
+
+    // ---- performance state ----
+    const BeatGrid* grid_ { nullptr };      // borrowed, owned upstream
+    int    syncMode_     { 0 };
+    double syncMulSm_    { 1.0 };           // slewed sync tempo multiplier
+    double blockCorr_    { 0.0 };           // one-shot frames/frame offset
+    double syncErrFrames_{ 0.0 };
+    bool   syncLimited_  { false };
+    bool   slipActive_   { false };
+    double slipShadow_   { 0.0 };           // where the track "would be"
 
     float eqDb_[3]   { 0.0f, 0.0f, 0.0f };
     float filterPos_ { 0.0f };

@@ -61,8 +61,8 @@ private:
 class DeckStrip : public juce::Component, private juce::Timer {
 public:
     DeckStrip(const juce::String& name, int index, audio::AudioEngine& engine,
-              AnalysisService& analysis)
-        : engine_(engine), analysis_(analysis), deck_(index) {
+              AnalysisService& analysis, PerformanceEngine& perf)
+        : engine_(engine), analysis_(analysis), perf_(perf), deck_(index) {
         auto L = [this](juce::Label& l, const juce::String& t) {
             l.setText(t, juce::dontSendNotification);
             addAndMakeVisible(l);
@@ -99,6 +99,12 @@ public:
         btn(keylockBtn_, "KEY")->onClick = [this] {
             const bool on = engine_.deckStats(deck_).keylock.load();
             engine_.commands().tryPush(rt::SetKeyLock{(uint8_t)deck_, !on});
+        };
+        btn(syncBtn_, "SYNC")->onClick = [this] {
+            perf_.syncDeck(deck_, SyncMode::Beat);
+        };
+        btn(quantBtn_, "QNT")->onClick = [this] {
+            perf_.setQuantize(deck_, !perf_.quantizeOn(deck_));
         };
         btn(bendDownBtn_, "-")->onStateChange = [this] {
             engine_.commands().tryPush(rt::SetPitchBend{(uint8_t)deck_,
@@ -207,11 +213,13 @@ public:
             b->setBounds(row1.removeFromLeft(row1.getWidth() / 5).reduced(2));
 
         auto row2 = a.removeFromTop(28);
-        pitchSlider_.setBounds(row2.removeFromLeft(150));
-        pitchRange_.setBounds(row2.removeFromLeft(60).reduced(2));
-        bendDownBtn_.setBounds(row2.removeFromLeft(34).reduced(2));
-        bendUpBtn_.setBounds(row2.removeFromLeft(34).reduced(2));
-        keylockBtn_.setBounds(row2.removeFromLeft(50).reduced(2));
+        pitchSlider_.setBounds(row2.removeFromLeft(120));
+        pitchRange_.setBounds(row2.removeFromLeft(56).reduced(2));
+        bendDownBtn_.setBounds(row2.removeFromLeft(30).reduced(2));
+        bendUpBtn_.setBounds(row2.removeFromLeft(30).reduced(2));
+        keylockBtn_.setBounds(row2.removeFromLeft(44).reduced(2));
+        syncBtn_.setBounds(row2.removeFromLeft(52).reduced(2));
+        quantBtn_.setBounds(row2.reduced(2));
 
         auto row3 = a.removeFromTop(28);
         for (auto* b : { &loopInBtn_, &loopOutBtn_, &loopOnBtn_, &loopHalfBtn_, &loopDblBtn_ })
@@ -260,6 +268,30 @@ private:
                     const auto key = analysis_.getKey(trackPath_.toStdString());
                     info << "  |  " << juce::String(bpm, 1) << " BPM"
                          << "  " << juce::String(key.standard);
+                    if (!gridAttached_) {
+                        gridAttached_ = true;
+                        auto g = std::make_shared<BeatGrid>(
+                            analysis_.getBeatGrid(trackPath_.toStdString()));
+                        const double devRate =
+                            engine_.stats().sampleRate.load() > 0.0
+                                ? engine_.stats().sampleRate.load() : 48000.0;
+                        g->setRate(devRate);
+                        perf_.attachGrid(deck_, std::move(g),
+                            analysis_.trackIdFor(trackPath_.toStdString()));
+                    }
+                    switch (perf_.syncStatus(deck_)) {
+                        case SyncStatus::Synced:
+                            info << (perf_.masterDeck() == deck_ ? "  MASTER"
+                                                                 : "  SYNC");
+                            break;
+                        case SyncStatus::Syncing:   info << "  sync…"; break;
+                        case SyncStatus::OutOfRange: info << "  sync range!"; break;
+                        case SyncStatus::NoGrid:
+                        case SyncStatus::NoGridMaster:
+                        case SyncStatus::UnreliableMaster:
+                            info << "  sync n/a"; break;
+                        default: break;
+                    }
                     break;
                 }
                 case AnalysisState::Analyzing: info << "  |  analyzing…"; break;
@@ -279,12 +311,15 @@ private:
 
     audio::AudioEngine& engine_;
     AnalysisService& analysis_;
+    PerformanceEngine& perf_;
     int deck_;
     bool pfl_ { false };
+    bool gridAttached_ { false };
     juce::String trackPath_;
     double loopInSec_ { 0.0 }, loopOutSec_ { 0.0 };
     juce::Label title_, trackLabel_, stateLabel_;
     juce::TextButton loadBtn_, playBtn_, stopBtn_, revBtn_, pflBtn_, keylockBtn_;
+    juce::TextButton syncBtn_, quantBtn_;
     juce::TextButton bendDownBtn_, bendUpBtn_;
     juce::TextButton loopInBtn_, loopOutBtn_, loopOnBtn_, loopHalfBtn_, loopDblBtn_;
     juce::Slider seekSlider_, pitchSlider_, eqLow_, eqMid_, eqHigh_, filter_, trim_, fader_;
@@ -311,16 +346,17 @@ private:
 
 // ---------------------------------------------------------------- MainComponent
 MainComponent::MainComponent(audio::AudioEngine& engine,
-                             AnalysisService& analysis)
-    : engine_(engine), analysis_(analysis),
+                             AnalysisService& analysis,
+                             PerformanceEngine& perf)
+    : engine_(engine), analysis_(analysis), perf_(perf),
       headerBar_(std::make_unique<HeaderBar>(engine)),
       devicePanel_(std::make_unique<DevicePanel>(engine)) {
     addAndMakeVisible(*headerBar_);
     addChildComponent(*devicePanel_);
     devicePanel_->setVisible(false);
 
-    decks_.push_back(std::make_unique<DeckStrip>("DECK A", 0, engine, analysis));
-    decks_.push_back(std::make_unique<DeckStrip>("DECK B", 1, engine, analysis));
+    decks_.push_back(std::make_unique<DeckStrip>("DECK A", 0, engine, analysis, perf));
+    decks_.push_back(std::make_unique<DeckStrip>("DECK B", 1, engine, analysis, perf));
     for (auto& d : decks_) addAndMakeVisible(*d);
 
     settingsBtn_.setButtonText("SETTINGS");
@@ -378,6 +414,7 @@ MainComponent::MainComponent(audio::AudioEngine& engine,
 }
 
 void MainComponent::timerCallback() {
+    perf_.poll(); // frees retired grids, emits beat/bar/loop events
     const auto& m = engine_.masterStats();
     meterLabel_.setText(
         "peak " + juce::String(m.peakL.load(), 2) + "/" + juce::String(m.peakR.load(), 2)

@@ -69,6 +69,10 @@ KeyResult AnalysisService::getKey(const std::string& path) {
     return {};
 }
 
+int64_t AnalysisService::trackIdFor(const std::string& path) {
+    return store_.trackIdFor(path);
+}
+
 double AnalysisService::getBpm(const std::string& path) {
     const auto id = store_.trackIdFor(path);
     if (auto b = getAnalysis(path))

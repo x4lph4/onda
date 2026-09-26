@@ -2,6 +2,39 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 4 (performance engine)
+
+`core/performance/` — non-RT layer translating musical actions to RT
+commands; `SyncRtCore` + grid/slip/sync fields inside `DeckEngine` do
+the continuous work in the callback.
+
+- **Sync**: master/follower, Off/Bpm/Beat/Phrase modes. Follower rate =
+  masterBpm/ownBpm slewed per block (user pitch ignored while synced);
+  beat phase locked by predicted-phase comparison with deadband +
+  bounded chase + one faded snap when far off. Deterministic statuses
+  (NoGrid/OutOfRange/…) — failures are reported, not hidden.
+- **Quantize**: target snapping on the BeatGrid (1..1/16 beat), not
+  deferred triggering. Applies to cues, loops, jumps, slip actions.
+- **Cues**: hot/memory/loop types, 8+ slots, frame+beat stored (survive
+  grid re-edits), persisted in `cues` (migration v2) via
+  `PerformanceStore`; `saved_loops` + `kv` too.
+- **Loops**: beat loops of 1/32..32 beats, in/out/toggle/reloop,
+  halve/double/move — all grid-aligned through the tempo map.
+- **Beat jump**: ±beats preserving phase (or snapped with quantize).
+- **Slip**: `slipShadow_` musical clock inside the deck — roll / hot cue
+  hold / scratch restore the "where it would be" position on release.
+  `loopRoll` = slip + temporary loop.
+- **Events**: `PerfEvent` on actions + `poll()` emitting
+  beat/bar/loop/slip transitions — ready for ControllerEngine/MIDI.
+- App: SYNC/QNT buttons per deck; grid attaches when analysis finishes;
+  `MasterClock` via `perf.masterClock()`.
+
+Tests: 70 Catch2 cases — sync tempo convergence, phase lock, master
+switch, out-of-range, no-grid rejection, quantize cue landing, hot vs
+memory cue semantics, cue persistence roundtrip, beat loops,
+halve/double/move, loop wrap, beat jump ±N, slip roll/cue recovery,
+and a 30-op stress run with sync+loops+cues+jump+slip.
+
 ## Status — Phase 3 (music analysis engine)
 
 Background analysis pipeline: decode → onset (spectral flux) → BPM

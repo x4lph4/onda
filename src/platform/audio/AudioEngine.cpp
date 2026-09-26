@@ -5,6 +5,7 @@
 #include "../config/Config.h"
 #include "../log/Log.h"
 #include "core/dsp/WsolaStretcher.h"
+#include "core/engine/DeckCommand.h"
 
 namespace onda::audio {
 
@@ -107,6 +108,11 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     while (commandQueue_.tryPop(cmd))
         applyCommand(cmd);
 
+    // Sync pre-pass: computes each follower's tempo/phase correction for
+    // this block (master phase predicted one block ahead so deck render
+    // order is irrelevant). Pure math on RT-owned state.
+    syncRt_.apply(decks_.data(), (int)decks_.size(), numSamples);
+
     mixer_.render(outputChannelData, numOutputChannels, numSamples,
                   decks_.data(), (int)decks_.size(), stats_);
 
@@ -151,28 +157,10 @@ void AudioEngine::applyCommand(const rt::Command& cmd) noexcept {
         else if constexpr (std::is_same_v<T, rt::SetXfCurve>)     mixer_.setXfCurve(c.curve);
         else if constexpr (std::is_same_v<T, rt::SetPfl>)      mixer_.setPfl(deck, c.on);
         else if constexpr (std::is_same_v<T, rt::SetFader>)    mixer_.setFader(deck, c.gain);
+        else if constexpr (std::is_same_v<T, rt::SyncSetMaster>)
+            syncRt_.masterDeck = (c.deck >= kNumDecks) ? -1 : (int)c.deck;
         else if (deck < 0 || deck >= kNumDecks) { /* invalid deck */ }
-        else if constexpr (std::is_same_v<T, rt::DeckTransport>) {
-            auto& d = decks_[(size_t)deck];
-            if (c.action == 1) d.setPlaying(true);
-            else if (c.action == 0) d.setPlaying(false);
-            else d.stop();
-        }
-        else if constexpr (std::is_same_v<T, rt::DeckSeek>)     decks_[(size_t)deck].seekSec(c.sec);
-        else if constexpr (std::is_same_v<T, rt::DeckUnload>)   decks_[(size_t)deck].unloadTrack();
-        else if constexpr (std::is_same_v<T, rt::SetDeckGain>)  decks_[(size_t)deck].setGain(c.gain);
-        else if constexpr (std::is_same_v<T, rt::SetTrackGain>) decks_[(size_t)deck].setTrackGain(c.gain);
-        else if constexpr (std::is_same_v<T, rt::SetPitch>)     decks_[(size_t)deck].setPitchPercent(c.pct);
-        else if constexpr (std::is_same_v<T, rt::SetPitchRange>)decks_[(size_t)deck].setPitchRange(c.pct);
-        else if constexpr (std::is_same_v<T, rt::SetPitchBend>) decks_[(size_t)deck].setPitchBend(c.pct);
-        else if constexpr (std::is_same_v<T, rt::SetKeyLock>)   decks_[(size_t)deck].setKeyLock(c.on);
-        else if constexpr (std::is_same_v<T, rt::SetReverse>)   decks_[(size_t)deck].setReverse(c.on);
-        else if constexpr (std::is_same_v<T, rt::SetQuantize>)  decks_[(size_t)deck].setQuantize(c.on);
-        else if constexpr (std::is_same_v<T, rt::SetLoop>)      decks_[(size_t)deck].setLoop(c.inSec, c.outSec);
-        else if constexpr (std::is_same_v<T, rt::SetLoopOn>)    decks_[(size_t)deck].setLoopEnabled(c.on);
-        else if constexpr (std::is_same_v<T, rt::SetLoopSize>)  decks_[(size_t)deck].setLoopSizeSec(c.sizeSec);
-        else if constexpr (std::is_same_v<T, rt::SetEqBand>)    decks_[(size_t)deck].setEqDb(c.band, c.db);
-        else if constexpr (std::is_same_v<T, rt::SetFilter>)    decks_[(size_t)deck].setFilterPos(c.pos);
+        else applyDeckCommand(decks_[(size_t)deck], deck, c);
     }, cmd);
 }
 

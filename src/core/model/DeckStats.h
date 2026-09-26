@@ -40,10 +40,16 @@ struct DeckStats {
     std::atomic<double>   loopInSec{0.0};
     std::atomic<double>   loopOutSec{0.0};
 
-    // ---- beatgrid placeholders (wired by the analysis phase) ----
-    std::atomic<double>   bpm{0.0};
-    std::atomic<double>   anchorSec{0.0};
-    std::atomic<double>   beatPos{-1.0};
+    // ---- beatgrid / performance (RT-written, filled when a grid is set) ----
+    std::atomic<double>   bpm{0.0};        // grid bpm at current beat
+    std::atomic<double>   anchorSec{0.0};  // grid first-beat position
+    std::atomic<double>   beatPos{-1.0};   // fractional beat from grid start
+    std::atomic<double>   barPos{0.0};     // 1-based bar number
+    std::atomic<double>   effBpm{0.0};     // grid bpm * |rate| (sounding bpm)
+    std::atomic<int>      syncMode{0};     // SyncMode echo
+    std::atomic<float>    syncErrMs{0.0f}; // phase error to master, ms
+    std::atomic<bool>     syncLimited{false}; // sync tempo out of pitch range
+    std::atomic<bool>     slip{false};
 };
 
 } // namespace onda

@@ -8,6 +8,8 @@
 #include "../platform/log/Log.h"
 #include "../core/analysis/AnalysisService.h"
 #include "../core/data/Database.h"
+#include "../core/data/PerformanceStore.h"
+#include "../core/performance/PerformanceEngine.h"
 
 namespace onda {
 
@@ -43,8 +45,20 @@ public:
             config_, [] { return std::make_unique<FFmpegDecoder>(); });
         engine_->start();
 
+        perfStore_ = std::make_unique<PerformanceStore>(*db_);
+        perf_ = std::make_unique<PerformanceEngine>();
+        perf_->setStore(perfStore_.get());
+        perf_->setCommandSink([this](const rt::Command& c) {
+            engine_->commands().tryPush(c);
+        });
+        for (int i = 0; i < audio::AudioEngine::kNumDecks; ++i) {
+            auto* d = engine_->deckRaw(i);
+            perf_->setGridSlot(i, &d->pendingGrid_, &d->retiredGrid_,
+                               &engine_->deckStats(i));
+        }
+
         mainWindow_ = std::make_unique<MainWindow>(getApplicationName(),
-                                                 *engine_, *analysis_);
+                                                 *engine_, *analysis_, *perf_);
     }
 
     void shutdown() override {
@@ -66,12 +80,12 @@ private:
     class MainWindow : public juce::DocumentWindow {
     public:
         MainWindow(const juce::String& name, audio::AudioEngine& engine,
-                   AnalysisService& analysis)
+                   AnalysisService& analysis, PerformanceEngine& perf)
             : juce::DocumentWindow(name,
                                    OndaLookAndFeel::kBackground,
                                    juce::DocumentWindow::allButtons) {
             setUsingNativeTitleBar(true);
-            setContentOwned(new MainComponent(engine, analysis), true);
+            setContentOwned(new MainComponent(engine, analysis, perf), true);
             setResizable(true, true);
             setResizeLimits(960, 600, 10000, 10000);
             centreWithSize(getWidth(), getHeight());
@@ -89,6 +103,8 @@ private:
     Config config_;
     std::unique_ptr<Database> db_;
     std::unique_ptr<AnalysisService> analysis_;
+    std::unique_ptr<PerformanceStore> perfStore_;
+    std::unique_ptr<PerformanceEngine> perf_;
     std::unique_ptr<audio::AudioEngine> engine_;
     std::unique_ptr<MainWindow> mainWindow_;
 };

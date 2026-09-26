@@ -56,6 +56,16 @@ struct BeatGrid {
         return (int)std::floor((double)b / beatsPerBar) + 1; // 1-based
     }
 
+    /// BPM in effect at a (fractional) beat position.
+    double bpmAt(double beat) const noexcept {
+        if (segments.empty()) return 0.0;
+        const TempoSegment* s = &segments.front();
+        for (const auto& seg : segments) {
+            if (beat >= (double)seg.startBeat) s = &seg; else break;
+        }
+        return s->bpm;
+    }
+
     /// Nearest beat frame to `frame` (for quantize).
     int64_t nearestBeatFrame(int64_t frame) const noexcept {
         return beatToFrame(frameToBeat(frame) + 0.5 > frameToBeat(frame)

@@ -35,13 +35,23 @@ struct SetLoopSize    { uint8_t deck; double sizeSec; };
 struct SetEqBand      { uint8_t deck; uint8_t band; float db; };
 struct SetFilter      { uint8_t deck; float pos; };
 
+// ---- performance-engine commands ----
+struct DeckSeekFrame  { uint8_t deck; int64_t frame; };  // sample-accurate
+struct SetLoopFrames  { uint8_t deck; int64_t inFrame, outFrame; };
+struct SyncSetMaster  { uint8_t deck; };                 // 255 = no master
+struct SyncSetMode    { uint8_t deck; uint8_t mode; };   // SyncMode
+struct SlipBegin      { uint8_t deck; };
+struct SlipEnd        { uint8_t deck; };
+
 using Command = std::variant<
     SetMasterGain, SetLimiterOn, SetCueVol, SetCueMix,
     SetCrossfader, SetXfCurve, SetPfl, SetFader,
     DeckTransport, DeckSeek, DeckUnload, SetDeckGain, SetTrackGain,
     SetPitch, SetPitchRange, SetPitchBend, SetKeyLock, SetReverse,
     SetQuantize, SetLoop, SetLoopOn, SetLoopSize,
-    SetEqBand, SetFilter>;
+    SetEqBand, SetFilter,
+    DeckSeekFrame, SetLoopFrames, SyncSetMaster, SyncSetMode,
+    SlipBegin, SlipEnd>;
 
 /// UI thread pushes, audio thread drains at the top of every callback.
 using CommandQueue = SpscRingBuffer<Command, 512>;

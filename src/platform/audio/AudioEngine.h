@@ -10,6 +10,7 @@
 #include "core/engine/MixerEngine.h"
 #include "core/engine/TrackLoader.h"
 #include "core/model/MasterStats.h"
+#include "core/performance/SyncRt.h"
 #include "core/rt/AudioStats.h"
 #include "core/rt/CommandQueue.h"
 
@@ -43,6 +44,9 @@ public:
     rt::CommandQueue&       commands()       noexcept { return commandQueue_; }
     const MasterStats&      masterStats()    noexcept { return mixer_.masterStats(); }
     DeckStats&              deckStats(int i) noexcept { return deckStats_[(size_t)i]; }
+    /// Non-RT wiring accessor (grid handoff slots). Never call on RT path
+    /// other than through commands.
+    DeckEngine*             deckRaw(int i)   noexcept { return &decks_[(size_t)i]; }
 
 private:
     // ---- AudioIODeviceCallback (RT thread) ----
@@ -65,6 +69,7 @@ private:
     std::array<std::unique_ptr<TrackLoader>, kNumDecks> loaders_;
     std::array<DeckEngine, kNumDecks> decks_;
     MixerEngine mixer_;
+    SyncRtCore  syncRt_;
 
     // ---- state owned by the RT thread ----
     double sampleRate_    { 0.0 };

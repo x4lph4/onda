@@ -62,6 +62,37 @@ CREATE TABLE IF NOT EXISTS user_overrides(
     grid_first_beat_frame INTEGER,
     updated_at INTEGER NOT NULL DEFAULT 0);
 )SQL",
+
+    // v2 — performance data (cues, saved loops, session key-values)
+    R"SQL(
+CREATE TABLE IF NOT EXISTS cues(
+    track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    slot INTEGER NOT NULL,
+    type INTEGER NOT NULL DEFAULT 0,       -- CueType
+    frame INTEGER NOT NULL,
+    frame2 INTEGER NOT NULL DEFAULT -1,    -- loop-out for loop cues
+    beat REAL NOT NULL DEFAULT -1,
+    beat2 REAL NOT NULL DEFAULT -1,
+    argb INTEGER NOT NULL DEFAULT 0,
+    label TEXT,
+    created_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(track_id, slot, type));
+
+CREATE TABLE IF NOT EXISTS saved_loops(
+    track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    slot INTEGER NOT NULL,
+    in_frame INTEGER NOT NULL,
+    out_frame INTEGER NOT NULL,
+    in_beat REAL NOT NULL DEFAULT -1,
+    out_beat REAL NOT NULL DEFAULT -1,
+    argb INTEGER NOT NULL DEFAULT 0,
+    label TEXT,
+    PRIMARY KEY(track_id, slot));
+
+CREATE TABLE IF NOT EXISTS kv(
+    key TEXT PRIMARY KEY,
+    value TEXT);
+)SQL",
 };
 
 bool Database::open(const std::string& path) {

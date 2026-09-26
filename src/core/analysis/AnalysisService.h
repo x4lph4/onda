@@ -46,6 +46,7 @@ public:
     const AnalysisBundle* getWaveformPtr(const std::string& path);
     KeyResult     getKey(const std::string& path);
     double        getBpm(const std::string& path);   // effective (override-aware)
+    int64_t       trackIdFor(const std::string& path); // persistent id
 
     // ---- manual overrides (never destroy detected data) ----
     void setUserBpm(const std::string& path, double bpm);   // -1 clears

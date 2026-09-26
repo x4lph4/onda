@@ -8,6 +8,7 @@
 
 #include "../platform/audio/AudioEngine.h"
 #include "../core/analysis/AnalysisService.h"
+#include "../core/performance/PerformanceEngine.h"
 
 namespace onda {
 
@@ -18,7 +19,8 @@ class DeckStrip;
 /// crossfader, cue bus, master + meters. Functional layout, not final UX.
 class MainComponent : public juce::Component, private juce::Timer {
 public:
-    MainComponent(audio::AudioEngine& engine, AnalysisService& analysis);
+    MainComponent(audio::AudioEngine& engine, AnalysisService& analysis,
+                  PerformanceEngine& perf);
     ~MainComponent() override = default;
 
     void paint(juce::Graphics& g) override;
@@ -30,6 +32,7 @@ private:
 private:
     audio::AudioEngine& engine_;
     AnalysisService& analysis_;
+    PerformanceEngine& perf_;
 
     std::unique_ptr<juce::Component> headerBar_;
     std::vector<std::unique_ptr<DeckStrip>> decks_;

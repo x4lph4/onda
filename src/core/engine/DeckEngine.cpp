@@ -38,6 +38,8 @@ void DeckEngine::adoptPendingTrack() noexcept {
     if (pending == nullptr)
         return;
 
+    adoptPendingGrid(); // a new track may already have a grid waiting
+
     // Retire the previous track for the loader to free.
     if (track_ != nullptr)
         retiredTrack_.store(track_, std::memory_order_release);
@@ -60,10 +62,28 @@ void DeckEngine::unloadTrack() noexcept {
         retiredTrack_.store(track_, std::memory_order_release);
         track_ = nullptr;
     }
-    playing_    = false;
-    trackEnded_ = false;
-    pos_        = 0.0;
+    if (grid_ != nullptr) {
+        retiredGrid_.store(grid_, std::memory_order_release);
+        grid_ = nullptr;
+    }
+    playing_     = false;
+    trackEnded_  = false;
+    pos_         = 0.0;
+    slipActive_  = false;
+    syncMode_    = 0;
+    syncMulSm_   = 1.0;
+    blockCorr_   = 0.0;
     if (stats_) stats_->state.store((int)DeckState::Empty);
+}
+
+void DeckEngine::adoptPendingGrid() noexcept {
+    const BeatGrid* g = pendingGrid_.exchange(nullptr,
+                                              std::memory_order_acq_rel);
+    if (g == nullptr)
+        return;
+    if (grid_ != nullptr)
+        retiredGrid_.store(grid_, std::memory_order_release);
+    grid_ = g;
 }
 
 // ================================ transport ============================
@@ -91,7 +111,12 @@ void DeckEngine::stop() noexcept {
 
 void DeckEngine::seekSec(double sec) noexcept {
     if (track_ == nullptr) return;
-    pos_ = std::clamp(sec * deviceRate_, 0.0, (double)track_->numFrames);
+    seekFrame((int64_t)(sec * deviceRate_));
+}
+
+void DeckEngine::seekFrame(int64_t frame) noexcept {
+    if (track_ == nullptr) return;
+    pos_ = (double)clampPos((double)frame);
     dispPos_ = pos_;
     trackEnded_ = false;
     fade_ = 0.0f;
@@ -104,6 +129,37 @@ void DeckEngine::seekSec(double sec) noexcept {
     seeking_ = true;
     if (stats_ && track_ != nullptr)
         stats_->state.store((int)DeckState::Seeking);
+}
+
+void DeckEngine::beginSlip() noexcept {
+    if (track_ == nullptr || slipActive_) return;
+    slipActive_ = true;
+    slipShadow_ = displayedPos();
+}
+
+void DeckEngine::endSlip() noexcept {
+    if (!slipActive_) return;
+    slipActive_ = false;
+    // Recover where the track "would have been" — faded seek.
+    const int64_t target = (int64_t)std::clamp(slipShadow_, 0.0,
+                                               track_ ? (double)track_->numFrames
+                                                      : 0.0);
+    pos_ = (double)target;
+    dispPos_ = pos_;
+    fade_ = 0.0f;
+    if (stretcher_) {
+        stretcher_->reset();
+        feedBase_ = (int64_t)pos_;
+        pushed_ = 0;
+        stretcherFeedEnded_ = false;
+    }
+}
+
+void DeckEngine::advanceSlip(int produced) noexcept {
+    if (!slipActive_ || track_ == nullptr) return;
+    slipShadow_ += std::fabs(resolvedRate()) * (double)produced;
+    if (slipShadow_ > (double)track_->numFrames)
+        slipShadow_ = (double)track_->numFrames;
 }
 
 void DeckEngine::setReverse(bool on) noexcept {
@@ -147,8 +203,14 @@ void DeckEngine::setKeyLock(bool on) noexcept {
 
 void DeckEngine::setLoop(double inSec, double outSec) noexcept {
     if (track_ == nullptr) return;
-    int64_t in  = clampPos(inSec * deviceRate_);
-    int64_t out = clampPos(outSec * deviceRate_);
+    setLoopFrames((int64_t)(inSec * deviceRate_),
+                  (int64_t)(outSec * deviceRate_));
+}
+
+void DeckEngine::setLoopFrames(int64_t inFrame, int64_t outFrame) noexcept {
+    if (track_ == nullptr) return;
+    const int64_t in  = clampPos((double)inFrame);
+    const int64_t out = clampPos((double)outFrame);
     if (out <= in) { loopOn_ = false; return; }
     loopIn_ = in; loopOut_ = out; loopOn_ = true;
 }
@@ -176,8 +238,103 @@ void DeckEngine::setFilterPos(float pos) noexcept {
 
 // ================================ render ===============================
 
+// ================================ sync =================================
+
+void DeckEngine::setSyncMode(int m) noexcept {
+    syncMode_ = std::clamp(m, 0, 3);
+    if (syncMode_ == 0) {
+        blockCorr_    = 0.0;
+        syncErrFrames_ = 0.0;
+        syncLimited_  = false;
+    }
+}
+
+void DeckEngine::applySyncCorrection(double masterEffBpm,
+                                     double masterPhaseAfter,
+                                     int blockFrames) noexcept {
+    if (syncMode_ == 0 || grid_ == nullptr || track_ == nullptr ||
+        !playing_ || masterEffBpm <= 0.0) {
+        blockCorr_ = 0.0;
+        return;
+    }
+    const double pos = displayedPos();
+    const double ownBpm = grid_->bpmAt(grid_->frameToBeat((int64_t)pos));
+    if (ownBpm <= 0.0) { blockCorr_ = 0.0; return; }
+
+    // Tempo: the synced deck's total rate becomes masterBpm/ownBpm —
+    // the user's pitch fader is ignored while synced. The multiplier is
+    // slewed per block so BPM changes are smooth (no clicks).
+    const double lo = 1.0 - (double)pitchRange_ / 100.0;
+    const double hi = 1.0 + (double)pitchRange_ / 100.0;
+    const double target = masterEffBpm / ownBpm;
+    syncLimited_ = target < lo || target > hi;
+    const double tgt = std::clamp(target, lo, hi);
+    syncMulSm_ += std::clamp(tgt - syncMulSm_, -0.002, 0.002);
+
+    blockCorr_ = 0.0;
+    if (syncMode_ < 2)
+        return;
+
+    // Phase: compare the beat phase both decks will reach at the END of
+    // this block so correction is independent of deck render order.
+    const double ownBeatAfter = grid_->frameToBeat(
+        (int64_t)(pos + syncMulSm_ * blockFrames));
+    double err = masterPhaseAfter - ownBeatAfter;
+    err -= std::floor(err + 0.5); // wrap to [-0.5, 0.5]
+
+    const double fpb = deviceRate_ * 60.0 / ownBpm;
+    const double errFrames = err * fpb;
+    syncErrFrames_ = errFrames;
+
+    const double aErr = std::fabs(errFrames);
+    if (aErr < 8.0) { // ~0.17 ms deadband — no jitter
+        blockCorr_ = 0.0;
+        return;
+    }
+    if (aErr > fpb * 0.35) {
+        // Way off (post-seek, sync just enabled, ...): one faded snap
+        // instead of a long, audible chase.
+        nudgeFrames(errFrames);
+        return;
+    }
+    // Bounded chase: correction spread across this block, max ~5% rate.
+    const double cap = blockFrames * 0.05 * std::fabs(syncMulSm_);
+    blockCorr_ = std::clamp(errFrames, -cap, +cap) / (double)blockFrames;
+}
+
+void DeckEngine::nudgeFrames(double frames) noexcept {
+    pos_     = (double)clampPos(pos_ + frames);
+    dispPos_ = pos_;
+    fade_    = 0.0f;
+    if (stretcher_) {
+        stretcher_->reset();
+        feedBase_ = (int64_t)pos_;
+        pushed_ = 0;
+        stretcherFeedEnded_ = false;
+    }
+}
+
+double DeckEngine::effBpm() const noexcept {
+    if (grid_ == nullptr || track_ == nullptr) return 0.0;
+    const double bpm = grid_->bpmAt(grid_->frameToBeat((int64_t)displayedPos()));
+    return bpm * std::fabs(resolvedRate());
+}
+
+double DeckEngine::phaseAfter(int blockFrames) const noexcept {
+    if (grid_ == nullptr) return 0.0;
+    const double r = std::fabs(resolvedRate());
+    const double beat = grid_->frameToBeat(
+        (int64_t)(displayedPos() + r * blockFrames));
+    return beat - std::floor(beat);
+}
+
 double DeckEngine::resolvedRate() const noexcept {
-    double r = (1.0 + (double)pitchPct_ / 100.0) * (1.0 + (double)bendPct_ / 100.0);
+    // Synced decks ignore the user pitch fader: the slewed sync
+    // multiplier IS the rate (bend still applies on top, plus the
+    // per-block phase correction injected by applySyncCorrection).
+    const double base = (syncMode_ >= 1 ? syncMulSm_
+                                        : 1.0 + (double)pitchPct_ / 100.0);
+    const double r = base * (1.0 + (double)bendPct_ / 100.0) + blockCorr_;
     return reverse_ ? -r : r;
 }
 
@@ -226,10 +383,12 @@ void DeckEngine::advanceDisp(int produced) noexcept {
 
 void DeckEngine::renderPcm(float* l, float* r, int n) noexcept {
     adoptPendingTrack();
+    adoptPendingGrid();
 
     if (!playing_ || track_ == nullptr) {
         std::memset(l, 0, (size_t)n * sizeof(float));
         std::memset(r, 0, (size_t)n * sizeof(float));
+        blockCorr_ = 0.0;
         publishStats();
         return;
     }
@@ -239,6 +398,7 @@ void DeckEngine::renderPcm(float* l, float* r, int n) noexcept {
     else
         renderVarispeed(l, r, n);
 
+    blockCorr_ = 0.0; // one-shot: consumed this block
     applyPostChain(l, r, n);
     publishStats();
     seeking_ = false; // transient state: cleared after one published frame
@@ -277,6 +437,7 @@ void DeckEngine::renderVarispeed(float* l, float* r, int n) noexcept {
     }
     std::memset(l + produced, 0, (size_t)(n - produced) * sizeof(float));
     std::memset(r + produced, 0, (size_t)(n - produced) * sizeof(float));
+    advanceSlip(produced);
 
     if (pastEnd() && playing_) {
         playing_ = false;
@@ -337,6 +498,7 @@ void DeckEngine::renderStretch(float* l, float* r, int n) noexcept {
     std::memset(r + produced, 0, (size_t)(n - produced) * sizeof(float));
 
     advanceDisp(produced);
+    advanceSlip(produced);
 
     if (produced == 0 && pos_ >= (double)frames && playing_) {
         playing_ = false;
@@ -380,6 +542,29 @@ void DeckEngine::publishStats() noexcept {
     stats_->loopOn.store(loopOn_, std::memory_order_relaxed);
     stats_->loopInSec.store(loopIn_ / deviceRate_, std::memory_order_relaxed);
     stats_->loopOutSec.store(loopOut_ / deviceRate_, std::memory_order_relaxed);
+    // ---- performance echoes ----
+    stats_->slip.store(slipActive_, std::memory_order_relaxed);
+    stats_->syncMode.store(syncMode_, std::memory_order_relaxed);
+    stats_->syncErrMs.store((float)(syncErrFrames_ / deviceRate_ * 1000.0),
+                            std::memory_order_relaxed);
+    stats_->syncLimited.store(syncLimited_, std::memory_order_relaxed);
+    if (grid_ != nullptr && track_ != nullptr) {
+        const double beat = grid_->frameToBeat(disp);
+        const double gbpm = grid_->bpmAt(beat);
+        stats_->bpm.store(gbpm, std::memory_order_relaxed);
+        stats_->anchorSec.store(grid_->firstBeatFrame / grid_->rate(),
+                                std::memory_order_relaxed);
+        stats_->beatPos.store(beat, std::memory_order_relaxed);
+        stats_->barPos.store((double)grid_->barOf(beat),
+                             std::memory_order_relaxed);
+        stats_->effBpm.store(gbpm * std::fabs(resolvedRate()),
+                             std::memory_order_relaxed);
+    } else {
+        stats_->bpm.store(0.0, std::memory_order_relaxed);
+        stats_->beatPos.store(-1.0, std::memory_order_relaxed);
+        stats_->barPos.store(0.0, std::memory_order_relaxed);
+        stats_->effBpm.store(0.0, std::memory_order_relaxed);
+    }
     if (seeking_)
         stats_->state.store((int)DeckState::Seeking, std::memory_order_relaxed);
     else if (track_ != nullptr)
