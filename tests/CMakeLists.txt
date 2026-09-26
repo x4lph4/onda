@@ -3,9 +3,13 @@ FetchContent_Declare(Catch2
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(Catch2)
 
-add_executable(onda_tests rt_tests.cpp)
-target_link_libraries(onda_tests PRIVATE onda_core Catch2::Catch2WithMain)
+add_executable(onda_tests
+    rt_tests.cpp
+    engine_tests.cpp
+    decoder_tests.cpp)
+target_link_libraries(onda_tests PRIVATE onda_core onda_decode Catch2::Catch2WithMain)
 target_compile_features(onda_tests PRIVATE cxx_std_20)
+onda_copy_runtime_dlls(onda_tests)
 
 list(APPEND CMAKE_MODULE_PATH ${Catch2_SOURCE_DIR}/extras)
 include(CTest)

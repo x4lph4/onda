@@ -4,6 +4,7 @@
 #include "OndaLookAndFeel.h"
 #include "../platform/audio/AudioEngine.h"
 #include "../platform/config/Config.h"
+#include "../platform/decode/FFmpegDecoder.h"
 #include "../platform/log/Log.h"
 
 namespace onda {
@@ -21,7 +22,8 @@ public:
         juce::Desktop::getInstance().setDefaultLookAndFeel(&lookAndFeel_);
 
         config_.load();
-        engine_ = std::make_unique<audio::AudioEngine>(config_);
+        engine_ = std::make_unique<audio::AudioEngine>(
+            config_, [] { return std::make_unique<FFmpegDecoder>(); });
         engine_->start();
 
         mainWindow_ = std::make_unique<MainWindow>(getApplicationName(), *engine_);

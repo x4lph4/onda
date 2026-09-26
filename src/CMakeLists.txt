@@ -1,8 +1,18 @@
-# RT-safe core: pure C++20, zero JUCE dependencies. Header-only for now.
-add_library(onda_core INTERFACE)
-target_include_directories(onda_core INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_features(onda_core INTERFACE cxx_std_20)
+# RT-safe core: pure C++20, zero JUCE, zero ffmpeg.
+add_library(onda_core STATIC
+    core/audio/AudioFifo.cpp
+    core/engine/AudioFileStreamer.cpp
+    core/engine/DeckEngine.cpp
+    core/engine/MixerEngine.cpp)
+target_include_directories(onda_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(onda_core PUBLIC cxx_std_20)
 
+# --- ffmpeg decoder -------------------------------------------------------
+add_library(onda_decode STATIC platform/decode/FFmpegDecoder.cpp)
+target_include_directories(onda_decode PRIVATE "${FFMPEG_INCLUDE_DIR}")
+target_link_libraries(onda_decode PUBLIC onda_core ${ONDA_FFMPEG_LIBS})
+
+# --- app ------------------------------------------------------------------
 juce_add_gui_app(onda
     VERSION ${PROJECT_VERSION}
     PRODUCT_NAME "Onda"
@@ -28,6 +38,7 @@ target_compile_definitions(onda PRIVATE
 
 target_link_libraries(onda PRIVATE
     onda_core
+    onda_decode
     juce::juce_audio_basics
     juce::juce_audio_devices
     juce::juce_audio_utils
@@ -40,3 +51,5 @@ target_link_libraries(onda PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags
     juce::juce_recommended_warning_flags)
+
+onda_copy_runtime_dlls(onda)

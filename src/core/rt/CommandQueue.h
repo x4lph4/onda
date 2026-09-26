@@ -10,8 +10,11 @@ namespace onda::rt {
 struct SetMasterGain   { float gain; };   // linear 0..1
 struct SetCueMix       { float mix; };    // 0 = cue bus, 1 = master bus
 struct SetLimiterOn    { bool enabled; };
+struct DeckTransport   { uint8_t deck; bool playing; };
+struct SetDeckGain     { uint8_t deck; float gain; };
 
-using Command = std::variant<SetMasterGain, SetCueMix, SetLimiterOn>;
+using Command = std::variant<SetMasterGain, SetCueMix, SetLimiterOn,
+                             DeckTransport, SetDeckGain>;
 
 /// UI thread pushes, audio thread drains at the top of every callback.
 using CommandQueue = SpscRingBuffer<Command, 256>;

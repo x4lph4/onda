@@ -7,7 +7,14 @@
 
 namespace onda::audio {
 
-AudioEngine::AudioEngine(Config& config) : config_(config) {}
+AudioEngine::AudioEngine(Config& config, DecoderFactory decoderFactory)
+    : config_(config) {
+    for (auto& s : streamers_)
+        s = std::make_unique<AudioFileStreamer>(decoderFactory);
+    for (int i = 0; i < kNumDecks; ++i)
+        decks_[(size_t)i].bind(&streamers_[(size_t)i]->fifo(),
+                               &streamers_[(size_t)i]->stats());
+}
 
 AudioEngine::~AudioEngine() { shutdown(); }
 
@@ -34,7 +41,6 @@ void AudioEngine::shutdown() {
     // the device when its last callback goes away.
     if (auto xml = deviceManager_.createStateXml()) {
         const auto str = xml->toString();
-        log::info("Persisting device state: " + str.substring(0, 120));
         config_.setAudioDeviceStateXml(str);
     } else {
         log::info("No explicit device selection to persist (defaults in use)");
@@ -44,12 +50,29 @@ void AudioEngine::shutdown() {
     log::info("Audio engine stopped");
 }
 
+void AudioEngine::loadTrack(int deck, const juce::String& path) {
+    if (deck < 0 || deck >= kNumDecks)
+        return;
+    const double rate = sampleRate_ > 0.0 ? sampleRate_ : 48000.0;
+    streamers_[(size_t)deck]->requestLoad(path.toStdString(), rate);
+    log::info("Deck " + juce::String(deck) + " loading: " + path);
+}
+
+void AudioEngine::unloadTrack(int deck) {
+    if (deck < 0 || deck >= kNumDecks)
+        return;
+    streamers_[(size_t)deck]->requestUnload();
+}
+
 void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device) {
     sampleRate_ = device->getCurrentSampleRate();
+    for (auto& d : decks_)
+        d.setDeviceRate(sampleRate_);
     stats_.sampleRate.store(sampleRate_, std::memory_order_relaxed);
     stats_.bufferSize.store(device->getCurrentBufferSizeSamples(), std::memory_order_relaxed);
     stats_.running.store(true, std::memory_order_relaxed);
     stats_.xrunCount.store(0, std::memory_order_relaxed);
+    stats_.clipCount.store(0, std::memory_order_relaxed);
     haveLastCb_ = false;
     smoothedLoad_ = 0.0f;
     log::info("Audio device started: " + device->getName()
@@ -75,10 +98,8 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     while (commandQueue_.tryPop(cmd))
         applyCommand(cmd);
 
-    // F2: no sources yet — emit silence.
-    for (int ch = 0; ch < numOutputChannels; ++ch)
-        if (outputChannelData[ch] != nullptr)
-            juce::FloatVectorOperations::clear(outputChannelData[ch], numSamples);
+    mixer_.render(outputChannelData, numOutputChannels, numSamples,
+                  decks_.data(), decks_.size(), stats_);
 
     // ---- diagnostics (atomics only) ----
     const double periodSec = sampleRate_ > 0.0 ? numSamples / sampleRate_ : 0.0;
@@ -107,10 +128,24 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
 void AudioEngine::applyCommand(const rt::Command& cmd) noexcept {
     std::visit([this](const auto& c) {
         using T = std::decay_t<decltype(c)>;
-        if constexpr (std::is_same_v<T, rt::SetMasterGain>)  masterGain_     = c.gain;
-        else if constexpr (std::is_same_v<T, rt::SetCueMix>) cueMix_         = c.mix;
-        else if constexpr (std::is_same_v<T, rt::SetLimiterOn>) limiterEnabled_ = c.enabled;
+        if constexpr (std::is_same_v<T, rt::SetMasterGain>)
+            masterGain_ = c.gain;
+        else if constexpr (std::is_same_v<T, rt::SetCueMix>)
+            cueMix_ = c.mix;
+        else if constexpr (std::is_same_v<T, rt::SetLimiterOn>) {
+            limiterEnabled_ = c.enabled;
+            mixer_.setLimiterEnabled(c.enabled);
+        }
+        else if constexpr (std::is_same_v<T, rt::DeckTransport>) {
+            if (c.deck < kNumDecks)
+                decks_[c.deck].setPlaying(c.playing);
+        }
+        else if constexpr (std::is_same_v<T, rt::SetDeckGain>) {
+            if (c.deck < kNumDecks)
+                decks_[c.deck].setGain(c.gain);
+        }
     }, cmd);
+    mixer_.setMasterGain(masterGain_);
 }
 
 } // namespace onda::audio

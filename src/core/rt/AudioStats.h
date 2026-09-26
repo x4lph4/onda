@@ -10,6 +10,7 @@ namespace onda::rt {
 struct AudioStats {
     std::atomic<uint64_t> callbackCount{0};
     std::atomic<uint64_t> xrunCount{0};       // detected underruns / scheduling gaps
+    std::atomic<uint64_t> clipCount{0};       // clipped output samples
     std::atomic<float>    lastCallbackMs{0.0f};
     std::atomic<float>    cpuLoad{0.0f};      // smoothed fraction of period consumed
     std::atomic<double>   sampleRate{0.0};

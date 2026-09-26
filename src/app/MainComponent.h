@@ -1,5 +1,8 @@
 #pragma once
 
+#include <memory>
+#include <vector>
+
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 
@@ -7,9 +10,11 @@
 
 namespace onda {
 
-/// F2 shell: header bar (identity + device + DSP load + xruns),
-/// device configuration panel, and a control strip that exercises
-/// the UI -> RT command queue.
+class DeckStrip;
+
+/// F3 shell: header bar (identity + device + DSP load + xruns + clips),
+/// device configuration panel, and per-deck transport strips that exercise
+/// the streamer -> fifo -> RT deck -> mixer path end to end.
 class MainComponent : public juce::Component {
 public:
     explicit MainComponent(audio::AudioEngine& engine);
@@ -23,6 +28,7 @@ private:
 
     std::unique_ptr<juce::Component> headerBar_;
     juce::AudioDeviceSelectorComponent deviceSelector_;
+    std::vector<std::unique_ptr<DeckStrip>> decks_;
     juce::Slider masterGain_;
     juce::Slider cueMix_;
     juce::Label masterLabel_;
