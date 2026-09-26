@@ -64,6 +64,8 @@ struct MasterSnapshot {
     float limiterGain = 1.0f;
     bool  clip = false;
     bool  cueAvailable = false;
+    bool  masterCue = false;    // Phase 17: master → phones cue tap
+    int   deckMode = 4;         // Phase 17: visible deck channels
     double masterBpm = 0.0;
     int   masterDeck = -1;
 };

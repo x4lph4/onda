@@ -156,6 +156,7 @@ public:
           cueMix_(te, "CUE MIX", 0.0, 1.0, 0.0),
           masterMeter_(te, false),
           limBtn_(te, "LIM"),
+          mCueBtn_(te, "M.CUE"),
           xfCurveBox_() {
         for (int c = 0; c < 4; ++c)
             strips_[(size_t)c] =
@@ -170,6 +171,9 @@ public:
         cueMix_.onValue = [&mc](double v) { mc.cueMix((float)v); };
         limBtn_.onInvoke = [&mc] {
             mc.limiterOn(mc.value(R::LIMITER_ON) < 0.5f);
+        };
+        mCueBtn_.onInvoke = [&mc] {
+            mc.masterCue(mc.value(R::MASTER_CUE) < 0.5f);
         };
         xf_.setSliderStyle(juce::Slider::LinearHorizontal);
         xf_.setRange(-1.0, 1.0, 0.0);
@@ -187,10 +191,22 @@ public:
                          (juce::Component*)&cueMix_,
                          (juce::Component*)&masterMeter_,
                          (juce::Component*)&limBtn_,
+                         (juce::Component*)&mCueBtn_,
                          (juce::Component*)&xf_,
                          (juce::Component*)&xfCurveBox_ })
             addAndMakeVisible(*c);
     }
+
+    /// §32/§33 — visible deck channels (2-deck mode hides C/D strips;
+    /// the backend keeps running — this is layout only).
+    void setChannelCount(int n) {
+        visibleChans_ = juce::jlimit(1, 4, n);
+        for (int c = 0; c < 4; ++c)
+            strips_[(size_t)c]->setVisible(c < visibleChans_);
+        resized();
+        repaint();
+    }
+    int channelCount() const noexcept { return visibleChans_; }
 
     void setSnapshot(const MasterSnapshot& s, float dt) {
         auto pull = [](juce::Slider& sl, double v) {
@@ -204,6 +220,8 @@ public:
         pull(xf_, s.crossfader);
         limBtn_.setState(s.limiterOn ? ControlState::On
                                      : ControlState::Off);
+        mCueBtn_.setState(s.masterCue ? ControlState::On
+                                      : ControlState::Off);
         masterMeter_.set(s.peakL, s.peakR, dt);
         if (s.clip) masterMeter_.repaint();
     }
@@ -227,15 +245,18 @@ public:
 
         const int masterW = juce::jmax(64, b.getWidth() / 6);
         auto master = b.removeFromRight(masterW).reduced(1);
-        const int chW = b.getWidth() / 4;
-        for (int c = 0; c < 4; ++c)
+        const int chW = b.getWidth() / visibleChans_;
+        for (int c = 0; c < visibleChans_; ++c)
             strips_[(size_t)c]->setBounds(
                 b.removeFromLeft(chW).reduced(1));
 
-        // master column: meters, gain fader, cue vol/mix, limiter
+        // master column: meters, gain fader, cue vol/mix, limiter, mcue
         masterMeter_.setBounds(master.removeFromTop(
             juce::jmin(20, master.getHeight() / 12)));
-        limBtn_.setBounds(master.removeFromTop(20).reduced(1));
+        auto limRow = master.removeFromTop(20);
+        limBtn_.setBounds(limRow.removeFromLeft(limRow.getWidth() / 2)
+                              .reduced(1));
+        mCueBtn_.setBounds(limRow.reduced(1));
         auto row3 = master.removeFromTop(
             juce::jmin(52, master.getHeight() / 5));
         cueVol_.setBounds(row3.removeFromLeft(row3.getWidth() / 2)
@@ -250,7 +271,8 @@ private:
     Fader      masterGain_;
     Knob       cueVol_, cueMix_;
     MeterBar   masterMeter_;      // horizontal master meter
-    StateButton limBtn_;
+    StateButton limBtn_, mCueBtn_;
+    int        visibleChans_ = 4;
     juce::Slider    xf_;
     juce::ComboBox  xfCurveBox_;
 };

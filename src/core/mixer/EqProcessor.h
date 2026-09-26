@@ -60,9 +60,20 @@ public:
 
     int numBands() const noexcept { return numBands_; }
 
+    /// §9 — EQ range is configurable (isolator presets go deeper than
+    /// the standard -26/+6 registry range, e.g. full-kill bands).
+    void setRangeDb(double lo, double hi) noexcept {
+        loDb_ = std::min(lo, hi);
+        hiDb_ = std::max(lo, hi);
+        for (int b = 0; b < numBands_; ++b)
+            tgtDb_[b] = std::clamp(tgtDb_[b], loDb_, hiDb_);
+    }
+    double rangeLo() const noexcept { return loDb_; }
+    double rangeHi() const noexcept { return hiDb_; }
+
     void setGainDb(int band, double db) noexcept {
         if (band < 0 || band >= numBands_) return;
-        tgtDb_[band] = std::clamp(db, -30.0, 12.0);
+        tgtDb_[band] = std::clamp(db, loDb_, hiDb_);
     }
     double gainDb(int band) const noexcept {
         return band >= 0 && band < numBands_ ? tgtDb_[band] : 0.0;
@@ -129,6 +140,7 @@ private:
     }
 
     double  rate_ { 48000.0 };
+    double  loDb_ { -30.0 }, hiDb_ { 12.0 };
     EqMode  mode_ { EqMode::Standard };
     int     numBands_ { 3 };
     BandDef bands_[kMaxBands] {};

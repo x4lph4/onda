@@ -255,6 +255,8 @@ public:
             mixer_.setChannelSnapshot(d, snap_.channel[d],
                                       1.0f / 30.0f);
         }
+        if (mixer_.channelCount() != snap_.master.deckMode)
+            mixer_.setChannelCount(snap_.master.deckMode);
         mixer_.setSnapshot(snap_.master, 1.0f / 30.0f);
         fx_->setSnapshot(snap_);
         browser_.tick();

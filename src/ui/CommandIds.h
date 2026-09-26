@@ -50,6 +50,14 @@ enum Id : uint32_t {
     MixXfToA         = 0x2F06,  // nudge crossfader to A side
     MixXfToB         = 0x2F07,
     MixXfCenter      = 0x2F08,
+    // ---- Phase 17: cue/deck-mode/scenes/presets/diagnostics ----
+    MixMasterCueTgl  = 0x2F09,  // master cue on/off (post-master → phones)
+    MixDeckModeTgl   = 0x2F0A,  // 2-deck ↔ 4-deck (sources, not backend)
+    MixDiagCopy      = 0x2F0B,  // copy mixer diagnostics text
+    MixSceneSave     = 0x2F0C,  // value = scene slot 0..7
+    MixSceneRecall   = 0x2F0D,  // value = scene slot 0..7
+    MixPresetNext    = 0x2F0E,
+    MixPresetPrev    = 0x2F0F,
 
     // ---- browser / library: 0x3000 ----
     BrowserFocusSearch = 0x3000,

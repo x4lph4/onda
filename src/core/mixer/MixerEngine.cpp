@@ -18,6 +18,16 @@ MixerEngine::MixerEngine()
         strips_[i].setXfAssign(i < 4 ? (deckOnSideA(i) ? mixer::XfAssign::A
                                                       : mixer::XfAssign::B)
                                      : mixer::XfAssign::Thru);
+    // default source table: deck i -> ch i (0..3), sampler -> ch 4,
+    // channels 5..7 silent until assigned (external-in/FX-return seam)
+    for (int i = 0; i < kMaxChannels; ++i) {
+        const mixer::ChSource s =
+            i < 4 ? mixer::ChSource::deck(i)
+          : i == kSamplerChannel ? mixer::ChSource::sampler()
+                                 : mixer::ChSource::silence();
+        chSource_[(size_t)i].store(mixer::packSource(s),
+                                   std::memory_order_relaxed);
+    }
 }
 
 void MixerEngine::prepare(double sampleRate) noexcept {
@@ -26,12 +36,32 @@ void MixerEngine::prepare(double sampleRate) noexcept {
     xf_.prepare(sampleRate);
     master_.prepare(sampleRate);
     phones_.prepare(sampleRate);
+    cueMgr_.prepare(sampleRate);
     fx_.prepare(sampleRate);
     rebuildRouting();
 }
 
 void MixerEngine::setActiveChannels(int n) noexcept {
     active_ = std::clamp(n, 1, kMaxChannels);
+    rebuildRouting();
+}
+
+void MixerEngine::setChannelSource(int ch, mixer::ChSource src) noexcept {
+    if (ch < 0 || ch >= kMaxChannels) return;
+    chSource_[(size_t)ch].store(mixer::packSource(src),
+                                std::memory_order_relaxed);
+    rebuildRouting();
+}
+
+void MixerEngine::setDeckMode(int n) noexcept {
+    n = std::clamp(n, 1, 4);
+    deckMode_.store(n, std::memory_order_relaxed);
+    for (int i = 0; i < 4; ++i) {
+        const mixer::ChSource s = i < n ? mixer::ChSource::deck(i)
+                                        : mixer::ChSource::silence();
+        chSource_[(size_t)i].store(mixer::packSource(s),
+                                   std::memory_order_relaxed);
+    }
     rebuildRouting();
 }
 
@@ -50,10 +80,20 @@ void MixerEngine::rebuildRouting() noexcept {
     const int ret[2]  = { routing_.addNode(NT::FxReturn, 0, 0),
                           routing_.addNode(NT::FxReturn, 1, 0) };
     for (int i = 0; i < active_; ++i) {
-        const int src   = routing_.addNode(NT::Source,       i, 0);
-        const int ins   = routing_.addNode(NT::FxReturn,  10 + i, 0); // insert rack
-        const int strip = routing_.addNode(NT::ChannelStrip, i, 0);
-        routing_.addEdge(src,   ins,    TP::PostStrip);
+        const auto srcTag = [](mixer::ChSourceType t) {
+            switch (t) {
+                case mixer::ChSourceType::Deck:     return (uint32_t)'deck';
+                case mixer::ChSourceType::Sampler:  return (uint32_t)'smpl';
+                case mixer::ChSourceType::External: return (uint32_t)'ext ';
+                default:                            return (uint32_t)'sil ';
+            }
+        };
+        const auto src    = channelSource(i);
+        const int srcN    = routing_.addNode(NT::Source,       i,
+                                             srcTag(src.type));
+        const int ins     = routing_.addNode(NT::FxReturn,  10 + i, 0); // insert rack
+        const int strip   = routing_.addNode(NT::ChannelStrip, i, 0);
+        routing_.addEdge(srcN,  ins,    TP::PostStrip);
         routing_.addEdge(ins,   strip,  TP::PostStrip);
         routing_.addEdge(strip, xf,     TP::PostFader);
         routing_.addEdge(strip, cue,    TP::PreFader);
@@ -85,6 +125,7 @@ void MixerEngine::setParam(uint16_t id, float v) noexcept {
             case mixer::ChParam::High:   s.eq().setGainDb(2, v); break;
             case mixer::ChParam::MidLow: s.eq().setGainDb(3, v); break;
             case mixer::ChParam::Filter: s.filter().setPosition(v); break;
+            case mixer::ChParam::FilterRes: s.filter().setResonance(v); break;
             case mixer::ChParam::Fader:  s.setFader(v); break;
             case mixer::ChParam::Cue:    s.setCue(v > 0.5f); break;
             case mixer::ChParam::Mute:   s.setMute(v > 0.5f); break;
@@ -98,7 +139,7 @@ void MixerEngine::setParam(uint16_t id, float v) noexcept {
                 s.setFaderCurve((mixer::FaderCurve)(int)v); break;
             case mixer::ChParam::SendA: s.setSendLevel(0, v); break;
             case mixer::ChParam::SendB: s.setSendLevel(1, v); break;
-            case mixer::ChParam::PhaseInvert: break; // reserved
+            case mixer::ChParam::PhaseInvert: s.setPhaseInvert(v > 0.5f); break;
         }
         return;
     }
@@ -113,6 +154,7 @@ void MixerEngine::setParam(uint16_t id, float v) noexcept {
         case mixer::BusParam::CueMix:           phones_.setMix(v); break;
         case mixer::BusParam::FxReturnA:        fx_.setSendReturn(0, v); break;
         case mixer::BusParam::FxReturnB:        fx_.setSendReturn(1, v); break;
+        case mixer::BusParam::MasterCue:        cueMgr_.setMasterCue(v > 0.5f); break;
     }
 }
 
@@ -123,22 +165,43 @@ void MixerEngine::render(float* const* out, int numOut, int n,
     n = std::min(n, (int)AudioFormat::kMaxBlockFrames);
     const int chans = std::min(active_, kMaxChannels);
 
-    // 1) each source renders into its strip's input: decks 0..numDecks-1,
-    //    the sampler on kSamplerChannel (any active aux strip without a
-    //    source renders silence). Insert FX + tempo contexts per strip.
+    // 1) each channel's source descriptor decides what renders into
+    //    its strip: any deck on any channel (§34 remap), the sampler,
+    //    an external-in seam (silence until the device layer feeds it),
+    //    or Silence (strip skipped — post taps zeroed, near-zero cost).
     for (int d = 0; d < chans; ++d) {
-        if (d < numDecks) {
-            decks[d].renderPcm(strips_[d].inL(), strips_[d].inR(), n);
-            fx_.setTempo(d, (float)decks[d].effBpm());
-        } else if (sampler && d == kSamplerChannel) {
-            // SamplerRt sums into the buffers — must start from zero
+        const auto src = mixer::unpackSource(
+            chSource_[(size_t)d].load(std::memory_order_relaxed));
+        bool live = true;
+        switch (src.type) {
+            case mixer::ChSourceType::Deck:
+                if (src.index >= 0 && src.index < numDecks)
+                    decks[src.index].renderPcm(strips_[d].inL(),
+                                               strips_[d].inR(), n),
+                    fx_.setTempo(d, (float)decks[src.index].effBpm());
+                else live = false;
+                break;
+            case mixer::ChSourceType::Sampler:
+                if (sampler != nullptr) {
+                    // SamplerRt sums into the buffers — start from zero
+                    std::memset(strips_[d].inL(), 0, (size_t)n * sizeof(float));
+                    std::memset(strips_[d].inR(), 0, (size_t)n * sizeof(float));
+                    sampler->renderPcm(strips_[d].inL(), strips_[d].inR(), n);
+                    fx_.setTempo(d, (float)sampler->clockBpm());
+                } else live = false;
+                break;
+            case mixer::ChSourceType::External:
+            case mixer::ChSourceType::Silence:
+                live = false;
+                break;
+        }
+        if (!live) {
+            // Feed the strip silence: EQ/filter/smoothers still run on
+            // zeros (meters decay, post taps go quiet) — the only work
+            // skipped is the insert FX rack, which hibernates anyway.
             std::memset(strips_[d].inL(), 0, (size_t)n * sizeof(float));
             std::memset(strips_[d].inR(), 0, (size_t)n * sizeof(float));
-            sampler->renderPcm(strips_[d].inL(), strips_[d].inR(), n);
-            fx_.setTempo(d, (float)sampler->clockBpm());
-        } else {
-            std::memset(strips_[d].inL(), 0, (size_t)n * sizeof(float));
-            std::memset(strips_[d].inR(), 0, (size_t)n * sizeof(float));
+            continue;
         }
         fx_.processDeckInsert(d, strips_[d].inL(), strips_[d].inR(), n);
     }
@@ -202,6 +265,11 @@ void MixerEngine::render(float* const* out, int numOut, int n,
         stats.clipCount.fetch_add(clips - prev, std::memory_order_relaxed);
     mstats_.clipCount.store(clips, std::memory_order_relaxed);
 
+    // 3b) master cue: post-master program -> cue sum (§17). Runs after
+    //     the master bus so phones hear what the audience hears.
+    cueMgr_.process(cueL_.data(), cueR_.data(),
+                    mixL_.data(), mixR_.data(), n);
+
     // 4) phones bus -> mapped cue outputs
     const bool cue = cL >= 0 && cR >= 0 && cL < numOut && cR < numOut
                      && out[cL] != nullptr && out[cR] != nullptr;
@@ -223,6 +291,69 @@ void MixerEngine::render(float* const* out, int numOut, int n,
     mstats_.limiterGain.store(master_.limiter().gainReduction(),
                               std::memory_order_relaxed);
     mstats_.cueAvailable.store(cue, std::memory_order_relaxed);
+}
+
+void MixerEngine::snapshot(mixer::MixerBusDiag& bus,
+                           mixer::MixerChannelDiag* chans,
+                           int nCh) const noexcept {
+    bus = mixer::MixerBusDiag{};
+    bus.xfPos = xf_.position();
+    bus.xfCurve = (int)xf_.curve();
+    bus.masterGain = master_.gain();
+    bus.limiterOn = master_.limiter().enabled();
+    bus.limiterGain = master_.limiter().gainReduction();
+    bus.cueVol = phones_.volume();
+    bus.cueMix = phones_.mix();
+    bus.masterCue = cueMgr_.masterCue();
+    bus.deckMode = deckMode();
+    bus.activeChannels = active_;
+    bus.masterLatencySamples = masterLatencySamples();
+    const auto& mm = master_.meters();
+    bus.masterPeakL = mm.peakL.load(std::memory_order_relaxed);
+    bus.masterPeakR = mm.peakR.load(std::memory_order_relaxed);
+    bus.masterRmsL  = mm.rmsL.load(std::memory_order_relaxed);
+    bus.masterRmsR  = mm.rmsR.load(std::memory_order_relaxed);
+    bus.masterClips = mm.clips.load(std::memory_order_relaxed);
+    const auto& cm = phones_.meters();
+    bus.cuePeakL = cm.peakL.load(std::memory_order_relaxed);
+    bus.cuePeakR = cm.peakR.load(std::memory_order_relaxed);
+    for (int i = 0; i < std::min(nCh, kMaxChannels); ++i) {
+        const auto& s = strips_[i];
+        auto& d = chans[i];
+        d = mixer::MixerChannelDiag{};
+        d.active = i < active_;
+        const auto src = channelSource(i);
+        d.sourceType = (int)src.type; d.sourceIndex = src.index;
+        d.gain = s.inputGain();
+        d.lowDb = (float)s.eq().gainDb(0);
+        d.midDb = (float)s.eq().gainDb(1);
+        d.highDb = (float)s.eq().gainDb(2);
+        d.filterPos = s.filter().position();
+        d.filterRes = (float)s.filter().resonance();
+        d.fader = s.fader();
+        d.sendA = s.sendLevel(0); d.sendB = s.sendLevel(1);
+        d.xfAssign = (int)s.xfAssign();
+        d.cue = s.cueOn(); d.mute = s.muted();
+        d.solo = s.soloed(); d.phase = s.phaseInverted();
+        const auto& m = s.meters();
+        d.peakL = m.peakL.load(std::memory_order_relaxed);
+        d.peakR = m.peakR.load(std::memory_order_relaxed);
+        d.rmsL  = m.rmsL.load(std::memory_order_relaxed);
+        d.rmsR  = m.rmsR.load(std::memory_order_relaxed);
+        d.holdL = m.holdL.load(std::memory_order_relaxed);
+        d.holdR = m.holdR.load(std::memory_order_relaxed);
+        d.clips = m.clips.load(std::memory_order_relaxed);
+        d.latencySamples = latencySamples(i);
+        if (d.solo) ++bus.soloCount;
+        if (d.cue) ++bus.cueCount;
+    }
+}
+
+std::string MixerEngine::diagnosticReport() const noexcept {
+    mixer::MixerBusDiag bus;
+    mixer::MixerChannelDiag chans[kMaxChannels];
+    snapshot(bus, chans, kMaxChannels);
+    return mixer::mixerReport(bus, chans, kMaxChannels);
 }
 
 } // namespace onda

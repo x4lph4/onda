@@ -23,6 +23,12 @@ AudioEngine::AudioEngine(Config& config, DecoderFactory decoderFactory)
     mixerCtl_.setFxMover([this](int t, int from, int to) {
         mixer_.fx().moveSlot(t, from, to);
     });
+    mixerCtl_.setSourceSink([this](int ch, mixer::ChSource src) {
+        mixer_.setChannelSource(ch, src);
+    });
+    mixerCtl_.setDeckModeSink([this](int n) {
+        mixer_.setDeckMode(n);
+    });
     for (int i = 0; i < kNumDecks; ++i) {
         auto& d = decks_[(size_t)i];
         d.bind(&deckStats_[(size_t)i]);

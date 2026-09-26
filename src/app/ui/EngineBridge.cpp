@@ -102,6 +102,23 @@ EngineBridge::EngineBridge(audio::AudioEngine& engine,
             juce::String(engine_.fxEngine().diagnosticReport()));
     };
 
+    // Phase 17: mixer scenes (8 slots), preset bank and diagnostics.
+    auto& mctl = engine_.mixerCtl();
+    ports_.saveMixScene = [this, &mctl](int slot) {
+        if (slot >= 0 && slot < 8) mctl.captureScene(mixScenes_[slot]);
+    };
+    ports_.recallMixScene = [this, &mctl](int slot) {
+        if (slot >= 0 && slot < 8) mctl.applyScene(mixScenes_[slot]);
+    };
+    ports_.applyMixPreset = [this, &mctl](int delta) {
+        const int i = mixPresets_.select(delta);
+        if (i >= 0) mctl.applyScene(mixPresets_.scene(i));
+    };
+    ports_.copyMixDiag = [this] {
+        juce::SystemClipboard::copyTextToClipboard(
+            juce::String(engine_.mixerEngine().diagnosticReport()));
+    };
+
     // Completed analysis → attach the effective grid (rescaled to the
     // device rate) to every deck holding that track. The queue fires
     // on a worker thread; attachGrid is control-thread only.
@@ -268,6 +285,8 @@ void EngineBridge::snapshot(UiSnapshot& o) {
     ms.clip  = st.clipCount.load() != lastClipCount_; // edge: new clips
     lastClipCount_ = st.clipCount.load();
     ms.cueAvailable = st.cueAvailable.load();
+    ms.masterCue  = m.value(R::MASTER_CUE) >= 0.5f;
+    ms.deckMode   = m.deckMode();
     ms.masterDeck = perf_.masterDeck();
     ms.masterBpm  = ms.masterDeck >= 0
                   ? o.deck[ms.masterDeck].effBpm : 0.0;

@@ -48,6 +48,15 @@ struct EnginePorts {
     FXSurface*                                fx = nullptr;
     /// () → copyable FX diagnostics text (FxDiagCopy)
     std::function<void()>                     copyFxDiag;
+    /// Phase 17 — mixer scenes/presets/diagnostics
+    /// (slot 0..7) → capture current mixer state into a scene bank
+    std::function<void(int)>                  saveMixScene;
+    /// (slot 0..7) → recall a stored scene
+    std::function<void(int)>                  recallMixScene;
+    /// (delta ±1) → cycle the mixer-preset bank and apply
+    std::function<void(int)>                  applyMixPreset;
+    /// () → copyable mixer diagnostics text (MixDiagCopy)
+    std::function<void()>                     copyMixDiag;
 };
 
 /// Register the whole command surface. All commands are POD-safe:

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <functional>
 #include <vector>
 
@@ -44,6 +45,8 @@ public:
         smMute_.snap(1.0f);
         smCut_.prepare(sampleRate, 0.4f); // ~instant but clickless
         smCut_.snap(1.0f);
+        smPhase_.prepare(sampleRate, 0.5f);
+        smPhase_.snap(1.0f);
         eq_.prepare(sampleRate);
         filter_.prepare(sampleRate);
         metersEngine_.prepare(sampleRate);
@@ -63,7 +66,9 @@ public:
     void setInputGain(float g) noexcept { smGain_.setTarget(g); }
     float inputGain() const noexcept { return smGain_.target(); }
     EqProcessor&     eq() noexcept     { return eq_; }
+    const EqProcessor& eq() const noexcept { return eq_; }
     FilterProcessor& filter() noexcept { return filter_; }
+    const FilterProcessor& filter() const noexcept { return filter_; }
 
     void setFader(float v) noexcept {
         faderPos_ = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
@@ -85,6 +90,11 @@ public:
     void setSolo(bool s) noexcept      { solo_ = s; }
     bool soloed() const noexcept       { return solo_; }
     void setInstantCut(bool c) noexcept { smCut_.setTarget(c ? 0.0f : 1.0f); }
+
+    /// Polarity flip — smoothed through zero so the inversion is
+    /// clickless (gain dips for ~0.5 ms rather than stepping).
+    void setPhaseInvert(bool p) noexcept { phase_ = p; smPhase_.setTarget(p ? -1.0f : 1.0f); }
+    bool phaseInverted() const noexcept  { return phase_; }
 
     void setCue(bool on) noexcept      { cue_ = on; }
     bool cueOn() const noexcept        { return cue_; }
@@ -130,10 +140,14 @@ public:
         float* l = inL_.data();
         float* r = inR_.data();
 
-        // 1) trim
+        // 1) trim + polarity
         {
             float g = smGain_.current();
-            for (int i = 0; i < n; ++i) { g = smGain_.tick(); l[i] *= g; r[i] *= g; }
+            for (int i = 0; i < n; ++i) {
+                g = smGain_.tick();
+                const float s = g * smPhase_.tick();
+                l[i] *= s; r[i] *= s;
+            }
         }
 
         // 2) EQ -> filter
@@ -172,6 +186,17 @@ public:
         lastPostGain_ = post;
     }
 
+    /// RT: channel with a Silence/no-source mapping — keeps the post
+    /// taps quiet so send buses and diagnostics never read stale audio,
+    /// and decays the meters. ~free (two memsets).
+    void silence(int n) noexcept {
+        std::fill_n(postL_.data(), n, 0.0f);
+        std::fill_n(postR_.data(), n, 0.0f);
+        float z = 0.0f;
+        metersEngine_.update(&z, &z, 1, meters_);
+        lastPostGain_ = 0.0f;
+    }
+
 private:
     float curvedFaderGain() const noexcept {
         const float p = faderPos_;
@@ -203,9 +228,10 @@ private:
     bool mute_ { false };
     bool solo_ { false };
     bool cue_  { false };
+    bool phase_ { false };
     XfAssign assign_ { XfAssign::Thru };
 
-    GainSmoother smGain_, smFader_, smMute_, smCut_;
+    GainSmoother smGain_, smFader_, smMute_, smCut_, smPhase_;
     EqProcessor     eq_;
     FilterProcessor filter_;
     MeteringEngine  metersEngine_;

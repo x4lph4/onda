@@ -40,12 +40,22 @@ public:
     }
     double cutoffHz() const noexcept { return cutoff_; }
 
+    /// Resonance (Q) applied to every mode — LP, HP and the position
+    /// sweep. Coefficients refresh next block (block-rate recompute,
+    /// same cadence as the position update, so sweeps stay smooth).
+    void setResonance(double q) noexcept {
+        res_ = std::clamp(q, 0.2, 8.0);
+        resDirty_ = true;
+    }
+    double resonance() const noexcept { return res_; }
+
     void process(float* l, float* r, int n) noexcept {
         // advance the smoothed position and refresh coefficients when
         // it moved enough to matter (~0.1 % of travel)
         const float prev = pos_;
         for (int i = 0; i < n; ++i) smPos_.tick();
         pos_ = smPos_.current();
+        if (resDirty_) { resDirty_ = false; update(); }
         if (type_ == FilterType::Position && std::fabs(pos_ - prev) > 1e-4f)
             update();
 
@@ -63,23 +73,23 @@ private:
     void update() noexcept {
         switch (type_) {
             case FilterType::LowPass:
-                lpL_.setLowpass(rate_, cutoff_, 0.707);
-                lpR_.setLowpass(rate_, cutoff_, 0.707);
+                lpL_.setLowpass(rate_, cutoff_, res_);
+                lpR_.setLowpass(rate_, cutoff_, res_);
                 break;
             case FilterType::HighPass:
-                hpL_.setHighpass(rate_, cutoff_, 0.707);
-                hpR_.setHighpass(rate_, cutoff_, 0.707);
+                hpL_.setHighpass(rate_, cutoff_, res_);
+                hpR_.setHighpass(rate_, cutoff_, res_);
                 break;
             case FilterType::Position: {
                 const float p = pos_;
                 if (p < 0.0f) {
                     const double f = 20000.0 * std::pow(200.0 / 20000.0, (double)-p);
-                    lpL_.setLowpass(rate_, f, 0.707);
-                    lpR_.setLowpass(rate_, f, 0.707);
+                    lpL_.setLowpass(rate_, f, res_);
+                    lpR_.setLowpass(rate_, f, res_);
                 } else if (p > 0.0f) {
                     const double f = 20.0 * std::pow(8000.0 / 20.0, (double)p);
-                    hpL_.setHighpass(rate_, f, 0.707);
-                    hpR_.setHighpass(rate_, f, 0.707);
+                    hpL_.setHighpass(rate_, f, res_);
+                    hpR_.setHighpass(rate_, f, res_);
                 }
                 break;
             }
@@ -90,6 +100,8 @@ private:
     FilterType type_ { FilterType::Position };
     float  pos_   { 0.0f };
     double cutoff_{ 1000.0 };
+    double res_   { 0.707 };
+    bool   resDirty_ { false };
     GainSmoother smPos_;
     Biquad lpL_, lpR_, hpL_, hpR_;
 };

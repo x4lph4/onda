@@ -2,6 +2,42 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 17 (professional mixer engine)
+
+Deepened the Phase-5 mixer into the full professional architecture
+(`docs/mixer/mixer-engine.md`, `docs/adr/0017-mixer-engine.md`).
+
+- Remappable channel sources: `ChSource{Deck,Sampler,External,Silence}`
+  packed atomics — any deck on any channel via `mapDeckToChannel`;
+  invalid indices degrade to silence. Routing graph tags sources
+  (`'deck'/'smpl'/'ext '/'sil '`) for introspection.
+- `CueManager` master cue: post-master (post-limiter) program tapped
+  into the cue bus with a smoothed gate — phones carry the program at
+  cueMix=0 without touching the mains. Verified read-only.
+- Filter resonance (`ChParam::FilterRes`, Q 0.2–8, all filter modes),
+  configurable EQ range (`EqProcessor::setRangeDb`), clickless phase
+  invert (`ChParam::PhaseInvert`) — all behind existing smoothing.
+- `MixerScene` versioned snapshot (every channel + bus + routing +
+  deck mode) — capture/apply round-trips commanded values through
+  `MixerController`; 8 recall slots on the bridge.
+- `MixerPresetManager` factory set: Flat, Scratch, Broadcast, Booth
+  Monitor, Dub Sends, Two Deck; user scenes join the same bank.
+- 2/4-deck modes: `setDeckMode` remaps sources (strips never removed);
+  `MixerView::setChannelCount` follows `MasterSnapshot.deckMode`.
+- `MixerDiagnostics` snapshot + `mixer.diagCopy` clipboard report:
+  per-channel state, meters, clips, solo/cue counts, bus levels,
+  limiter GR, per-rack latencies.
+- Latency seam: `latencySamples(ch)` / `masterLatencySamples()`
+  report rack latency (0 today — PDC contract, measure first).
+- Grouped param edits (`setParamEdit`) coalesce a knob/fader burst
+  into one `{id,from,to}` delta — the UndoManager seam.
+- `0x2F09+` commands: master cue, deck-mode toggle, diag copy,
+  scene save/recall, preset prev/next — UI/MIDI/HID/FLX4 share them.
+- 17 new tests (**323 cases / 1.64M assertions green**): remap,
+  isolation, graph tags, deck modes, master-cue independence/smoothing,
+  filter Q, EQ range, phase anti-symmetry, registry bounds, scene
+  round-trip, presets, diagnostics, transactions, commands, stress.
+
 ## Status — Phase 16 (professional FX engine)
 
 Deepened the Phase-6 FX foundation into a full professional

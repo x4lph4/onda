@@ -340,6 +340,40 @@ void registerEngineCommands(CommandManager& cm,
             if (p.mixer) p.mixer->crossfader(0.0f);
         }));
 
+    // ---- Phase 17: master cue / deck mode / scenes / presets / diag ----
+    cm.add(mk(cmd::MixMasterCueTgl, "mixer.masterCueToggle", "Mixer",
+        [p](float, CommandSource) {
+            if (p.mixer) {
+                using R = mixer::ParameterRegistry;
+                p.mixer->masterCue(p.mixer->value(R::MASTER_CUE) < 0.5f);
+            }
+        }));
+    cm.add(mk(cmd::MixDeckModeTgl, "mixer.deckModeToggle", "Mixer",
+        [p](float, CommandSource) {
+            if (p.mixer)
+                p.mixer->setDeckMode(p.mixer->deckMode() > 2 ? 2 : 4);
+        }));
+    cm.add(mk(cmd::MixDiagCopy, "mixer.diagCopy", "Mixer",
+        [p](float, CommandSource) {
+            if (p.copyMixDiag) p.copyMixDiag();
+        }));
+    cm.add(mk(cmd::MixSceneSave, "mixer.sceneSave", "Mixer",
+        [p](float v, CommandSource) {
+            if (p.saveMixScene) p.saveMixScene((int)v);
+        }));
+    cm.add(mk(cmd::MixSceneRecall, "mixer.sceneRecall", "Mixer",
+        [p](float v, CommandSource) {
+            if (p.recallMixScene) p.recallMixScene((int)v);
+        }));
+    cm.add(mk(cmd::MixPresetNext, "mixer.presetNext", "Mixer",
+        [p](float, CommandSource) {
+            if (p.applyMixPreset) p.applyMixPreset(+1);
+        }));
+    cm.add(mk(cmd::MixPresetPrev, "mixer.presetPrev", "Mixer",
+        [p](float, CommandSource) {
+            if (p.applyMixPreset) p.applyMixPreset(-1);
+        }));
+
     // ---- browser / app (routed through appAction port) ----
     auto app = [&](uint32_t id, const char* name, const char* cat) {
         cm.add(mk(id, name, cat,

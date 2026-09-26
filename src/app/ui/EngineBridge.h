@@ -7,6 +7,8 @@
 
 #include "core/analysis/AnalysisService.h"
 #include "core/library/MusicLibraryEngine.h"
+#include "core/mixer/MixerPresetManager.h"
+#include "core/mixer/MixerScene.h"
 #include "core/performance/PerformanceEngine.h"
 #include "core/adevice/AudioDeviceEngine.h"
 #include "core/rec/RecordingEngine.h"
@@ -69,6 +71,8 @@ public:
     /// Phase 16: FX focus surface + preset manager (control thread).
     FXSurface&               fx()      noexcept { return fxSurface_; }
     fx::FXPresetManager&     fxPresets() noexcept { return fxPresets_; }
+    /// Phase 17: mixer preset bank + scene slots (control thread).
+    mixer::MixerPresetManager& mixPresets() noexcept { return mixPresets_; }
 
 private:
     audio::AudioEngine&          engine_;
@@ -80,6 +84,8 @@ private:
     pads::PadLayer  pads_;
     FXSurface       fxSurface_;
     fx::FXPresetManager fxPresets_;
+    mixer::MixerPresetManager mixPresets_;
+    mixer::MixerScene         mixScenes_[8];
     rec::RecordingEngine*       recorder_ = nullptr;
     adevice::AudioDeviceEngine* adevice_ = nullptr; // borrowed, may be null
     EnginePorts ports_;

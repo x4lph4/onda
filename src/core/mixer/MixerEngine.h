@@ -11,8 +11,10 @@
 #include "../rt/AudioStats.h"
 #include "ChannelStrip.h"
 #include "CrossfaderEngine.h"
+#include "CueManager.h"
 #include "HeadphoneBus.h"
 #include "MasterBus.h"
+#include "MixerDiagnostics.h"
 #include "MixerTypes.h"
 #include "ParameterRegistry.h"
 #include "RoutingEngine.h"
@@ -58,10 +60,32 @@ public:
     int numActiveChannels() const noexcept { return active_; }
     void setActiveChannels(int n) noexcept; // non-RT config (<= kMaxChannels)
 
+    // ---- channel source routing (§3/§34) -----------------------------
+    /// What feeds channel `ch`. Non-RT: atomically published, takes
+    /// effect on the next audio block. Remapping never locks the
+    /// callback — a source index that is out of range simply renders
+    /// silence until the config catches up.
+    void setChannelSource(int ch, mixer::ChSource src) noexcept;
+    mixer::ChSource channelSource(int ch) const noexcept {
+        return mixer::unpackSource(
+            chSource_[ch & (kMaxChannels - 1)].load(std::memory_order_relaxed));
+    }
+    /// Convenience: deck d → channel ch (any deck on any channel, §34).
+    void mapDeckToChannel(int deck, int ch) noexcept {
+        setChannelSource(ch, mixer::ChSource::deck(deck));
+    }
+    /// §32/§33 — deck count mode: decks 0..n-1 map to channels 0..n-1,
+    /// channels n..3 go silent (skipped in the render loop — near-zero
+    /// cost, not deleted). The sampler channel (4) always stays live.
+    void setDeckMode(int n) noexcept;
+    int deckMode() const noexcept { return deckMode_.load(std::memory_order_relaxed); }
+    // -------------------------------------------------------------------
+
     // ---- bus access ----
     mixer::MasterBus&      master() noexcept      { return master_; }
     mixer::HeadphoneBus&   phones() noexcept      { return phones_; }
     mixer::CrossfaderEngine& xf() noexcept        { return xf_; }
+    mixer::CueManager&     cues() noexcept        { return cueMgr_; }
     const mixer::RoutingEngine& routing() const noexcept { return routing_; }
 
     // ---- FX engine (insert racks, send/return buses, master rack) ----
@@ -98,6 +122,23 @@ public:
 
     const MasterStats& masterStats() const noexcept { return mstats_; }
 
+    /// §42 — latency seam: report the insert-rack latency each channel
+    /// presents (0 today — every processor is latency-free; the accessor
+    /// is the contract for future processors + PDC).
+    int latencySamples(int ch) const noexcept {
+        return fx_.targetLatency(ch < 0 ? 0 : (ch > 3 ? 3 : ch));
+    }
+    int masterLatencySamples() const noexcept {
+        return fx_.targetLatency((int)fx::FXTarget::Master);
+    }
+
+    /// §40 — fill a diagnostics snapshot from RT state + atomic meters.
+    /// Control-thread only (reads everything once; no locks needed —
+    /// every field is atomic or RT-published).
+    void snapshot(mixer::MixerBusDiag& bus,
+                  mixer::MixerChannelDiag* chans, int nCh) const noexcept;
+    std::string diagnosticReport() const noexcept;
+
     /// Deck index -> crossfader side: 0,2 = A; 1,3 = B.
     static bool deckOnSideA(int deck) noexcept { return (deck % 2) == 0; }
 
@@ -128,11 +169,16 @@ private:
     mixer::CrossfaderEngine xf_;
     mixer::MasterBus        master_;
     mixer::HeadphoneBus     phones_;
+    mixer::CueManager       cueMgr_;
     mixer::RoutingEngine    routing_;
     fx::FXEngine            fx_;
 
     std::vector<float> mixL_, mixR_, cueL_, cueR_; // bus scratch (preallocated)
     std::array<std::atomic<int>,4> outMap_ { 0, 1, 2, 3 }; // mL,mR,cL,cR
+    /// Channel source table (packed ChSource). Written on the control
+    /// thread, read every block — atomics only, never a lock.
+    std::array<std::atomic<uint32_t>, kMaxChannels> chSource_ {};
+    std::atomic<int> deckMode_ { 4 };
 
     MasterStats mstats_; // legacy published struct (filled from buses)
 };

@@ -7,6 +7,7 @@
 #include "../fx/FXFactory.h"
 #include "../fx/FXMacro.h"
 #include "../fx/FXPreset.h"
+#include "MixerScene.h"
 #include "MixerTypes.h"
 #include "ParameterRegistry.h"
 
@@ -42,6 +43,35 @@ public:
     using FxMover = std::function<void(int target, int from, int to)>;
     void setFxMover(FxMover f) noexcept { fxMover_ = std::move(f); }
 
+    /// Source-routing sink — wired to MixerEngine::setChannelSource.
+    /// The controller keeps a copy so scenes capture routing too (§34).
+    using SourceSink = std::function<void(int ch, ChSource src)>;
+    void setSourceSink(SourceSink s) noexcept { srcSink_ = std::move(s); }
+    /// Deck-mode sink — wired to MixerEngine::setDeckMode (§32/§33).
+    using DeckModeSink = std::function<void(int n)>;
+    void setDeckModeSink(DeckModeSink s) noexcept { deckModeSink_ = std::move(s); }
+
+    /// §34 — remap a channel's source (deck/sampler/external/silence).
+    void setChannelSource(int ch, ChSource src) {
+        if (ch < 0 || ch >= ParameterRegistry::kMaxChannels) return;
+        sources_[(size_t)ch] = src;
+        if (srcSink_) srcSink_(ch, src);
+    }
+    ChSource channelSource(int ch) const noexcept {
+        return ch >= 0 && ch < ParameterRegistry::kMaxChannels
+             ? sources_[(size_t)ch] : ChSource::silence();
+    }
+    /// §32/§33 — 2/4-deck mode (channels hidden → silent, never removed).
+    void setDeckMode(int n) {
+        n = n < 1 ? 1 : (n > 4 ? 4 : n);
+        deckMode_ = n;
+        if (deckModeSink_) deckModeSink_(n);
+        for (int i = 0; i < 4; ++i)
+            sources_[(size_t)i] = i < n ? ChSource::deck(i)
+                                        : ChSource::silence();
+    }
+    int deckMode() const noexcept { return deckMode_; }
+
     /// Set a parameter (sanitized per registry). Returns the applied value.
     float setParam(uint16_t id, float v) noexcept {
         v = ParameterRegistry::sanitize(id, v);
@@ -68,6 +98,9 @@ public:
     float channelCue (int ch, bool on)   { return setParam(ParameterRegistry::channelCue(ch),    on ? 1.0f : 0.0f); }
     float channelMute(int ch, bool on)   { return setParam(ParameterRegistry::channelMute(ch),   on ? 1.0f : 0.0f); }
     float channelSolo(int ch, bool on)   { return setParam(ParameterRegistry::channelSolo(ch),   on ? 1.0f : 0.0f); }
+    float channelPhase(int ch, bool on)  { return setParam(ParameterRegistry::channelPhase(ch),  on ? 1.0f : 0.0f); }
+    float channelFilterRes(int ch, float v) { return setParam(ParameterRegistry::channelFilterRes(ch), v); }
+    float masterCue(bool on)             { return setParam(ParameterRegistry::MASTER_CUE, on ? 1.0f : 0.0f); }
     float channelXfAssign(int ch, XfAssign a) {
         return setParam(ParameterRegistry::channelXfAssign(ch), (float)(int)a);
     }
@@ -148,6 +181,63 @@ public:
         for (int i = 0; i < n; ++i) setParam(w[i].paramId, w[i].value);
         return n;
     }
+
+    // ---- grouped edits (§39 undo seam) ----------------------------------
+    /// A knob drag or fader ride produces a burst of setParam calls —
+    /// every intermediate value still reaches the engine (audio stays
+    /// continuous), but for undo purposes the whole burst is ONE edit.
+    /// Usage: beginParamEdit(id) once when the gesture starts (mouse
+    /// down / first MIDI value of a catch), move freely, then
+    /// endParamEdit() → the {id, from, to} delta an UndoManager stores.
+    struct ParamEdit { uint16_t id; float from; float to; };
+
+    void beginParamEdit(uint16_t id) noexcept {
+        editId_ = id; editFrom_ = value(id); editOpen_ = true;
+    }
+    bool paramEditOpen() const noexcept { return editOpen_; }
+    /// Close the open edit; returns the coalesced delta. If a different
+    /// id arrives while an edit is open it closes implicitly — gestures
+    /// are per-parameter by nature.
+    ParamEdit endParamEdit() noexcept {
+        const ParamEdit e { editId_, editFrom_, value(editId_) };
+        editOpen_ = false;
+        return e;
+    }
+    /// Guarded write: auto-closes an open edit on a different param.
+    float setParamEdit(uint16_t id, float v) noexcept {
+        if (editOpen_ && editId_ != id) endParamEdit();
+        if (!editOpen_) beginParamEdit(id);
+        return setParam(id, v);
+    }
+    // -----------------------------------------------------------------------
+
+    // ---- scenes (§38) -----------------------------------------------------
+    /// Snapshot every mixer parameter + routing (commanded values).
+    void captureScene(MixerScene& s) const noexcept {
+        for (int c = 0; c < MixerScene::kMaxCh; ++c) {
+            for (auto k : kSceneChParams)
+                sceneField(s.ch[(size_t)c], k) = value(chParam(c, k));
+            s.ch[(size_t)c].source = sources_[(size_t)c];
+        }
+        for (auto k : kSceneBusParams)
+            sceneField(s, k) = value((uint16_t)k);
+        s.deckMode = deckMode_;
+    }
+    MixerScene captureScene() const noexcept {
+        MixerScene s; captureScene(s); return s;
+    }
+    /// Restore a scene: params go through setParam (registry-sanitized,
+    /// engine-commanded); routing through the sinks. Control-thread only.
+    void applyScene(const MixerScene& s) noexcept {
+        for (int c = 0; c < MixerScene::kMaxCh; ++c) {
+            for (auto k : kSceneChParams)
+                setParam(chParam(c, k), sceneField(s.ch[(size_t)c], k));
+            setChannelSource(c, s.ch[(size_t)c].source);
+        }
+        for (auto k : kSceneBusParams)
+            setParam((uint16_t)k, sceneField(s, k));
+        setDeckMode(s.deckMode);
+    }
     // -----------------------------------------------------------------------
 
 private:
@@ -164,7 +254,19 @@ private:
     Sink sink_;
     FxLoader fxLoader_;
     FxMover fxMover_;
+    SourceSink srcSink_;
+    DeckModeSink deckModeSink_;
     std::array<Entry, 256> values_ {};
+    // routing mirror for scene capture (defaults match MixerEngine ctor)
+    std::array<ChSource, 8> sources_ {
+        ChSource::deck(0), ChSource::deck(1), ChSource::deck(2),
+        ChSource::deck(3), ChSource::sampler(), ChSource::silence(),
+        ChSource::silence(), ChSource::silence() };
+    int      deckMode_ { 4 };
+    // grouped-edit state (§39)
+    bool     editOpen_ { false };
+    uint16_t editId_   { 0 };
+    float    editFrom_ { 0.0f };
 };
 
 } // namespace onda::mixer

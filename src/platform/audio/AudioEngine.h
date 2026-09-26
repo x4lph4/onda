@@ -57,6 +57,9 @@ public:
     /// a control thread to reclaim retired processors.
     fx::FXEngine&           fxEngine()       noexcept { return mixer_.fx(); }
     void                    fxHousekeeping() noexcept { mixer_.fxHousekeeping(); }
+    /// Phase 17: mixer access for diagnostics/scenes (control thread).
+    MixerEngine&            mixerEngine()    noexcept { return mixer_; }
+    const MixerEngine&      mixerEngine() const noexcept { return mixer_; }
     /// Non-RT wiring accessor (grid handoff slots). Never call on RT path
     /// other than through commands.
     DeckEngine*             deckRaw(int i)   noexcept { return &decks_[(size_t)i]; }
