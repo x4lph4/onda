@@ -2,6 +2,38 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 10 (Pioneer DDJ-FLX4 integration)
+
+First-class DDJ-FLX4 support built only on **documented public MIDI
+data** (official AlphaTheta MIDI list + Mixxx mapping + community
+measurements, cross-checked — `docs/controllers/ddj-flx4.md` lists
+every source per control). No proprietary protocol, no invented
+messages. HARDWARE TEST PENDING — validated via `VirtualFlx4`.
+
+- `src/controller/flx4/`: `Flx4Ids` (channel/CC/note constants),
+  `Flx4Inventory` (evidence-backed control table + `controlNameFor`
+  diagnostic decoder), `Flx4Profile` (generated declarative profile,
+  installed as `ddj-flx4.json` on first connect), `Flx4Plugin`
+  (preDispatch semantic layer: pad-mode banks, shift state, jog
+  touch/vinyl routing, browse direction, tempo-range cycle, mode LED
+  repaint), `PadModes`, `JogWheelProcessor`, `ScratchEngine`,
+  `Flx4AudioProfile` (master ch1-2 / phones ch3-4, 44.1/48 kHz, mic =
+  hw-only), `ConnectionFlow` (staged bring-up diagnostics),
+  `VirtualFlx4` test device speaking real wire protocol.
+- `ControllerEngine` gains two generic seams: `preDispatch`
+  (per-device semantic consume, after LearnMode/before mappings) and
+  `onDevice` (lifecycle observer) — reusable by any modeful hardware.
+- `Mapping::hiRes` merges 14-bit MSB+LSB CC pairs (tempo, trim, EQ,
+  faders, crossfader, head-mix, FX depth) — full precision, one
+  dispatch per pair.
+- `DECK_<n>_PITCH` / `DECK_<n>_PITCH_RANGE` params (0x8000 space)
+  route through `rt::SetPitch`/`SetPitchRange`; mixer params still go
+  through `MixerController`. Both are the same `setParam` port.
+- 14 new `[flx4]` tests (177 total): profile validation+roundtrip,
+  auto-match, transport commands, 14-bit merge, pad modes+LEDs,
+  shift/range-cycle/browse, jog modes, LED feedback, hot-plug,
+  audio/connection-flow, garbage-byte safety, decoupled scratch model.
+
 ## Status — Phase 9 (controller engine: MIDI/HID + mapping)
 
 Universal, vendor-neutral controller layer. `src/controller/` is a
@@ -35,8 +67,6 @@ scaling, pickup, encoders, feedback/echo, diagnostics, learn, profile
 roundtrip+validation (injected `exec` fields ignored), auto-match,
 hot-plug/reconnect, clock, param-name roundtrip; stress: 30 k msgs
 in ~29 ms (~1.05 M msg/s), 0 dropped, sub-µs processing.
-
-*No DDJ-FLX4 profile yet — next phase, documented MIDI only.*
 
 ## Status — Phase 8 (UI framework + live-performance views)
 

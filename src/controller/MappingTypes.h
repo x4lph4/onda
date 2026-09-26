@@ -73,6 +73,8 @@ struct Mapping {
     float       outMin  = 0.0f;   // scaled output range (param units
     float       outMax  = 1.0f;   //   for Param, cmd value for Command)
     float       step    = 1.0f;   // Relative/IncDec step per tick
+    bool        hiRes   = false;  // 14-bit CC pair: MSB at in.number,
+                                  // LSB at in.number+0x20 (0..16383)
     bool        enabled = true;
     FeedbackOut out;
     int         group = 0;        // 0 = global, else device group id
@@ -85,6 +87,9 @@ struct MappingRuntime {
     float lastRaw = -1.0f;
     float lastOut = 0.0f;
     float current = 0.0f;   // pickup: last known target value
+    uint8_t hiMsb = 0;      // hiRes: cached MSB byte
+    uint8_t hiLsb = 0;      // hiRes: cached LSB byte
+    bool    hiSeen = false; // hiRes: at least one half arrived
 };
 
 } // namespace onda::ctrl

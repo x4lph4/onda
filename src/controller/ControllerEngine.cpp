@@ -109,6 +109,7 @@ void ControllerEngine::onDeviceEvent(const DeviceInfo& d,
         if (ports_.notify)
             ports_.notify("Controller disconnected", d.name, 2);
     }
+    if (onDevice) onDevice(d, (int)e);
 }
 
 // ----------------------------------------------------------------------
@@ -158,6 +159,13 @@ void ControllerEngine::processInput(uint32_t deviceId,
             ++st->actedCount; ++totalActed_;
             return;
         }
+    }
+
+    // device plugin seam — modeful hardware semantics consume first
+    if (preDispatch && preDispatch(deviceId, m)) {
+        ++st->actedCount; ++totalActed_;
+        diag_.logIn(deviceId, m, nowSec_, true);
+        return;
     }
 
     const bool acted = st->mapping.process(m, nowSec_);

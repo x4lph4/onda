@@ -12,6 +12,7 @@
 #include "core/library/MusicLibraryEngine.h"
 #include "core/performance/PerformanceEngine.h"
 #include "controller/ControllerEngine.h"
+#include "controller/flx4/Flx4Plugin.h"
 #include "platform/audio/AudioEngine.h"
 #include "platform/config/Config.h"
 #include "platform/midi/JuceMidi.h"
@@ -54,6 +55,7 @@ private:
     // Phase 9 — controller subsystem (MIDI now, HID-ready)
     std::unique_ptr<ctrl::ControllerEngine> ctrl_;
     std::unique_ptr<ctrl::MidiManager>      midi_;
+    ctrl::flx4::Flx4Plugin                  flx4_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

@@ -228,6 +228,7 @@ std::string ControllerProfile::toJson() const {
         e["min"]     = JsonValue::makeNumber(m.outMin);
         e["max"]     = JsonValue::makeNumber(m.outMax);
         e["step"]    = JsonValue::makeNumber(m.step);
+        if (m.hiRes) e["hires"] = JsonValue::makeBool(true);
         e["enabled"] = JsonValue::makeBool(m.enabled);
         if (m.out.addr.pack() != 0 || m.out.followValue) {
             JsonValue fo = addrToJson(m.out.addr);
@@ -299,6 +300,7 @@ bool ControllerProfile::fromJson(const std::string& text,
             m.outMin = (float)e.num("min", 0.0);
             m.outMax = (float)e.num("max", 1.0);
             m.step   = (float)e.num("step", 1.0);
+            m.hiRes  = e.flag("hires", false);
             m.enabled = e.flag("enabled", true);
 
             if (const JsonValue* t = e.at("target")) {

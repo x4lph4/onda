@@ -70,6 +70,7 @@ public:
     int64_t lastProcessUs() const { return lastUs_; }
 
 private:
+    void indexAddr(const Mapping& m, int idx);
     bool dispatch(int idx, const MidiMsg& msg, float raw01,
                   bool press, bool release, double nowSec);
     int  decodeDelta(const Mapping& m, uint8_t v) const;

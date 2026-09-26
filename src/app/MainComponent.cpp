@@ -50,9 +50,27 @@ MainComponent::MainComponent(audio::AudioEngine& engine,
             return commands_.idFor(n);
         };
         p.setParam = [&engine](uint16_t id, float v) {
+            // deck params (0x8000 space) ride the lock-free rt queue;
+            // mixer params go through MixerController as before
+            if (ctrl::isDeckParam(id)) {
+                const auto deck = (uint8_t)ctrl::deckParamDeck(id);
+                if (ctrl::deckParamKind(id) == ctrl::kDeckParamPitch)
+                    engine.commands().tryPush(
+                        rt::SetPitch{deck, v});
+                else
+                    engine.commands().tryPush(
+                        rt::SetPitchRange{deck, v});
+                return;
+            }
             engine.mixerCtl().setParam(id, v);
         };
         p.paramState = [&engine](uint16_t id) {
+            if (ctrl::isDeckParam(id)) {
+                const auto& ds =
+                    engine.deckStats(ctrl::deckParamDeck(id));
+                return ctrl::deckParamKind(id) == ctrl::kDeckParamPitch
+                       ? ds.pitchPct.load() : ds.pitchRange.load();
+            }
             return engine.mixerCtl().value(id);
         };
         // jog → same rt queue the UI waveforms use
@@ -78,6 +96,10 @@ MainComponent::MainComponent(audio::AudioEngine& engine,
             else               notes_.info(t, d);
         };
         ctrl_->setPorts(std::move(p));
+        // Phase 10: DDJ-FLX4 semantic plugin (pad modes, shift,
+        // jog touch/vinyl, browse, tempo-range cycle) — attaches on
+        // device-connect via the preDispatch/onDevice hooks.
+        flx4_.attach(*ctrl_);
     }
     midi_ = std::make_unique<ctrl::MidiManager>(*ctrl_);
     midi_->start();

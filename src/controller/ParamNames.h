@@ -23,6 +23,28 @@ namespace onda::ctrl {
 
 inline constexpr uint16_t kInvalidParam = 0xFFFF;
 
+/// Deck-engine parameter space (0x8000+): continuous deck controls
+/// that live outside the mixer registry — tempo pitch and pitch
+/// range. Routed by the host port to rt::SetPitch / SetPitchRange.
+///   id = kDeckParamBase + deck*2 + kind (0 pitch, 1 pitchRange)
+///   Names: DECK_<n>_PITCH, DECK_<n>_PITCH_RANGE
+inline constexpr uint16_t kDeckParamBase = 0x8000;
+inline constexpr int      kDeckParamPitch      = 0;
+inline constexpr int      kDeckParamPitchRange = 1;
+
+inline constexpr uint16_t deckParamId(int deck, int kind) {
+    return (uint16_t)(kDeckParamBase + deck * 2 + kind);
+}
+inline constexpr bool isDeckParam(uint16_t id) {
+    return id >= kDeckParamBase && id < kDeckParamBase + 0x40;
+}
+inline constexpr int deckParamDeck(uint16_t id) {
+    return (id - kDeckParamBase) / 2;
+}
+inline constexpr int deckParamKind(uint16_t id) {
+    return (id - kDeckParamBase) & 1;
+}
+
 namespace detail {
 
 inline const char* chKindName(mixer::ChParam k) {
@@ -141,6 +163,22 @@ inline std::vector<std::string> split(const std::string& s, char d) {
 
 /// name → ParameterRegistry id (kInvalidParam when unknown).
 inline uint16_t paramIdFromName(const std::string& name) {
+    // DECK_<n>_PITCH[_RANGE] — split keeps "PITCH" and "RANGE" parts
+    if (name.rfind("DECK_", 0) == 0) {
+        auto p = detail::split(name, '_');
+        if (p.size() == 3 && p[0] == "DECK" && p[2] == "PITCH") {
+            const int d = std::atoi(p[1].c_str());
+            if (d >= 0 && d < 32)
+                return deckParamId(d, kDeckParamPitch);
+        }
+        if (p.size() == 4 && p[0] == "DECK" && p[2] == "PITCH" &&
+            p[3] == "RANGE") {
+            const int d = std::atoi(p[1].c_str());
+            if (d >= 0 && d < 32)
+                return deckParamId(d, kDeckParamPitchRange);
+        }
+        return kInvalidParam;
+    }
     auto parts = detail::split(name, '_');
     if (parts.size() == 3 && parts[0] == "CH") {
         const int ch = std::atoi(parts[1].c_str());
@@ -190,6 +228,11 @@ inline uint16_t paramIdFromName(const std::string& name) {
 
 /// id → canonical name ("" for unknown ids).
 inline std::string paramNameFromId(uint16_t id) {
+    if (isDeckParam(id)) {
+        const char* k = deckParamKind(id) == kDeckParamPitchRange
+                        ? "_PITCH_RANGE" : "_PITCH";
+        return "DECK_" + std::to_string(deckParamDeck(id)) + k;
+    }
     if (fx::isFxParam(id)) {
         return "FX_" + std::string(detail::fxTargetName(fx::fxTarget(id)))
              + "_" + std::to_string(fx::fxSlot(id))

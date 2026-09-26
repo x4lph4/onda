@@ -51,7 +51,9 @@ add_library(onda_ctrl STATIC
     controller/FeedbackEngine.cpp
     controller/ControllerDiagnostics.cpp
     controller/ProfileManager.cpp
-    controller/ControllerEngine.cpp)
+    controller/ControllerEngine.cpp
+    controller/flx4/Flx4Inventory.cpp
+    controller/flx4/Flx4Profile.cpp)
 target_include_directories(onda_ctrl PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(onda_ctrl PUBLIC onda_core onda_ui)
 target_compile_features(onda_ctrl PUBLIC cxx_std_20)

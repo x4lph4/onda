@@ -102,6 +102,18 @@ public:
     std::function<void(uint32_t deviceId, const Mapping&)>
         onLearnedMapping;
 
+    // ---- device plugin seam (ADR-0009 §HID, ADR-0010) ----
+    /// Optional per-device semantic handler — sees every inbound
+    /// message after LearnMode capture, before static mappings.
+    /// Return true = consumed (logged as acted). Vendor plugins use
+    /// this for modeful surfaces (pad banks, jog touch, shift).
+    std::function<bool(uint32_t deviceId, const MidiMsg&)>
+        preDispatch;
+    /// Optional lifecycle observer — invoked after internal handling
+    /// of connect/disconnect/reconnect (event = DeviceManager::Event
+    /// cast to int).
+    std::function<void(const DeviceInfo&, int)> onDevice;
+
     // ---- pieces (public for UI/diagnostics/tests) ----
     DeviceManager&          devices()  { return devMgr_; }
     ProfileManager&         profiles() { return profiles_; }

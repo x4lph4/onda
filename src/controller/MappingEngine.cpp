@@ -40,19 +40,29 @@ float scaleValue(const Mapping& m, float raw01) {
 
 // ----------------------------------------------------------------------
 
+void MappingEngine::indexAddr(const Mapping& m, int idx) {
+    byAddr_[m.in.pack()].push_back(idx);
+    if (m.hiRes) {
+        // 14-bit pair: LSB rides the CC number at MSB+0x20
+        MidiAddr lsb = m.in;
+        lsb.number = (uint8_t)(m.in.number + 0x20);
+        byAddr_[lsb.pack()].push_back(idx);
+    }
+}
+
 void MappingEngine::setMappings(std::vector<Mapping> maps) {
     maps_ = std::move(maps);
     run_.assign(maps_.size(), MappingRuntime{});
     byAddr_.clear();
     for (int i = 0; i < (int)maps_.size(); ++i)
-        byAddr_[maps_[(size_t)i].in.pack()].push_back(i);
+        indexAddr(maps_[(size_t)i], i);
 }
 
 int MappingEngine::addMapping(const Mapping& m) {
     const int idx = (int)maps_.size();
     maps_.push_back(m);
     run_.push_back(MappingRuntime{});
-    byAddr_[m.in.pack()].push_back(idx);
+    indexAddr(m, idx);
     return idx;
 }
 
@@ -137,6 +147,15 @@ bool MappingEngine::dispatch(int idx, const MidiMsg& msg, float raw01,
     Mapping& m = maps_[(size_t)idx];
     if (!m.enabled || m.target.kind == Target::Kind::None) return false;
     MappingRuntime& r = run_[(size_t)idx];
+
+    if (m.hiRes) {
+        // 14-bit merge: cache whichever half arrived, then combine
+        if (msg.data1 == (uint8_t)(m.in.number + 0x20)) r.hiLsb = msg.data2;
+        else                                        r.hiMsb = msg.data2;
+        r.hiSeen = true;
+        raw01 = (float)(((uint16_t)r.hiMsb << 7) | r.hiLsb) / 16383.0f;
+    }
+
     const bool continuous =
         (m.in.kind == AddrKind::CC ||
          m.in.kind == AddrKind::PitchBend ||
