@@ -25,8 +25,6 @@ void DeckEngine::setStretcher(std::unique_ptr<ITimeStretcher> s) noexcept {
 }
 
 void DeckEngine::prepareDsp(double rate) noexcept {
-    eq_.prepare(rate);
-    filter_.prepare(rate);
     if (stretcher_) stretcher_->prepare(rate, AudioFormat::kMaxBlockFrames);
 }
 
@@ -51,8 +49,6 @@ void DeckEngine::adoptPendingTrack() noexcept {
     stretcherFeedEnded_ = false;
     fade_         = 0.0f; // ramp in
     if (stretcher_) { stretcher_->reset(); feedBase_ = 0; pushed_ = 0; }
-    eq_.reset();
-    filter_.reset();
     // Transport stays paused on load (DJ convention).
     playing_ = false;
 }
@@ -223,17 +219,6 @@ void DeckEngine::setLoopSizeSec(double sizeSec) noexcept {
     if (track_ == nullptr || sizeSec <= 0.0) return;
     loopOut_ = std::min<int64_t>(loopIn_ + (int64_t)(sizeSec * deviceRate_),
                                  track_->numFrames);
-}
-
-void DeckEngine::setEqDb(int band, float db) noexcept {
-    if (band < 0 || band > 2) return;
-    eqDb_[band] = db;
-    eq_.setGainDb(band, db);
-}
-
-void DeckEngine::setFilterPos(float pos) noexcept {
-    filterPos_ = pos;
-    filter_.setPosition(pos);
 }
 
 // ================================ render ===============================
@@ -508,7 +493,9 @@ void DeckEngine::renderStretch(float* l, float* r, int n) noexcept {
 }
 
 void DeckEngine::applyPostChain(float* l, float* r, int n) noexcept {
-    const float target = playing_ ? trackGain_ * gain_ : 0.0f;
+    // Source-level output: track gain + play/pause mute smoothing.
+    // Channel trim/EQ/filter/fader live in the mixer's ChannelStrip.
+    const float target = playing_ ? trackGain_ : 0.0f;
     constexpr float kSmooth = 0.001f;
     float peakL = 0.0f, peakR = 0.0f;
     for (int i = 0; i < n; ++i) {
@@ -518,8 +505,6 @@ void DeckEngine::applyPostChain(float* l, float* r, int n) noexcept {
         peakL = std::max(peakL, std::fabs(gl));
         peakR = std::max(peakR, std::fabs(gr));
     }
-    eq_.process(l, r, n);
-    filter_.process(l, r, n);
     if (stats_) {
         stats_->levelL.store(peakL, std::memory_order_relaxed);
         stats_->levelR.store(peakR, std::memory_order_relaxed);

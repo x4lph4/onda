@@ -8,7 +8,7 @@
 #include "core/dsp/CrossfaderCurves.h"
 #include "core/dsp/WsolaStretcher.h"
 #include "core/engine/DeckEngine.h"
-#include "core/engine/MixerEngine.h"
+#include "core/mixer/MixerEngine.h"
 #include "core/model/DeckStats.h"
 
 using namespace onda;
@@ -228,22 +228,24 @@ TEST_CASE("Deck: reverse consumes the track backwards") {
 }
 
 // ---------------------------------------------------------------- gain/EQ
-TEST_CASE("Deck: zero fader silences, EQ low-cut attenuates") {
+// Channel gain/EQ/filter moved into the mixer ChannelStrip in Phase 5;
+// deck-level equivalents are covered by the mixer tests. This case
+// keeps verifying the deck's own mute/trackGain path.
+TEST_CASE("Deck: pause mutes source output") {
     DeckFixture f;
     f.load(1.0, 100.0, 0.5f); // low-frequency sine
-    f.deck.setGain(0.0f);
-    f.deck.setPlaying(true);
+    f.deck.setPlaying(false);
     f.runBlocks(60); // let the gain smoother settle (~0.6 s)
     float peak = 0.0f;
     for (float v : f.l) peak = std::max(peak, std::fabs(v));
     REQUIRE(peak < 0.01f);
 
-    f.deck.setGain(1.0f);
-    f.deck.setEqDb(0, -26.0f); // kill low band
+    f.deck.setPlaying(true);
+    f.deck.setTrackGain(0.1f);
     f.runBlocks(30);
     peak = 0.0f;
     for (float v : f.l) peak = std::max(peak, std::fabs(v));
-    REQUIRE(peak < 0.15f); // 100 Hz attenuated heavily
+    REQUIRE(peak < 0.15f); // trackGain attenuates
 }
 
 // ---------------------------------------------------------------- crossfader

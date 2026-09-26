@@ -7,7 +7,7 @@ namespace onda {
 
 /// Crossfader curve family. x in [-1, +1]: -1 = full side A, +1 = full
 /// side B. Gain functions return the *gain for the given side*.
-enum class XfCurve : int { Linear = 0, EqualPower = 1, Cut = 2 };
+enum class XfCurve : int { Linear = 0, EqualPower = 1, Cut = 2, Custom = 3 };
 
 inline float xfGain(XfCurve c, float x, bool sideA) noexcept {
     x = std::clamp(x, -1.0f, 1.0f);

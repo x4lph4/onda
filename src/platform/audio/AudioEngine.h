@@ -7,7 +7,8 @@
 #include <juce_audio_devices/juce_audio_devices.h>
 
 #include "core/engine/DeckEngine.h"
-#include "core/engine/MixerEngine.h"
+#include "core/mixer/MixerController.h"
+#include "core/mixer/MixerEngine.h"
 #include "core/engine/TrackLoader.h"
 #include "core/model/MasterStats.h"
 #include "core/performance/SyncRt.h"
@@ -42,6 +43,10 @@ public:
     juce::AudioDeviceManager& deviceManager() noexcept { return deviceManager_; }
     const rt::AudioStats&   stats()          noexcept { return stats_; }
     rt::CommandQueue&       commands()       noexcept { return commandQueue_; }
+    /// Validated mixer parameter facade (UI / MIDI / HID / automation).
+    /// Non-RT; each setParam() is sanitized by ParameterRegistry and
+    /// queued to the audio thread as rt::SetParam.
+    mixer::MixerController& mixerCtl()       noexcept { return mixerCtl_; }
     const MasterStats&      masterStats()    noexcept { return mixer_.masterStats(); }
     DeckStats&              deckStats(int i) noexcept { return deckStats_[(size_t)i]; }
     /// Non-RT wiring accessor (grid handoff slots). Never call on RT path
@@ -69,6 +74,7 @@ private:
     std::array<std::unique_ptr<TrackLoader>, kNumDecks> loaders_;
     std::array<DeckEngine, kNumDecks> decks_;
     MixerEngine mixer_;
+    mixer::MixerController mixerCtl_;
     SyncRtCore  syncRt_;
 
     // ---- state owned by the RT thread ----

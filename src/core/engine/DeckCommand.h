@@ -23,7 +23,6 @@ bool applyDeckCommand(DeckEngine& d, int deck, const C& c) noexcept {
     else if constexpr (std::is_same_v<C, rt::DeckSeek>)      d.seekSec(c.sec);
     else if constexpr (std::is_same_v<C, rt::DeckSeekFrame>) d.seekFrame(c.frame);
     else if constexpr (std::is_same_v<C, rt::DeckUnload>)    d.unloadTrack();
-    else if constexpr (std::is_same_v<C, rt::SetDeckGain>)   d.setGain(c.gain);
     else if constexpr (std::is_same_v<C, rt::SetTrackGain>)  d.setTrackGain(c.gain);
     else if constexpr (std::is_same_v<C, rt::SetPitch>)      d.setPitchPercent(c.pct);
     else if constexpr (std::is_same_v<C, rt::SetPitchRange>) d.setPitchRange(c.pct);
@@ -35,8 +34,6 @@ bool applyDeckCommand(DeckEngine& d, int deck, const C& c) noexcept {
     else if constexpr (std::is_same_v<C, rt::SetLoopFrames>) d.setLoopFrames(c.inFrame, c.outFrame);
     else if constexpr (std::is_same_v<C, rt::SetLoopOn>)     d.setLoopEnabled(c.on);
     else if constexpr (std::is_same_v<C, rt::SetLoopSize>)   d.setLoopSizeSec(c.sizeSec);
-    else if constexpr (std::is_same_v<C, rt::SetEqBand>)     d.setEqDb(c.band, c.db);
-    else if constexpr (std::is_same_v<C, rt::SetFilter>)     d.setFilterPos(c.pos);
     else if constexpr (std::is_same_v<C, rt::SyncSetMode>)   d.setSyncMode((int)c.mode);
     else if constexpr (std::is_same_v<C, rt::SlipBegin>)     d.beginSlip();
     else if constexpr (std::is_same_v<C, rt::SlipEnd>)       d.endSlip();

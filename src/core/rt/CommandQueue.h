@@ -43,6 +43,9 @@ struct SyncSetMode    { uint8_t deck; uint8_t mode; };   // SyncMode
 struct SlipBegin      { uint8_t deck; };
 struct SlipEnd        { uint8_t deck; };
 
+// ---- generic mixer parameter (ids from mixer::ParameterRegistry) ----
+struct SetParam       { uint16_t id; float v; };
+
 using Command = std::variant<
     SetMasterGain, SetLimiterOn, SetCueVol, SetCueMix,
     SetCrossfader, SetXfCurve, SetPfl, SetFader,
@@ -51,7 +54,7 @@ using Command = std::variant<
     SetQuantize, SetLoop, SetLoopOn, SetLoopSize,
     SetEqBand, SetFilter,
     DeckSeekFrame, SetLoopFrames, SyncSetMaster, SyncSetMode,
-    SlipBegin, SlipEnd>;
+    SlipBegin, SlipEnd, SetParam>;
 
 /// UI thread pushes, audio thread drains at the top of every callback.
 using CommandQueue = SpscRingBuffer<Command, 512>;

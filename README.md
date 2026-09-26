@@ -2,6 +2,44 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 5 (professional mixer engine)
+
+`core/mixer/` — modular mixer: sources render into channel strips,
+strips feed master + headphone buses. Decks are now pure sources
+(trackGain + transport mute); the channel path (trim → EQ → filter →
+fader/mute/solo → xf assign) lives in `ChannelStrip`, so sampler /
+external / FX-return / mic sources can feed the same strip later.
+
+- `ChannelStrip`: smoothed trim, `EqProcessor` (3-band standard mode,
+  4-band capable, per-band gain/freq/Q/bypass, ≤3 dB/block steps),
+  `FilterProcessor` (position knob LP↔HP or typed cutoff), fader
+  (Linear / AudioTaper / Custom curves), mute, solo, instant cut, PFL
+  cue, crossfader assignment A/B/Thru, pre-fader meters.
+- `CrossfaderEngine`: smoothed position, Linear / EqualPower / Cut /
+  Custom curves.
+- `MasterBus`: smoothed gain/mute → `LimiterProcessor` → meters
+  (peak/RMS/hold/clip + GR) → out 0-1.
+- `HeadphoneBus`: cue sum + master blend (cueVol × mix) → out 2-3;
+  never feeds back into master.
+- `MeteringEngine`/`ChannelMeters`: atomic peak/RMS/hold/clip per
+  channel and bus — single-writer RT, read by UI anywhere.
+- `RoutingEngine`: node/edge graph of the topology (introspection +
+  extension point for FX sends/returns, recording, extra sources).
+- `ParameterRegistry`: static metadata for every parameter
+  (id/default/min/max/step/smoothMs); channel ids = `(ch<<5)|kind`,
+  bus ids at 0x400+ — the single address space UI/MIDI/HID/automation
+  and tests share.
+- `MixerController` + `rt::SetParam` command: validated parameter
+  writes to the audio thread; all legacy commands map to the same
+  strip/bus setters, so nothing upstream changed.
+- App unchanged on the outside; `engine.mixerCtl()` is the new
+  validated entry point for future controller mappings.
+
+Tests: +21 `[mixer]` cases (91 total, 1.59M assertions) — synthetic
+sine/noise/impulse/silence through strips and buses, EQ/filter/fader/
+crossfader/cue/solo/mute/limiter behavior, param routing, registry,
+4-channel render, 500-block RT integrity run.
+
 ## Status — Phase 4 (performance engine)
 
 `core/performance/` — non-RT layer translating musical actions to RT
@@ -80,9 +118,10 @@ meters) → out.
   Empty/Loading/Ready/Playing/Paused/Seeking/Error
 - `core/engine/ITimeStretcher` + `core/dsp/WsolaStretcher`: replaceable
   WSOLA (zero-alloc circular buffers)
-- `core/engine/MixerEngine`: channel faders, crossfader
-  (linear / equal-power / cut), PFL cue bus + cue vol/mix on outs 2-3,
-  master gain, optional peak limiter, peak/RMS meters, clip counter
+- `core/engine/MixerEngine` (superseded by `core/mixer/` in Phase 5):
+  channel faders, crossfader (linear / equal-power / cut), PFL cue bus +
+  cue vol/mix on outs 2-3, master gain, optional peak limiter,
+  peak/RMS meters, clip counter
 - `core/dsp/`: Biquad, ThreeBandEq, DjFilter, PeakLimiter,
   CrossfaderCurves, cubic resample
 - UI shell: full functional controls per deck (seek, pitch+range, bend,

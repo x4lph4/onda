@@ -7,8 +7,6 @@
 
 #include "../analysis/BeatGrid.h"
 #include "../audio/TrackAudio.h"
-#include "../dsp/DjFilter.h"
-#include "../dsp/ThreeBandEq.h"
 #include "../model/DeckStats.h"
 
 namespace onda {
@@ -27,8 +25,9 @@ class ITimeStretcher;
 ///
 /// Processing order per block:
 ///   source read (varispeed cubic | WSOLA key-lock) -> fade
-///   -> trackGain -> deckGain -> 3-band EQ -> DJ filter
-///   -> [mixer applies channel fader, crossfader, master]
+///   -> trackGain * play/pause mute smoothing -> level meter
+///   -> [mixer ChannelStrip applies trim, EQ, filter, fader,
+///       crossfader assignment, cue tap and master routing]
 class DeckEngine {
 public:
     DeckEngine();
@@ -74,7 +73,6 @@ public:
 
     // ---- pitch (RT setters) ----
     void setTrackGain(float g) noexcept { trackGain_ = g; }
-    void setGain(float g) noexcept      { gain_ = g; }
     void setPitchPercent(float pct) noexcept;
     void setPitchRange(float pct) noexcept;
     void setPitchBend(float pct) noexcept { bendPct_ = pct; }
@@ -88,11 +86,12 @@ public:
     void setLoopSizeSec(double sizeSec) noexcept;
     void exitLoop() noexcept { loopOn_ = false; }
 
-    // ---- channel DSP (RT setters) ----
-    void setEqDb(int band, float db) noexcept;
-    void setFilterPos(float pos) noexcept;
+    /// Stats slot the deck was bound with — the mixer ChannelStrip
+    /// re-uses it to publish channel meters (pre-fader level).
+    DeckStats* stats() const noexcept { return stats_; }
 
-    /// RT. Writes this deck's stereo, post-EQ/filter (pre-fader) audio.
+    /// RT. Writes this deck's stereo, source-level audio (post track
+    /// gain and mute smoothing, pre channel-strip processing).
     void renderPcm(float* l, float* r, int n) noexcept;
 
     // ---- loader <-> RT handoff slots ----
@@ -139,8 +138,8 @@ private:
     bool   reverse_    { false };
     bool   trackEnded_ { false };
 
-    float trackGain_ { 1.0f }, gain_ { 1.0f };
-    float smGain_    { 1.0f };              // smoothed combined gain
+    float trackGain_ { 1.0f };
+    float smGain_    { 1.0f };              // smoothed gain/mute
     float fade_      { 1.0f };              // click-free ramp 0..1
 
     float pitchPct_  { 0.0f };              // [-pitchRange_, +pitchRange_]
@@ -164,12 +163,7 @@ private:
     bool   slipActive_   { false };
     double slipShadow_   { 0.0 };           // where the track "would be"
 
-    float eqDb_[3]   { 0.0f, 0.0f, 0.0f };
-    float filterPos_ { 0.0f };
-
     std::unique_ptr<ITimeStretcher> stretcher_;
-    ThreeBandEq eq_;
-    DjFilter    filter_;
     std::vector<float> scratch_;            // stretcher pull buffer
 };
 

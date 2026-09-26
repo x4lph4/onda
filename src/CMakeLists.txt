@@ -8,7 +8,7 @@ add_library(onda_core STATIC
     core/audio/AudioFifo.cpp
     core/dsp/WsolaStretcher.cpp
     core/engine/DeckEngine.cpp
-    core/engine/MixerEngine.cpp
+    core/mixer/MixerEngine.cpp
     core/engine/TrackLoader.cpp
     core/analysis/OnsetDetector.cpp
     core/analysis/BpmAnalyzer.cpp

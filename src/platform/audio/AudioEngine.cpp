@@ -11,10 +11,14 @@ namespace onda::audio {
 
 AudioEngine::AudioEngine(Config& config, DecoderFactory decoderFactory)
     : config_(config) {
+    mixerCtl_.setSink([this](uint16_t id, float v) {
+        commandQueue_.tryPush(rt::SetParam{ id, v });
+    });
     for (int i = 0; i < kNumDecks; ++i) {
         auto& d = decks_[(size_t)i];
         d.bind(&deckStats_[(size_t)i]);
         d.setStretcher(std::make_unique<WsolaStretcher>());
+        mixer_.channel(i).bindStats(&deckStats_[(size_t)i]);
         loaders_[(size_t)i] = std::make_unique<TrackLoader>(
             decoderFactory, &deckStats_[(size_t)i],
             &d.pendingTrack_, &d.retiredTrack_);
@@ -157,6 +161,15 @@ void AudioEngine::applyCommand(const rt::Command& cmd) noexcept {
         else if constexpr (std::is_same_v<T, rt::SetXfCurve>)     mixer_.setXfCurve(c.curve);
         else if constexpr (std::is_same_v<T, rt::SetPfl>)      mixer_.setPfl(deck, c.on);
         else if constexpr (std::is_same_v<T, rt::SetFader>)    mixer_.setFader(deck, c.gain);
+        // channel-strip params (mixer-side since Phase 5)
+        else if constexpr (std::is_same_v<T, rt::SetDeckGain>)
+            mixer_.channel(deck).setInputGain(c.gain);
+        else if constexpr (std::is_same_v<T, rt::SetEqBand>)
+            mixer_.channel(deck).eq().setGainDb(c.band, c.db);
+        else if constexpr (std::is_same_v<T, rt::SetFilter>)
+            mixer_.channel(deck).filter().setPosition(c.pos);
+        else if constexpr (std::is_same_v<T, rt::SetParam>)
+            mixer_.setParam(c.id, c.v);
         else if constexpr (std::is_same_v<T, rt::SyncSetMaster>)
             syncRt_.masterDeck = (c.deck >= kNumDecks) ? -1 : (int)c.deck;
         else if (deck < 0 || deck >= kNumDecks) { /* invalid deck */ }

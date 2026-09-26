@@ -10,7 +10,7 @@
 #include "core/dsp/CrossfaderCurves.h"
 #include "core/dsp/WsolaStretcher.h"
 #include "core/engine/DeckEngine.h"
-#include "core/engine/MixerEngine.h"
+#include "core/mixer/MixerEngine.h"
 #include "core/model/DeckStats.h"
 #include "core/rt/AudioStats.h"
 
