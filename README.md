@@ -2,6 +2,48 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 6 (professional FX engine)
+
+`core/fx/` — modular effects engine on top of the mixer: insert racks
+per deck/channel, two send/return buses, a master insert rack and
+beat-synced time effects. The engine only drives the `FXProcessor`
+contract — every effect is swappable off-RT and every parameter is
+smoothed per-sample.
+
+- `FXProcessor` + `FXBase<N>`: prepare/process/reset, native +
+  normalized params, sync context, latency, save/restore state.
+- Effects: `DelayFX` (free/synced time, feedback, damping filter,
+  ping-pong), `EchoFX` (DJ echo: divisions, tone, ping-pong, bounded
+  freeze), `ReverbFX` (Schroeder: 8 combs + 4 allpasses per channel,
+  size/decay/damping/pre-delay/width), `FilterFX` (TPT SVF LP/BP/HP,
+  resonance, LFO or beat-synced sweep), `FlangerFX`, `PhaserFX`
+  (stereo-stage allpass chain), `GateFX` (synced trapezoid gate —
+  stutter/beat-repeat foundation).
+- `FXSlot`: type, enabled (smoothed bypass crossfade), dry/wet mix,
+  in/out gain, sync mode + division, pending-effect adoption — the
+  RT path never allocates (effect swap allocates on a non-RT loader).
+- `FXRack`: bounded slot chains per target; `FXEngine`: racks for
+  DeckA–D, SendA/B, Master + spare, send accumulation, return levels,
+  per-target tempo, event FIFO.
+- Beat sync: `SyncContext` (bpm, division 1/32…4 bars) fed from each
+  deck's `effBpm()` / the sync master — division-locked timing,
+  UI-independent.
+- Routing: deck insert (pre-strip) → post-fader send taps → send racks
+  → return → master insert rack → master bus; cue stays PFL post-insert.
+- Safety: input sanitize before dry copy (NaN/Inf→0, ±8 clamp), wet
+  sanitize + runaway reset after process, bounded feedback, zero
+  allocations inside render.
+- `ParameterRegistry`: FX space at `0x1000|target<<8|slot<<4|kind` —
+  same control path as the mixer for UI/MIDI/HID/automation.
+- `FXPresetManager`: factory + user presets, native-param blobs,
+  whole-engine `serializeAll`/`restoreAll` (kind+params, no pointers).
+
+Tests: +25 `[fx]` cases (116 total, 1.59M assertions) — impulse/sine/
+noise/silence through every effect, decay & pre-delay timing, ping-pong,
+synced vs free divisions, bypass continuity, NaN/Inf sanitize + clamp,
+presets/state round-trip, engine routing, registry coverage, mixer
+insert/send/master integration, 500-block stress.
+
 ## Status — Phase 5 (professional mixer engine)
 
 `core/mixer/` — modular mixer: sources render into channel strips,

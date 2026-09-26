@@ -25,6 +25,7 @@ void MixerEngine::prepare(double sampleRate) noexcept {
     xf_.prepare(sampleRate);
     master_.prepare(sampleRate);
     phones_.prepare(sampleRate);
+    fx_.prepare(sampleRate);
     rebuildRouting();
 }
 
@@ -38,23 +39,41 @@ void MixerEngine::rebuildRouting() noexcept {
     using TP = mixer::RoutingEngine::Tap;
     routing_.clear();
     const int xf     = routing_.addNode(NT::Crossfader, -1, 0);
+    const int mfx    = routing_.addNode(NT::FxReturn,    6, 0); // master insert rack
     const int master = routing_.addNode(NT::MasterBus,  -1, 0);
     const int cue    = routing_.addNode(NT::CueBus,     -1, 0);
     const int out    = routing_.addNode(NT::Output,      0, 0);
     const int outCue = routing_.addNode(NT::Output,      1, 0);
+    const int send[2] = { routing_.addNode(NT::FxSend,   0, 0),
+                          routing_.addNode(NT::FxSend,   1, 0) };
+    const int ret[2]  = { routing_.addNode(NT::FxReturn, 0, 0),
+                          routing_.addNode(NT::FxReturn, 1, 0) };
     for (int i = 0; i < active_; ++i) {
         const int src   = routing_.addNode(NT::Source,       i, 0);
+        const int ins   = routing_.addNode(NT::FxReturn,  10 + i, 0); // insert rack
         const int strip = routing_.addNode(NT::ChannelStrip, i, 0);
-        routing_.addEdge(src,   strip, TP::PostStrip);
-        routing_.addEdge(strip, xf,    TP::PostFader);
-        routing_.addEdge(strip, cue,   TP::PreFader);
+        routing_.addEdge(src,   ins,    TP::PostStrip);
+        routing_.addEdge(ins,   strip,  TP::PostStrip);
+        routing_.addEdge(strip, xf,     TP::PostFader);
+        routing_.addEdge(strip, cue,    TP::PreFader);
+        routing_.addEdge(strip, send[0],TP::PostFader);
+        routing_.addEdge(strip, send[1],TP::PostFader);
     }
-    routing_.addEdge(xf,     master, TP::PostFader);
+    routing_.addEdge(send[0], ret[0], TP::PostStrip);
+    routing_.addEdge(send[1], ret[1], TP::PostStrip);
+    routing_.addEdge(ret[0],  master, TP::PostFader);
+    routing_.addEdge(ret[1],  master, TP::PostFader);
+    routing_.addEdge(xf,     mfx,    TP::PostFader);
+    routing_.addEdge(mfx,    master, TP::PostFader);
     routing_.addEdge(master, out,    TP::PostFader);
     routing_.addEdge(cue,    outCue, TP::PreFader);
 }
 
 void MixerEngine::setParam(uint16_t id, float v) noexcept {
+    if (fx::isFxParam(id)) {          // 0x1000 FX id space
+        fx_.setParam(id, v);
+        return;
+    }
     if (id < (uint16_t)mixer::BusParam::CrossfaderPos) {
         const int ch = id >> 5;
         auto& s = strips_[ch & (kMaxChannels - 1)];
@@ -76,6 +95,9 @@ void MixerEngine::setParam(uint16_t id, float v) noexcept {
                 break;
             case mixer::ChParam::FaderCurve:
                 s.setFaderCurve((mixer::FaderCurve)(int)v); break;
+            case mixer::ChParam::SendA: s.setSendLevel(0, v); break;
+            case mixer::ChParam::SendB: s.setSendLevel(1, v); break;
+            case mixer::ChParam::PhaseInvert: break; // reserved
         }
         return;
     }
@@ -88,6 +110,8 @@ void MixerEngine::setParam(uint16_t id, float v) noexcept {
         case mixer::BusParam::LimiterThreshold: master_.limiter().setThreshold(v); break;
         case mixer::BusParam::CueVolume:        phones_.setVolume(v); break;
         case mixer::BusParam::CueMix:           phones_.setMix(v); break;
+        case mixer::BusParam::FxReturnA:        fx_.setSendReturn(0, v); break;
+        case mixer::BusParam::FxReturnB:        fx_.setSendReturn(1, v); break;
     }
 }
 
@@ -98,9 +122,14 @@ void MixerEngine::render(float* const* out, int numOut, int n,
     const int chans = std::min({ active_, numDecks, kMaxChannels });
     if (chans > active_) {} // unreachable, kept for clarity
 
-    // 1) each source renders into its strip's input
-    for (int d = 0; d < chans; ++d)
+    // 1) each source renders into its strip's input; per-deck insert
+    //    FX racks process the channel's input pre-strip, and feed the
+    //    FX tempo contexts (deck effBpm -> sync-aware effects)
+    for (int d = 0; d < chans; ++d) {
         decks[d].renderPcm(strips_[d].inL(), strips_[d].inR(), n);
+        fx_.setTempo(d, (float)decks[d].effBpm());
+        fx_.processDeckInsert(d, strips_[d].inL(), strips_[d].inR(), n);
+    }
 
     // 2) advance xf smoothing across the block, then process strips
     xf_.tickPos(n);
@@ -116,6 +145,24 @@ void MixerEngine::render(float* const* out, int numOut, int n,
     for (int d = 0; d < chans; ++d)
         strips_[d].process(n, mixL_.data(), mixR_.data(),
                            cueL_.data(), cueR_.data(), xf_, anySolo);
+
+    // 2b) FX send/return buses: channel post-fader taps -> send racks
+    //     -> return levels -> master sum
+    for (int b = 0; b < fx::FXEngine::kSendBuses; ++b)
+        fx_.sendReset(b, n);
+    for (int d = 0; d < chans; ++d) {
+        for (int b = 0; b < fx::FXEngine::kSendBuses; ++b) {
+            const float g = strips_[d].sendGain(b, n);
+            if (g > 1e-4f)
+                fx_.sendAccum(b, strips_[d].postL(), strips_[d].postR(),
+                              n, g);
+        }
+    }
+    for (int b = 0; b < fx::FXEngine::kSendBuses; ++b)
+        fx_.processSendBus(b, mixL_.data(), mixR_.data(), n);
+
+    // 2c) master insert FX (pre master-gain/limiter — limiter stays last)
+    fx_.processMaster(mixL_.data(), mixR_.data(), n);
 
     // 3) master bus in place -> outputs 0-1
     master_.process(mixL_.data(), mixR_.data(), n);

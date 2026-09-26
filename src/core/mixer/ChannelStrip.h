@@ -47,6 +47,12 @@ public:
         eq_.prepare(sampleRate);
         filter_.prepare(sampleRate);
         metersEngine_.prepare(sampleRate);
+        postL_.assign(AudioFormat::kMaxBlockFrames, 0.0f);
+        postR_.assign(AudioFormat::kMaxBlockFrames, 0.0f);
+        smSend_[0].prepare(sampleRate, 5.0f);
+        smSend_[1].prepare(sampleRate, 5.0f);
+        smSend_[0].snap(0.0f);
+        smSend_[1].snap(0.0f);
     }
 
     // ---- source input (written by the rendering engine each block) ----
@@ -84,6 +90,29 @@ public:
     bool cueOn() const noexcept        { return cue_; }
     void setXfAssign(XfAssign a) noexcept { assign_ = a; }
     XfAssign xfAssign() const noexcept    { return assign_; }
+
+    /// FX send taps (post-fader, pre-crossfader): bus 0/1 levels 0..1.
+    void setSendLevel(int bus, float v) noexcept {
+        if (bus < 0 || bus > 1) return;
+        sendLv_[bus] = v;
+        smSend_[bus].setTarget(v);
+    }
+    float sendLevel(int bus) const noexcept {
+        return bus >= 0 && bus <= 1 ? sendLv_[bus] : 0.0f;
+    }
+    /// Advance the send-level smoother across a finished block (called
+    /// once per block by the engine after process()).
+    float sendGain(int bus, int n) noexcept {
+        float g = smSend_[bus].current();
+        for (int i = 0; i < n; ++i) g = smSend_[bus].tick();
+        return smSend_[bus].current();
+    }
+
+    /// Post-fader channel signal (fader x mute x solo x instant-cut,
+    /// BEFORE crossfader-assignment gain). Written every block by
+    /// process(); FX sends and future recording taps read it here.
+    const float* postL() const noexcept { return postL_.data(); }
+    const float* postR() const noexcept { return postR_.data(); }
 
     // ---- metering / stats ----
     const ChannelMeters& meters() const noexcept { return meters_; }
@@ -125,19 +154,20 @@ public:
         if (cue_ && cueL != nullptr && cueR != nullptr)
             for (int i = 0; i < n; ++i) { cueL[i] += l[i]; cueR[i] += r[i]; }
 
-        // 5) fader/mute/cut/solo -> xf assignment -> master sum
-        const bool silent = anySolo && !solo_;
-        const float xfG   = silent ? 0.0f : xf.gainFor(assign_);
+        // 5) fader/mute/cut/solo -> post tap -> xf assignment -> sum
+        const float postG = (anySolo && !solo_) ? 0.0f : 1.0f;
+        const float xfG   = xf.gainFor(assign_);
         float post = 0.0f;
-        if (mixL != nullptr && mixR != nullptr) {
-            for (int i = 0; i < n; ++i) {
-                const float g = smFader_.tick() * smMute_.tick() * smCut_.tick() * xfG;
-                post = g;
-                mixL[i] += l[i] * g;
-                mixR[i] += r[i] * g;
+        for (int i = 0; i < n; ++i) {
+            const float g = smFader_.tick() * smMute_.tick()
+                          * smCut_.tick() * postG;
+            post = g;
+            postL_[i] = l[i] * g;
+            postR_[i] = r[i] * g;
+            if (mixL != nullptr && mixR != nullptr) {
+                mixL[i] += postL_[i] * xfG;
+                mixR[i] += postR_[i] * xfG;
             }
-        } else {
-            for (int i = 0; i < n; ++i) { smFader_.tick(); smMute_.tick(); smCut_.tick(); }
         }
         lastPostGain_ = post;
     }
@@ -161,6 +191,10 @@ private:
     double rate_ { 48000.0 };
 
     std::vector<float> inL_, inR_;
+    std::vector<float> postL_, postR_;   // post-fader tap (sends/record)
+
+    float sendLv_[2] { 0.0f, 0.0f };
+    GainSmoother smSend_[2];
 
     float gain_    { 1.0f };
     float faderPos_{ 1.0f };

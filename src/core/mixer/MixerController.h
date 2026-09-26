@@ -25,6 +25,14 @@ public:
 
     void setSink(Sink s) noexcept { sink_ = std::move(s); }
 
+    /// Loader for effect *type* changes: allocating/preparing a new
+    /// FXProcessor can't happen on the audio thread, so the host wires
+    /// this to MixerEngine::fx().loadEffect() (which parks the object
+    /// for lock-free adoption). Also the right place to run FX
+    /// housekeeping (collectTrash).
+    using FxLoader = std::function<void(int target, int slot, int kind)>;
+    void setFxLoader(FxLoader f) noexcept { fxLoader_ = std::move(f); }
+
     /// Set a parameter (sanitized per registry). Returns the applied value.
     float setParam(uint16_t id, float v) noexcept {
         v = ParameterRegistry::sanitize(id, v);
@@ -60,6 +68,38 @@ public:
     float cueVolume(float v)      { return setParam(ParameterRegistry::CUE_VOLUME,  v); }
     float cueMix(float m)         { return setParam(ParameterRegistry::CUE_MIX,     m); }
     float limiterOn(bool on)      { return setParam(ParameterRegistry::LIMITER_ON,  on ? 1.0f : 0.0f); }
+
+    // ---- FX helpers -------------------------------------------------
+    float channelSend(int ch, int bus, float v) {
+        return setParam(bus == 0 ? ParameterRegistry::channelSendA(ch)
+                                 : ParameterRegistry::channelSendB(ch), v);
+    }
+    float fxReturn(int bus, float v) {
+        return setParam(bus == 0 ? ParameterRegistry::FX_RETURN_A
+                                 : ParameterRegistry::FX_RETURN_B, v);
+    }
+    float fxEnabled(int t, int s, bool on) {
+        return setParam(ParameterRegistry::fxEnabled(t, s), on ? 1.0f : 0.0f);
+    }
+    float fxMix(int t, int s, float v) {
+        return setParam(ParameterRegistry::fxMix(t, s), v);
+    }
+    float fxSyncMode(int t, int s, bool synced) {
+        return setParam(ParameterRegistry::fxSyncMode(t, s), synced ? 1.0f : 0.0f);
+    }
+    float fxDivision(int t, int s, int div) {
+        return setParam(ParameterRegistry::fxDivision(t, s), (float)div);
+    }
+    /// Normalized 0..1 effect parameter p (0..7 -> P1..P8).
+    float fxParam(int t, int s, int p, float v) {
+        return setParam(ParameterRegistry::fxParam(t, s, p), v);
+    }
+    /// Change the effect in a slot: records the registry value and
+    /// asks the wired loader to build/park the processor (non-RT).
+    void setFxType(int t, int s, int kind) {
+        setParam(ParameterRegistry::fxType(t, s), (float)kind);
+        if (fxLoader_) fxLoader_(t, s, kind);
+    }
     // -----------------------------------------------------------------------
 
 private:
@@ -74,6 +114,7 @@ private:
     struct Entry { uint16_t id = kEmpty; float v = 0.0f; };
 
     Sink sink_;
+    FxLoader fxLoader_;
     std::array<Entry, 256> values_ {};
 };
 

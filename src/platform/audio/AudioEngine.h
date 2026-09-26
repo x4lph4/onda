@@ -49,6 +49,11 @@ public:
     mixer::MixerController& mixerCtl()       noexcept { return mixerCtl_; }
     const MasterStats&      masterStats()    noexcept { return mixer_.masterStats(); }
     DeckStats&              deckStats(int i) noexcept { return deckStats_[(size_t)i]; }
+    /// FX engine access (racks/events/meters). Effect loading via
+    /// mixerCtl().setFxType(); call fxHousekeeping() periodically from
+    /// a control thread to reclaim retired processors.
+    fx::FXEngine&           fxEngine()       noexcept { return mixer_.fx(); }
+    void                    fxHousekeeping() noexcept { mixer_.fxHousekeeping(); }
     /// Non-RT wiring accessor (grid handoff slots). Never call on RT path
     /// other than through commands.
     DeckEngine*             deckRaw(int i)   noexcept { return &decks_[(size_t)i]; }

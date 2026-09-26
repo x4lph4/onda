@@ -24,6 +24,9 @@ enum class ChParam : uint8_t {
     Solo,       // 0/1
     XfAssign,   // XfAssign enum value
     FaderCurve, // FaderCurve enum value
+    SendA,      // post-fader send level into FX bus 0 (0..1)
+    SendB,      // post-fader send level into FX bus 1 (0..1)
+    PhaseInvert,// reserved: channel polarity flip (0/1)
 };
 
 constexpr uint16_t chParam(int ch, ChParam k) noexcept {
@@ -39,6 +42,8 @@ enum class BusParam : uint16_t {
     LimiterThreshold,
     CueVolume,
     CueMix,
+    FxReturnA = 0x408, // FX send bus 0 return level (0..2)
+    FxReturnB,         // FX send bus 1 return level (0..2)
 };
 
 enum class XfAssign : int { A = 0, B = 1, Thru = 2 };

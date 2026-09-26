@@ -14,6 +14,11 @@ AudioEngine::AudioEngine(Config& config, DecoderFactory decoderFactory)
     mixerCtl_.setSink([this](uint16_t id, float v) {
         commandQueue_.tryPush(rt::SetParam{ id, v });
     });
+    mixerCtl_.setFxLoader([this](int t, int s, int k) {
+        // non-RT: build+park the processor, then reclaim any retired one
+        mixer_.fx().loadEffect(t, s, (fx::FXKind)k);
+        mixer_.fx().collectTrash();
+    });
     for (int i = 0; i < kNumDecks; ++i) {
         auto& d = decks_[(size_t)i];
         d.bind(&deckStats_[(size_t)i]);
@@ -116,6 +121,9 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     // this block (master phase predicted one block ahead so deck render
     // order is irrelevant). Pure math on RT-owned state.
     syncRt_.apply(decks_.data(), (int)decks_.size(), numSamples);
+
+    // FX tempo source for sends/master: the sync master deck
+    mixer_.setFxSyncMaster(syncRt_.masterDeck >= 0 ? syncRt_.masterDeck : 0);
 
     mixer_.render(outputChannelData, numOutputChannels, numSamples,
                   decks_.data(), (int)decks_.size(), stats_);

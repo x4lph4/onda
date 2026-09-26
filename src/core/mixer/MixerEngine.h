@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "../audio/AudioFormat.h"
+#include "../fx/FXEngine.h"
 #include "../model/MasterStats.h"
 #include "../rt/AudioStats.h"
 #include "ChannelStrip.h"
@@ -22,10 +23,17 @@ class DeckEngine;
 ///
 ///   sources render into strip inputs  (decks today; sampler/external/
 ///   FX-return sources later — they just write strip.inL/inR)
-///     for each channel:  trim -> EQ -> filter -> [PFL cue tap]
-///                        -> fader/mute/solo -> xf assign -> master sum
+///     per channel:  insert FX rack -> trim -> EQ -> filter
+///                   -> [PFL cue tap] -> fader/mute/solo
+///                   -> [post tap -> send buses -> send FX -> return]
+///                   -> xf assign -> master sum
+///     master insert FX rack
 ///     master bus:  gain/mute -> limiter -> meters -> out[0..1]
 ///     phones bus:  (cueSum * (1-mix) + masterPost * mix) * cueVol -> out[2..3]
+///
+/// Cue behavior: the PFL tap is pre-fader but post insert-FX — the DJ
+/// hears exactly what the channel produces; send/return FX are post-
+/// fader and intentionally NOT in the cue path.
 ///
 /// All parameter setters are RT-thread only — they are invoked from the
 /// engine's command dispatch, never cross-thread. Use MixerController /
@@ -49,6 +57,16 @@ public:
     mixer::HeadphoneBus&   phones() noexcept      { return phones_; }
     mixer::CrossfaderEngine& xf() noexcept        { return xf_; }
     const mixer::RoutingEngine& routing() const noexcept { return routing_; }
+
+    // ---- FX engine (insert racks, send/return buses, master rack) ----
+    fx::FXEngine&       fx() noexcept       { return fx_; }
+    const fx::FXEngine& fx() const noexcept { return fx_; }
+    /// Which deck feeds tempo to send/master racks (sync master).
+    void setFxSyncMaster(int deck) noexcept { fx_.setSyncMaster(deck); }
+    /// Non-RT housekeeping: frees FX processors retired by the RT
+    /// thread after effect swaps. Call periodically from a control
+    /// thread (MixerController's loader does it per swap).
+    void fxHousekeeping() noexcept { fx_.collectTrash(); }
 
     /// RT: generic parameter setter (ids from ParameterRegistry).
     void setParam(uint16_t id, float v) noexcept;
@@ -85,6 +103,7 @@ private:
     mixer::MasterBus        master_;
     mixer::HeadphoneBus     phones_;
     mixer::RoutingEngine    routing_;
+    fx::FXEngine            fx_;
 
     std::vector<float> mixL_, mixR_, cueL_, cueR_; // bus scratch (preallocated)
 
