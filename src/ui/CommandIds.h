@@ -46,6 +46,18 @@ enum Id : uint32_t {
     WaveGridEditTgl  = 0x0084,  // grid-edit mode on/off
     DeckTimeMode     = 0x0085,  // cycle ELAPSED → REMAINING → TOTAL
 
+    // ---- Phase 20 performance surface: +deck*0x400 ----
+    DeckCueSet       = 0x0086,  // set temporary cue point at playhead
+    DeckInstantRestart = 0x0087,// restart from cue point (sync untouched)
+    DeckLoopSizeUp   = 0x0088,  // step auto-loop size up (1/32…32 bt)
+    DeckLoopSizeDn   = 0x0089,  // step auto-loop size down
+    DeckLoopSizeTrig = 0x008A,  // fire auto-loop at the selected size
+    DeckRollGate     = 0x008B,  // press=loop roll@arg idx, release=end
+    DeckJumpSizeUp   = 0x008C,  // step beat-jump size up (1…64 bt)
+    DeckJumpSizeDn   = 0x008D,  // step beat-jump size down
+    DeckRevHold      = 0x008E,  // momentary reverse (press/release)
+    DeckMemCueBase   = 0x00A0,  // + slot*4 + action (0 goto,1 set,2 del)
+
     // ---- mixer: 0x2000 + (ch << 6) | kind ----
     MixChannelBase   = 0x2000,  // channel ops take (ch, kind) — routed via
                                 // MixerController param ids, not commands
@@ -146,6 +158,9 @@ enum Id : uint32_t {
     AppFullscreen      = 0x3F02,
     AppPanic           = 0x3F03,   // stop all decks + center xf
     AppToggleFx        = 0x3F04,
+    // ---- Phase 20: performance undo ----
+    PerfUndo           = 0x3F10,   // undo last cue/loop/grid edit
+    PerfRedo           = 0x3F11,
 
     Invalid = 0xFFFFFFFF
 };
@@ -159,6 +174,10 @@ constexpr uint32_t actionOf(uint32_t id) { return id & 0x3FFu; }
 /// Hot-cue: id = DeckHotCueBase + slot*4 + action (0 trig/1 set/2 del)
 constexpr uint32_t forHotCue(int deck, int slot, int action) {
     return forDeck(DeckHotCueBase, deck) + (uint32_t)(slot * 4 + action);
+}
+/// Memory cue: id = DeckMemCueBase + slot*4 + action (0 goto/1 set/2 del)
+constexpr uint32_t forMemCue(int deck, int slot, int action) {
+    return forDeck(DeckMemCueBase, deck) + (uint32_t)(slot * 4 + action);
 }
 /// Pad press: id = PadPressBase + deck*0x20 + pad + (shift? 0x10 : 0)
 constexpr uint32_t forPad(int deck, int pad, bool shift = false) {

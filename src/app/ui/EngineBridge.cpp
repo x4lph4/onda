@@ -85,6 +85,27 @@ EngineBridge::EngineBridge(audio::AudioEngine& engine,
                 analysis_.trackIdFor(path), conf);
         }
     };
+    // Phase 20 §41 — undo restores a captured effective grid verbatim:
+    // rescale back to analysis units, persist as the user override,
+    // republish to the deck. Used ONLY by the undo layer.
+    ports_.gridRestore = [this](int d, const BeatGrid& captured) {
+        const std::string path = deckPath_[d & 3];
+        if (path.empty() || captured.empty()) return;
+        const double ar = [&] {
+            if (auto b = analysis_.getAnalysis(path))
+                if (b->result.sampleRate > 0.0) return b->result.sampleRate;
+            return 48000.0; }();
+        const double dev = engine_.sampleRate() > 0.0
+                         ? engine_.sampleRate() : ar;
+        BeatGrid g = captured.rescaled(ar);
+        analysis_.saveUserGrid(path, g);
+        float conf = 0.7f;
+        if (auto b = analysis_.getAnalysis(path))
+            conf = b->result.bpm.confidence;
+        perf_.attachGrid(d,
+            std::make_shared<BeatGrid>(g.rescaled(dev)),
+            analysis_.trackIdFor(path), conf);
+    };
 
     // Phase 15: copyable sync diagnostics → clipboard
     ports_.copySyncDiag = [this](int d) {

@@ -55,6 +55,49 @@ public:
         return false;
     }
 
+    /// §4 MOVE — reposition the cue; `beat` re-derives through the grid
+    /// so quantize re-resolution stays musical.
+    bool moveCue(int slot, int64_t frame, const BeatGrid* grid) {
+        for (auto& c : cues_)
+            if (c.slot == slot) {
+                c.frame = frame;
+                c.beat = grid ? grid->frameToBeat(frame) : -1.0;
+                return true;
+            }
+        return false;
+    }
+    bool setKind(int slot, HotKind kind) {
+        for (auto& c : cues_)
+            if (c.slot == slot) { c.kind = kind; return true; }
+        return false;
+    }
+    bool setEnabled(int slot, bool on) {
+        for (auto& c : cues_)
+            if (c.slot == slot) { c.enabled = on; return true; }
+        return false;
+    }
+    bool setQuantized(int slot, bool on) {
+        for (auto& c : cues_)
+            if (c.slot == slot) { c.quantized = on; return true; }
+        return false;
+    }
+    bool setComment(int slot, std::string text) {
+        for (auto& c : cues_)
+            if (c.slot == slot) { c.comment = std::move(text); return true; }
+        return false;
+    }
+    /// §2 — first slot not occupied by any cue of `type` (model
+    /// unbounded; `limit` is the caller's display convention).
+    int firstFreeSlot(CueType type, int limit) const {
+        for (int s = 0; s < limit; ++s) {
+            bool used = false;
+            for (auto& c : cues_) if (c.slot == s && c.type == type)
+                { used = true; break; }
+            if (!used) return s;
+        }
+        return -1;
+    }
+
     void clearAll() { cues_.clear(); }
     void load(const std::vector<Cue>& cues) { cues_ = cues; }
 
@@ -68,9 +111,10 @@ public:
                                    double quantumBeats = 1.0,
                                    int64_t* loopOut = nullptr) const {
         const Cue* c = get(slot);
-        if (!c) return std::nullopt;
+        if (!c || !c->enabled) return std::nullopt;
         int64_t target = c->frame;
-        if (quantizeOn && grid && !grid->empty()) {
+        // §2 per-cue opt-out: quantized == false skips grid snapping.
+        if (quantizeOn && c->quantized && grid && !grid->empty()) {
             // Re-resolve from the stored musical position so the cue
             // stays correct after manual beatgrid edits.
             const double beat = c->beat >= 0.0 ? c->beat
@@ -79,7 +123,8 @@ public:
                                           quantumBeats);
         }
         if (loopOut && c->type == CueType::Loop) {
-            if (quantizeOn && grid && !grid->empty() && c->beat2 >= 0.0)
+            if (quantizeOn && c->quantized && grid && !grid->empty()
+                && c->beat2 >= 0.0)
                 *loopOut = QuantizeEngine::snap(*grid,
                                                 grid->beatToFrame(c->beat2),
                                                 quantumBeats);

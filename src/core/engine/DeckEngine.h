@@ -56,6 +56,10 @@ public:
     /// endSlip the deck jumps to where the track "would have been".
     void beginSlip() noexcept;
     void endSlip() noexcept;
+    /// Phase 20 §17: permanent moves under slip (hot cue, beat jump)
+    /// re-anchor the shadow at the new position so slip-off doesn't
+    /// jump back to the pre-action timeline.
+    void reanchorSlip() noexcept;
     bool slipActive() const noexcept { return slipActive_; }
 
     // ---- sync (RT) ----

@@ -151,6 +151,13 @@ void DeckEngine::endSlip() noexcept {
     }
 }
 
+void DeckEngine::reanchorSlip() noexcept {
+    // Phase 20 §17: a permanent move under slip (hot cue, beat jump)
+    // re-anchors the shadow at the new position — slip-off later does
+    // NOT jump back to the pre-cue timeline.
+    if (slipActive_) slipShadow_ = displayedPos();
+}
+
 void DeckEngine::advanceSlip(int produced) noexcept {
     if (!slipActive_ || track_ == nullptr) return;
     slipShadow_ += std::fabs(resolvedRate()) * (double)produced;

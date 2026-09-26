@@ -21,12 +21,17 @@ public:
     void saveCue(int64_t trackId, const Cue& c) {
         auto s = db_.prepare(
             "INSERT OR REPLACE INTO cues(track_id,slot,type,frame,frame2,"
-            "beat,beat2,argb,label,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)");
+            "beat,beat2,argb,label,created_at,kind,enabled,quantized,"
+            "comment) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
         s.bind(1, trackId);           s.bind(2, (int64_t)c.slot);
         s.bind(3, (int64_t)c.type);   s.bind(4, c.frame);
         s.bind(5, c.frame2);          s.bind(6, c.beat);
         s.bind(7, c.beat2);           s.bind(8, (int64_t)c.argb);
         s.bind(9, c.label);           s.bind(10, c.createdAt);
+        s.bind(11, (int64_t)c.kind);
+        s.bind(12, (int64_t)(c.enabled ? 1 : 0));
+        s.bind(13, (int64_t)(c.quantized ? 1 : 0));
+        s.bind(14, c.comment);
         s.step(); s.finalize();
     }
 
@@ -45,7 +50,8 @@ public:
     std::vector<Cue> loadCues(int64_t trackId) {
         std::vector<Cue> out;
         auto s = db_.prepare(
-            "SELECT slot,type,frame,frame2,beat,beat2,argb,label,created_at"
+            "SELECT slot,type,frame,frame2,beat,beat2,argb,label,created_at,"
+            "kind,enabled,quantized,comment"
             " FROM cues WHERE track_id=? ORDER BY slot");
         s.bind(1, trackId);
         while (s.step()) {
@@ -55,6 +61,10 @@ public:
             c.beat = s.colDouble(4);   c.beat2 = s.colDouble(5);
             c.argb = (uint32_t)s.colInt(6);
             c.label = s.colText(7);    c.createdAt = s.colInt(8);
+            c.kind = (HotKind)(int)s.colInt(9);
+            c.enabled   = s.colInt(10) != 0;
+            c.quantized = s.colInt(11) != 0;
+            c.comment   = s.colText(12);
             out.push_back(std::move(c));
         }
         s.finalize();

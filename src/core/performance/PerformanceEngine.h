@@ -16,8 +16,15 @@
 #include "../sync/TempoMaster.h"
 #include "BeatJumpEngine.h"
 #include "CueEngine.h"
+#include "HotCueManager.h"
+#include "LoopSizeController.h"
+#include "MemoryCueManager.h"
+#include "PerformanceDiagnostics.h"
+#include "PerformanceScheduler.h"
 #include "PerformanceTypes.h"
 #include "QuantizeEngine.h"
+#include "ReverseEngine.h"
+#include "SlipEngine.h"
 #include "SmartLoopEngine.h"
 
 namespace onda {
@@ -136,13 +143,54 @@ public:
     /// Returns false when the slot is empty or the deck has no track.
     bool triggerCue(int deck, int slot);
 
+    // ---- cue managers + field edits (Phase 20 §2-8, §38) ----
+    /// Typed facades — same underlying storage, no duplication.
+    HotCueManager    hot(int deck);
+    MemoryCueManager memory(int deck);
+    std::vector<const Cue*> hotCues(int deck) const;
+    std::vector<const Cue*> memoryCues(int deck) const;
+    bool moveCue(int deck, int slot, int64_t frame);
+    bool renameCue(int deck, int slot, const std::string& label);
+    bool recolorCue(int deck, int slot, uint32_t argb);
+    bool setCueEnabled(int deck, int slot, bool on);
+    bool setCueKind(int deck, int slot, HotKind k);
+    bool setCueQuantized(int deck, int slot, bool on);
+    bool setCueComment(int deck, int slot, std::string comment);
+    /// §5 — what a hot-cue trigger does while stopped (JumpPlay/JumpCue).
+    void setHotCueMode(int deck, HotCueMode m);
+    HotCueMode hotCueMode(int deck) const;
+
+    // ---- cue point + cue button (§24-26) ----
+    /// Temporary navigation point — NOT a hot cue (session-only, the
+    /// classic "memoryless" CUE). setCuePoint(-1) = current position.
+    void setCuePoint(int deck, int64_t frame = -1);
+    int64_t cuePoint(int deck) const;
+    /// Device-agnostic cue button (§25): press while playing returns
+    /// to the cue point and pauses; press while paused sets the point
+    /// and previews while held; release returns to it.
+    void cueButton(int deck, CuePhase ph);
+    /// §26 — restart playback from the cue point. Never touches the
+    /// sync/session clock state.
+    void instantRestart(int deck);
+
     // ---- beat jump ----
     void beatJump(int deck, double beats);
+    /// §19 — sized jump through the LoopSizeController table; sign
+    /// comes from `dir` (-1 back, +1 fwd) so callers stay index-based.
+    void beatJumpIdx(int deck, int idx, int dir = 1);
+    void setJumpSizeIndex(int deck, int idx);
+    int  jumpSizeIndex(int deck) const;
+    double jumpSizeBeats(int deck) const;
 
     // ---- loops ----
     void loopIn(int deck);                     // mark pending in-point
     void loopOut(int deck);                    // complete the loop
     void loopBeats(int deck, double beats);    // auto beat loop
+    /// §11 — auto loop through the size table (1/32 … 32 beats).
+    void loopBeatsIdx(int deck, int idx);
+    void setLoopSizeIndex(int deck, int idx);
+    int  loopSizeIndex(int deck) const;
+    double loopSizeBeats(int deck) const;
     void loopToggle(int deck);
     void reloop(int deck);
     void loopHalve(int deck);
@@ -151,6 +199,8 @@ public:
     void exitLoop(int deck);
     /// Loop roll: temporary loop while the shadow position advances.
     void loopRoll(int deck, double beats);
+    /// §16 — sized roll via kRollSizes (1/32 … 1 beat).
+    void loopRollIdx(int deck, int idx);
     void loopRollEnd(int deck);
     // ---- saved loops ----
     void saveLoop(int deck, int slot);
@@ -158,10 +208,48 @@ public:
     void deleteSavedLoop(int deck, int slot);
     std::vector<SavedLoop> savedLoops(int deck) const;
 
-    // ---- slip / reverse ----
+    // ---- slip / reverse (§17-18, §27-28) ----
     void setSlip(int deck, bool on);
-    bool slipOn(int deck) const;
-    void setReverse(int deck, bool on); // honours slip shadow
+    bool slipOn(int deck) const;      // user-mode toggle state
+    bool slipActive(int deck) const;  // any ref held (mode/roll/momentary)
+    void setReverse(int deck, bool on);
+    /// §27 momentary reverse — held = reversed; release restores the
+    /// latched direction. Under slip the shadow keeps advancing (§28).
+    void reverseMomentary(int deck, bool held);
+    bool reverseEffective(int deck) const;
+
+    /// §36 — manual-loop in-point armed (waiting for out).
+    bool loopInArmed(int deck) const {
+        return deck >= 0 && deck < kMaxDecks
+            && ctx(deck).pendingLoopIn >= 0;
+    }
+    /// §36 — roll in flight on this deck (slip Roll ref held).
+    bool rollActive(int deck) const {
+        return deck >= 0 && deck < kMaxDecks && ctx(deck).slip.rolling();
+    }
+
+    // ---- undo support (§41) ----
+    /// Verbatim re-insert of a captured cue (undo of delete/set).
+    void restoreCue(int deck, const Cue& c);
+    /// Verbatim re-insert of a captured saved loop.
+    void restoreLoop(int deck, const SavedLoop& l);
+    /// Live-loop range snapshot for undo of loop ops.
+    void loopRange(int deck, int64_t& in, int64_t& out) const;
+    /// Restore a live loop range (in<0 = clear the loop).
+    void restoreLoopRange(int deck, int64_t in, int64_t out, bool on);
+
+    // ---- scheduler + diagnostics (§29-31, §43, §50) ----
+    /// Deterministic ordering layer — every performance action's rt
+    /// commands post here and flush in documented priority order.
+    PerformanceScheduler&       scheduler()       { return sched_; }
+    const PerformanceScheduler& scheduler() const { return sched_; }
+    const PerformanceDiagnostics& diag()    const { return diag_; }
+    std::string perfDiagText(int deck) const { return diag_.text(deck); }
+    /// Flush pending scheduler commands to the sink. Public mutators
+    /// call it themselves; exposed for the safety flush in poll().
+    void commit();
+    /// §43 — last rejection reason per deck (Ok when healthy).
+    PerfError lastError(int deck) const;
 
     // ---- non-RT tick ----
     /// Free retired grids + emit beat/bar/loop/slip transitions.
@@ -181,16 +269,22 @@ private:
         std::vector<SavedLoop> loops;
         bool   quantizeOn { false };
         Quantize quantum  { Quantize::Beat1 };
-        bool   slipOn     { false };
+        SlipEngine    slip;             // §17 — refcounted sources
+        ReverseEngine rev;              // §27 — latch + momentary XOR
         SyncMode mode     { SyncMode::Off };
         /// Last rejected sync request — surfaced by syncStatus so a
         /// missing/unreliable grid is never silently ignored.
         SyncStatus lastError { SyncStatus::Off };
+        PerfError  lastErr   { PerfError::Ok };   // §43 perf rejections
         bool   syncLock   { true };    // sync survives track change
         float  gridConf   { 0.7f };    // analysis confidence at attach
         int64_t pendingLoopIn { -1 };
         int64_t lastLoopIn { -1 }, lastLoopOut { -1 };
-        bool   rolling { false };
+        int64_t cuePoint  { -1 };      // §24 — temporary cue (session)
+        bool   cuePreview { false };   // §25 — cue-hold preview active
+        HotCueMode hotMode { HotCueMode::JumpPlay }; // §5
+        int    loopSizeIdx { 5 };      // §11 — kLoopSizes index (1 bt)
+        int    jumpSizeIdx { 2 };      // §19 — kJumpSizes index (4 bt)
         // poll() edge detection
         int    lastBeatInt { -1 };
         int    lastBarInt  { -1 };
@@ -198,9 +292,18 @@ private:
         bool   lastSlip    { false };
     };
 
+    /// Post through the scheduler — deterministic priority ordering
+    /// (§29-31). `send()` is post-only; public methods call commit()
+    /// before returning so a whole action flushes in policy order.
     void   send(const rt::Command& c);
     void   emit(PerfEventType t, int deck, int slot = -1, double v = 0.0);
+    void   reject(int deck, PerfError e, int slot = -1);   // §43
+    /// §43 — stats wired AND a real track present (not Empty). Actions
+    /// on an empty deck reject deterministically instead of emitting
+    /// commands into a deck with nothing loaded.
+    bool    hasTrack(int deck) const;
     int64_t curFrame(int deck) const;
+    static int deckOf(const rt::Command& c);
     DeckCtx& ctx(int deck) { return decks_[(size_t)deck]; }
     const DeckCtx& ctx(int deck) const { return decks_[(size_t)deck]; }
     void   persistCue(const DeckCtx& d, const Cue& c);
@@ -209,6 +312,8 @@ private:
 
     std::function<void(const rt::Command&)> sink_;
     PerformanceStore* store_ { nullptr };
+    PerformanceScheduler sched_;
+    PerformanceDiagnostics diag_;
     std::array<DeckCtx, kMaxDecks> decks_;
     std::vector<Listener> listeners_;
     int master_ { -1 };

@@ -403,20 +403,20 @@ TEST_CASE("slip: loop roll returns to shadow position", "[perf]") {
     REQUIRE_FALSE(rig.stats[0].slip.load());
 }
 
-TEST_CASE("slip: hot cue during slip snaps back on release", "[perf]") {
+TEST_CASE("slip: hot cue during slip re-anchors the shadow (Phase 20)",
+          "[perf]") {
     Rig rig;
     rig.load(0, 120.0);
     rig.decks[0].setPlaying(true);
     rig.secs(2.0);
     rig.perf.setSlip(0, true);
-    const int64_t before = rig.pos(0);
     rig.perf.setCue(0, 0, CueType::Hot, 24000 * 20);
-    rig.perf.triggerCue(0, 0);
+    rig.perf.triggerCue(0, 0);   // permanent move → shadow re-anchors
     rig.secs(1.0);
-    rig.perf.setSlip(0, false); // release → recover shadow
-    rig.block(2);
-    const int64_t expected = before + (int64_t)(1.0 * kRate);
-    REQUIRE(rig.pos(0) == Approx(expected).margin(700));
+    rig.perf.setSlip(0, false);  // release → continue from the CUE
+    rig.block(2);                // timeline, no snap-back
+    const int64_t expected = 24000 * 20 + (int64_t)(1.0 * kRate);
+    REQUIRE(rig.pos(0) == Approx(expected).margin(3000));
 }
 
 // ============================== STRESS ================================

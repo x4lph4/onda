@@ -42,6 +42,7 @@ struct SyncSetMaster  { uint8_t deck; };                 // 255 = no master
 struct SyncSetMode    { uint8_t deck; uint8_t mode; };   // SyncMode
 struct SlipBegin      { uint8_t deck; };
 struct SlipEnd        { uint8_t deck; };
+struct SlipReanchor   { uint8_t deck; };  // shadow := displayed pos (Phase 20)
 
 // ---- generic mixer parameter (ids from mixer::ParameterRegistry) ----
 struct SetParam       { uint16_t id; float v; };
@@ -61,7 +62,7 @@ using Command = std::variant<
     SetQuantize, SetLoop, SetLoopOn, SetLoopSize,
     SetEqBand, SetFilter,
     DeckSeekFrame, SetLoopFrames, SyncSetMaster, SyncSetMode,
-    SlipBegin, SlipEnd, SetParam,
+    SlipBegin, SlipEnd, SlipReanchor, SetParam,
     SampleTrigger, SampleRelease, SampleStop,
     SampleSlotParam, SamplerParam>;
 

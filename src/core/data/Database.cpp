@@ -218,6 +218,15 @@ CREATE VIRTUAL TABLE tracks_fts USING fts5(
 
 CREATE INDEX IF NOT EXISTS idx_tracks_label ON tracks(label);
 )SQL",
+
+    // v6 — Phase 20 performance data: hot-cue sub-kind (instant/cue),
+    // per-cue enable + quantize opt-out, memory-cue comment field
+    R"SQL(
+ALTER TABLE cues ADD COLUMN kind INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE cues ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE cues ADD COLUMN quantized INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE cues ADD COLUMN comment TEXT;
+)SQL",
 };
 
 bool Database::open(const std::string& path) {

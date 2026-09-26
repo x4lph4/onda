@@ -13,7 +13,7 @@
 
 namespace onda::sampler { class SamplerEngine; }
 namespace onda::rec     { class RecordingEngine; }
-namespace onda::ui      { class FXSurface; }
+namespace onda::ui      { class FXSurface; class UndoManager; }
 
 namespace onda::ui {
 
@@ -61,6 +61,12 @@ struct EnginePorts {
     /// (deck, action id low bits, value). Zoom/autoscroll/grid-edit/
     /// time-mode are presentation state — they never touch engines.
     std::function<void(int, int, double)>     viewAction;
+    /// Phase 20 §41 — shared performance undo stack (owned by the
+    /// app; commands record cue/loop/grid edits into it).
+    UndoManager*                              undo = nullptr;
+    /// (deck, captured effective grid) → restore grid + persist the
+    /// override. Used ONLY by undo — regular edits go via analysisEdit.
+    std::function<void(int, const BeatGrid&)> gridRestore;
 };
 
 /// Register the whole command surface. All commands are POD-safe:

@@ -14,7 +14,7 @@ namespace onda::ui::pads {
 /// DDJ-FLX4, keyboard, UI clicks and future hardware.
 class PadModeManager {
 public:
-    static constexpr int kDecks = 2;
+    static constexpr int kDecks = 4;
     static constexpr int kPads  = 8;
 
     PadMode mode(int deck) const { return mode_[deck & (kDecks-1)]; }
@@ -68,20 +68,38 @@ public:
                               beatJumpBeats(pad))) + "BT";
                 return a;
 
-            case PadMode::Loop:
+            case PadMode::Loop: {
                 if (!press) { a.kind = PadAction::None; return a; }
                 a.kind = PadAction::Command;
-                // pads: 1-2 halve/double, 3 in, 4 out,
-                //       5-8 sized loops via loopToggle
+                // pads 1-4: halve/double/in/out — pads 5-8: sized
+                // loops 0.5/1/2/4 beats (arg = 10 + size-table index,
+                // §11 encoding used by deck.loopSized)
+                static const int kSz[4] = { 4, 5, 6, 7 }; // .5/1/2/4bt
                 a.cmdId = cmd::forDeck(
                     pad == 0 ? cmd::DeckLoopHalve
                   : pad == 1 ? cmd::DeckLoopDouble
                   : pad == 2 ? cmd::DeckLoopIn
                   : pad == 3 ? cmd::DeckLoopOut
-                             : cmd::DeckLoopToggle, deck);
+                             : cmd::DeckLoopSizeTrig, deck);
+                if (pad >= 4) a.arg = (float)(10 + kSz[pad - 4]);
                 a.label = pad == 0 ? "LP/2" : pad == 1 ? "LPx2"
                         : pad == 2 ? "L-IN" : pad == 3 ? "L-OUT"
-                        : "LOOP";
+                        : std::string("LP") +
+                          std::to_string(kSz[pad - 4] >= 5
+                              ? 1 << (kSz[pad - 4] - 5) : 0)
+                          + (kSz[pad - 4] == 4 ? ".5" : "");
+                return a; }
+
+            case PadMode::Roll:
+                // §15-16 gated loop roll: pad down = roll at that
+                // size, pad up = release (slip restores the shadow).
+                // pads 1-6 → 1/32…1 beat; 7-8 → extended 2/4 beats.
+                a.kind = PadAction::Command;
+                a.cmdId = cmd::forDeck(cmd::DeckRollGate, deck);
+                a.arg = press ? (float)(pad + 1) : 0.0f;
+                {   static const char* kN[8] = { "1/32","1/16","1/8",
+                                                 "1/4","1/2","1","2","4" };
+                    a.label = std::string("RL") + kN[pad]; }
                 return a;
 
             case PadMode::PadFx:
@@ -100,8 +118,8 @@ public:
     }
 
 private:
-    std::array<PadMode, kDecks> mode_ { PadMode::HotCue,
-                                        PadMode::HotCue };
+    std::array<PadMode, kDecks> mode_ { PadMode::HotCue, PadMode::HotCue,
+                                        PadMode::HotCue, PadMode::HotCue };
 };
 
 } // namespace onda::ui::pads

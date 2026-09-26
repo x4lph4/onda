@@ -2,6 +2,47 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 20 (professional performance engine)
+
+Complete musical performance layer
+(`docs/performance/performance-engine.md`,
+`docs/adr/0020-performance-engine.md`) — every action resolves
+through a deterministic scheduler into frame-accurate rt commands.
+
+- `PerformanceEngine` facade over named components: `CueEngine`,
+  `HotCueManager`/`MemoryCueManager` (typed facades, shared storage),
+  `SmartLoopEngine`, `LoopSizeController` (canonical 1/32…32 beat
+  tables), `BeatJumpEngine`, `QuantizeEngine`, `SlipEngine`
+  (reference-counted sources), `ReverseEngine` (latch XOR momentary),
+  `PerformanceScheduler` (7-class priority + per-deck coalescing),
+  `PerformanceDiagnostics` (per-deck counters + last-error).
+- Hot cues: kind (Instant/Cue), enabled, per-cue quantize opt-out,
+  comments; stopped-deck `HotCueMode` (JumpPlay/JumpCue). Memory cues:
+  navigation-only, comment, hollow waveform flags + panel strip.
+- Loops: manual in/out, sized auto-loops, halve/double/move, saved
+  loops — all grid-resolved. Loop roll = gated sized loop holding a
+  slip ref; release recovers the shadow timeline (no snap-back).
+- Beat jump ±1…64 beats through the grid; quantize per deck with
+  selectable resolution; slip re-anchor on permanent moves; momentary
+  + latched reverse; session cue point with CUE press/release/hold;
+  instant restart that never touches sync/master clock.
+- Commands `0x0086+`: `cueSet`, `instantRestart`, loop/jump size
+  steppers, `loopSized`, gated `roll`, `revHold`, memory-cue ops,
+  global `perf.undo`/`perf.redo` (before/after state capture for
+  cue/loop/grid edits via `UndoManager`).
+- `PadModeManager` → 4 decks + Roll gate mode; `PadFeedbackEngine`
+  per-pad light model (Off/Dim/Set/Selected/Playing) shared by the UI
+  pad row and FLX4 LEDs (`flx4LedValue` levels).
+- `PerformancePanel` per deck — pads, loop/jump clusters, roll gate,
+  bend, memory strip — fed by the snapshot, zero engine access.
+- Schema v6 persists cue kind/enabled/quantized/comment keyed by
+  `track_id`; verified relink survives file moves.
+- 36 new tests (**393 cases / 1,644,293 assertions green**): component
+  units, trigger semantics, sized/manual/roll loops, beat jumps,
+  quantize + timing at 90/120/128/140 BPM, slip layering + reanchor,
+  reverse, persistence/relocation round-trip, failure recovery,
+  4-deck stress (160 mixed actions ≈ 10 ms Debug).
+
 ## Status — Phase 19 (waveform performance view)
 
 Professional deck visualization layer

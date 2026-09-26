@@ -1,6 +1,9 @@
 #include "EngineCommands.h"
 
+#include <optional>
+
 #include "FXSurface.h"
+#include "UndoManager.h"
 #include "core/analysis/AnalysisTypes.h"
 #include "core/mixer/MixerTypes.h"
 #include "core/rec/RecordingEngine.h"
@@ -11,6 +14,18 @@ namespace onda::ui {
 namespace {
 
 const char* kDeckName[4] = { "Deck A", "Deck B", "Deck C", "Deck D" };
+
+/// §41 undo helpers — capture value copies before the op mutates.
+std::optional<Cue> grabCue(PerformanceEngine* e, int d, int s) {
+    if (!e) return std::nullopt;
+    for (const auto& c : e->cues(d))
+        if (c.slot == s) return c;
+    return std::nullopt;
+}
+std::shared_ptr<BeatGrid> grabGrid(PerformanceEngine* e, int d) {
+    const BeatGrid* g = e ? e->grid(d) : nullptr;
+    return g ? std::make_shared<BeatGrid>(*g) : nullptr;
+}
 
 Command mk(uint32_t id, std::string name, std::string cat,
            std::function<void(float, CommandSource)> run,
@@ -59,14 +74,11 @@ void registerEngineCommands(CommandManager& cm,
         cm.add(mk(cmd::forDeck(cmd::DeckCueTrigger, d),
             "deck" + dn + ".cueTrigger", cat,
             [p, d](float v, CommandSource) {
-                // value>0 press → seek to cue + play; release → stop
-                if (v > 0.5f) {
-                    if (p.perf) p.perf->triggerCue(d, 0);
-                    push(p.queue, rt::DeckTransport{(uint8_t)d, 1});
-                } else {
-                    push(p.queue, rt::DeckTransport{(uint8_t)d, 0});
-                    if (p.perf) p.perf->triggerCue(d, 0);
-                }
+                // Phase 20 §24-25 — dedicated cue button: press while
+                // playing returns+pauses; press while paused defines
+                // the point + previews; release returns to it.
+                if (p.perf) p.perf->cueButton(d,
+                    v > 0.5f ? CuePhase::Press : CuePhase::Release);
             }));
 
         cm.add(mk(cmd::forDeck(cmd::DeckSyncToggle, d),
@@ -115,7 +127,21 @@ void registerEngineCommands(CommandManager& cm,
         cm.add(mk(cmd::forDeck(cmd::DeckLoopToggle, d),
             "deck" + dn + ".loopToggle", cat,
             [p, d](float, CommandSource) {
-                if (p.perf) p.perf->loopToggle(d);
+                if (!p.perf) return;
+                int64_t i0 = -1, o0 = -1;
+                p.perf->loopRange(d, i0, o0);
+                const auto* st = p.deckStats ? p.deckStats(d) : nullptr;
+                const bool wasOn = st && st->loopOn.load();
+                p.perf->loopToggle(d);
+                int64_t i1 = -1, o1 = -1;
+                p.perf->loopRange(d, i1, o1);
+                const bool on1 = !wasOn && i1 >= 0 && o1 > i1;
+                if (p.undo)
+                    p.undo->record("loop toggle",
+                        [p, d, i0, o0, wasOn] {
+                            p.perf->restoreLoopRange(d, i0, o0, wasOn); },
+                        [p, d, i1, o1, on1] {
+                            p.perf->restoreLoopRange(d, i1, o1, on1); });
             },
             [ds]() { DeckStats* s = ds();
                      return s && s->loopOn.load() ? 1 : 0; }));
@@ -125,41 +151,81 @@ void registerEngineCommands(CommandManager& cm,
             [p, d](float, CommandSource) {
                 if (p.perf) p.perf->loopIn(d);
             }));
-        cm.add(mk(cmd::forDeck(cmd::DeckLoopOut, d),
-            "deck" + dn + ".loopOut", cat,
-            [p, d](float, CommandSource) {
-                if (p.perf) p.perf->loopOut(d);
-            }));
-        cm.add(mk(cmd::forDeck(cmd::DeckLoopHalve, d),
-            "deck" + dn + ".loopHalve", cat,
-            [p, d](float, CommandSource) {
-                if (p.perf) p.perf->loopHalve(d);
-            }));
-        cm.add(mk(cmd::forDeck(cmd::DeckLoopDouble, d),
-            "deck" + dn + ".loopDouble", cat,
-            [p, d](float, CommandSource) {
-                if (p.perf) p.perf->loopDouble(d);
-            }));
-        cm.add(mk(cmd::forDeck(cmd::DeckLoopMoveL, d),
-            "deck" + dn + ".loopMoveLeft", cat,
-            [p, d](float, CommandSource) {
-                if (p.perf) p.perf->loopMove(d, -1.0);
-            }));
-        cm.add(mk(cmd::forDeck(cmd::DeckLoopMoveR, d),
-            "deck" + dn + ".loopMoveRight", cat,
-            [p, d](float, CommandSource) {
-                if (p.perf) p.perf->loopMove(d, 1.0);
+        // §41 — loop ops record range+state so undo restores both.
+        // `endedOn` is the post-op loop-enable the redo must restore
+        // (setLoopFrames always re-arms a valid range).
+        auto loopOp = [&](cmd::Id id, const char* name,
+                          std::function<void()> op,
+                          std::function<bool(bool)> endedOn) {
+            cm.add(mk(cmd::forDeck(id, d), "deck" + dn + "." + name, cat,
+                [p, d, op, endedOn, name](float, CommandSource) {
+                    if (!p.perf) return;
+                    int64_t i0 = -1, o0 = -1;
+                    p.perf->loopRange(d, i0, o0);
+                    const auto* st = p.deckStats ? p.deckStats(d) : nullptr;
+                    const bool wasOn = st && st->loopOn.load();
+                    op();
+                    int64_t i1 = -1, o1 = -1;
+                    p.perf->loopRange(d, i1, o1);
+                    const bool on1 = endedOn(wasOn);
+                    if (p.undo) {
+                        const std::string lbl =
+                            std::string("loop ") + name;
+                        p.undo->record(lbl,
+                            [p, d, i0, o0, wasOn] {
+                                p.perf->restoreLoopRange(d, i0, o0, wasOn); },
+                            [p, d, i1, o1, on1] {
+                                p.perf->restoreLoopRange(d, i1, o1, on1); });
+                    }
+                }));
+        };
+        loopOp(cmd::DeckLoopOut, "loopOut",
+               [p, d] { p.perf->loopOut(d); }, [](bool) { return true; });
+        loopOp(cmd::DeckLoopHalve, "loopHalve",
+               [p, d] { p.perf->loopHalve(d); }, [](bool) { return true; });
+        loopOp(cmd::DeckLoopDouble, "loopDouble",
+               [p, d] { p.perf->loopDouble(d); }, [](bool) { return true; });
+        loopOp(cmd::DeckLoopMoveL, "loopMoveLeft",
+               [p, d] { p.perf->loopMove(d, -1.0); }, [](bool) { return true; });
+        loopOp(cmd::DeckLoopMoveR, "loopMoveRight",
+               [p, d] { p.perf->loopMove(d, 1.0); }, [](bool) { return true; });
+        // sized auto-loop: arg >= 10.5 → explicit index (pads send
+        // 10+idx); otherwise the deck's selected size index.
+        auto sized = [p, d](float v) {
+            const int idx = v >= 10.5f ? (int)v - 10
+                                       : p.perf->loopSizeIndex(d);
+            p.perf->loopBeatsIdx(d, idx);
+        };
+        cm.add(mk(cmd::forDeck(cmd::DeckLoopSizeTrig, d),
+            "deck" + dn + ".loopSized", cat,
+            [p, d, sized](float v, CommandSource) {
+                if (!p.perf) return;
+                int64_t i0 = -1, o0 = -1;
+                p.perf->loopRange(d, i0, o0);
+                const auto* st = p.deckStats ? p.deckStats(d) : nullptr;
+                const bool wasOn = st && st->loopOn.load();
+                sized(v);
+                int64_t i1 = -1, o1 = -1;
+                p.perf->loopRange(d, i1, o1);
+                if (p.undo)
+                    p.undo->record("loop sized",
+                        [p, d, i0, o0, wasOn] {
+                            p.perf->restoreLoopRange(d, i0, o0, wasOn); },
+                        [p, d, i1, o1] {
+                            p.perf->restoreLoopRange(d, i1, o1, true); });
             }));
 
         cm.add(mk(cmd::forDeck(cmd::DeckJumpBack, d),
             "deck" + dn + ".jumpBack", cat,
-            [p, d](float, CommandSource) {
-                if (p.perf) p.perf->beatJump(d, -4.0);
+            [p, d](float v, CommandSource) {
+                if (p.perf) p.perf->beatJump(d, -(
+                    v > 0.0 ? (double)v : p.perf->jumpSizeBeats(d)));
             }));
         cm.add(mk(cmd::forDeck(cmd::DeckJumpFwd, d),
             "deck" + dn + ".jumpFwd", cat,
-            [p, d](float, CommandSource) {
-                if (p.perf) p.perf->beatJump(d, 4.0);
+            [p, d](float v, CommandSource) {
+                if (p.perf) p.perf->beatJump(d,
+                    v > 0.0 ? (double)v : p.perf->jumpSizeBeats(d));
             }));
 
         cm.add(mk(cmd::forDeck(cmd::DeckBendDown, d),
@@ -205,13 +271,28 @@ void registerEngineCommands(CommandManager& cm,
                 return p.mixer->value(R::channelCue(d)) >= 0.5f ? 1 : 0;
             }));
 
-        // ---- analysis edits (Phase 14): value -1 = derive at handler ----
+        // ---- analysis edits (Phase 14): value -1 = derive at handler.
+        // §41: capture the effective grid before/after — undo restores
+        // it verbatim through the gridRestore port (reanalysis is not
+        // an edit; it is intentionally not undoable).
         auto ana = [&](uint32_t id, const char* name, int action,
                        double value) {
             cm.add(mk(cmd::forDeck((cmd::Id)id, d),
                 "deck" + dn + "." + name, cat,
-                [p, d, action, value](float, CommandSource) {
-                    if (p.analysisEdit) p.analysisEdit(d, action, value);
+                [p, d, action, value, name](float, CommandSource) {
+                    if (!p.analysisEdit) return;
+                    const auto before = grabGrid(p.perf, d);
+                    p.analysisEdit(d, action, value);
+                    const auto after = grabGrid(p.perf, d);
+                    if (p.undo && before && after &&
+                        action != (int)AnalysisEdit::Reanalyze)
+                        p.undo->record(std::string("grid ") + name,
+                            [p, d, before] {
+                                if (p.gridRestore)
+                                    p.gridRestore(d, *before); },
+                            [p, d, after] {
+                                if (p.gridRestore)
+                                    p.gridRestore(d, *after); });
                 }));
         };
         ana(cmd::AnaSetFirstBeat, "ana.setFirstBeat",
@@ -285,7 +366,8 @@ void registerEngineCommands(CommandManager& cm,
         view(cmd::WaveGridEditTgl, "wave.gridEdit");
         view(cmd::DeckTimeMode,    "deck.timeMode");
 
-        // hot cues: trigger/set/delete per slot
+        // hot cues: trigger/set/delete per slot (§4 — set/delete are
+        // undoable metadata edits; trigger is a transport action)
         for (int s = 0; s < 8; ++s) {
             const std::string base =
                 "deck" + dn + ".hotcue" + std::to_string(s);
@@ -295,14 +377,145 @@ void registerEngineCommands(CommandManager& cm,
                 }));
             cm.add(mk(cmd::forHotCue(d, s, 1), base + ".set", cat,
                 [p, d, s](float, CommandSource) {
-                    if (p.perf) p.perf->setCue(d, s, CueType::Hot);
+                    if (!p.perf) return;
+                    const auto before = grabCue(p.perf, d, s);
+                    p.perf->setCue(d, s, CueType::Hot);
+                    const auto after = grabCue(p.perf, d, s);
+                    if (p.undo && after)
+                        p.undo->record("hot cue set",
+                            [p, d, s, before] {
+                                if (before) p.perf->restoreCue(d, *before);
+                                else        p.perf->deleteCue(d, s); },
+                            [p, d, after] {
+                                p.perf->restoreCue(d, *after); });
                 }));
             cm.add(mk(cmd::forHotCue(d, s, 2), base + ".delete", cat,
                 [p, d, s](float, CommandSource) {
-                    if (p.perf) p.perf->deleteCue(d, s);
+                    if (!p.perf) return;
+                    const auto before = grabCue(p.perf, d, s);
+                    if (p.perf->deleteCue(d, s) && p.undo && before)
+                        p.undo->record("hot cue delete",
+                            [p, d, before] {
+                                p.perf->restoreCue(d, *before); },
+                            [p, d, s] {
+                                p.perf->deleteCue(d, s); });
                 }));
         }
+
+        // memory cues: goto/set/delete per slot (§7-8 — navigation
+        // markers; goto = seek only, never auto-plays)
+        for (int s = 0; s < 8; ++s) {
+            const std::string base =
+                "deck" + dn + ".memcue" + std::to_string(s);
+            cm.add(mk(cmd::forMemCue(d, s, 0), base + ".goto", cat,
+                [p, d, s](float, CommandSource) {
+                    // memory trigger = navigation only (seek, no play)
+                    if (!p.perf) return;
+                    const Cue* c = nullptr;
+                    for (const auto* m : p.perf->memoryCues(d))
+                        if (m->slot == s) { c = m; break; }
+                    if (!c) return;
+                    // reuse triggerCue: Memory type already seeks-only
+                    // — find its real slot index in the shared table
+                    if (p.perf) p.perf->triggerCue(d, c->slot);
+                }));
+            cm.add(mk(cmd::forMemCue(d, s, 1), base + ".set", cat,
+                [p, d, s](float, CommandSource) {
+                    if (!p.perf) return;
+                    const auto before = grabCue(p.perf, d, s);
+                    p.perf->setCue(d, s, CueType::Memory, -1, -1,
+                                   0xFF33B5E5);
+                    const auto after = grabCue(p.perf, d, s);
+                    if (p.undo && after)
+                        p.undo->record("memory cue set",
+                            [p, d, s, before] {
+                                if (before) p.perf->restoreCue(d, *before);
+                                else        p.perf->deleteCue(d, s); },
+                            [p, d, after] {
+                                p.perf->restoreCue(d, *after); });
+                }));
+            cm.add(mk(cmd::forMemCue(d, s, 2), base + ".delete", cat,
+                [p, d, s](float, CommandSource) {
+                    if (!p.perf) return;
+                    const auto before = grabCue(p.perf, d, s);
+                    if (before && before->type != CueType::Memory)
+                        return; // never delete a hot cue from mem space
+                    if (p.perf->deleteCue(d, s) && p.undo && before)
+                        p.undo->record("memory cue delete",
+                            [p, d, before] {
+                                p.perf->restoreCue(d, *before); },
+                            [p, d, s] {
+                                p.perf->deleteCue(d, s); });
+                }));
+        }
+
+        // ---- Phase 20: cue point / restart / sizes / roll / rev ----
+        cm.add(mk(cmd::forDeck(cmd::DeckCueSet, d),
+            "deck" + dn + ".cueSet", cat,
+            [p, d](float, CommandSource) {
+                if (p.perf) p.perf->setCuePoint(d, -1); // = playhead
+            }));
+        cm.add(mk(cmd::forDeck(cmd::DeckInstantRestart, d),
+            "deck" + dn + ".instantRestart", cat,
+            [p, d](float, CommandSource) {
+                if (p.perf) p.perf->instantRestart(d);
+            }));
+        cm.add(mk(cmd::forDeck(cmd::DeckLoopSizeUp, d),
+            "deck" + dn + ".loopSizeUp", cat,
+            [p, d](float, CommandSource) {
+                if (p.perf) p.perf->setLoopSizeIndex(d,
+                    LoopSizeController::stepIndex(
+                        p.perf->loopSizeIndex(d), 1,
+                        LoopSizeController::loopCount()));
+            }));
+        cm.add(mk(cmd::forDeck(cmd::DeckLoopSizeDn, d),
+            "deck" + dn + ".loopSizeDn", cat,
+            [p, d](float, CommandSource) {
+                if (p.perf) p.perf->setLoopSizeIndex(d,
+                    LoopSizeController::stepIndex(
+                        p.perf->loopSizeIndex(d), -1,
+                        LoopSizeController::loopCount()));
+            }));
+        cm.add(mk(cmd::forDeck(cmd::DeckRollGate, d),
+            "deck" + dn + ".roll", cat,
+            [p, d](float v, CommandSource) {
+                if (!p.perf) return;
+                if (v > 0.5f)   // press = roll; arg = idx+1 (pads)
+                    p.perf->loopRollIdx(d,
+                        v > 1.5f ? (int)v - 1 : 3); // default 1/4
+                else
+                    p.perf->loopRollEnd(d);
+            }));
+        cm.add(mk(cmd::forDeck(cmd::DeckJumpSizeUp, d),
+            "deck" + dn + ".jumpSizeUp", cat,
+            [p, d](float, CommandSource) {
+                if (p.perf) p.perf->setJumpSizeIndex(d,
+                    LoopSizeController::stepIndex(
+                        p.perf->jumpSizeIndex(d), 1,
+                        LoopSizeController::jumpCount()));
+            }));
+        cm.add(mk(cmd::forDeck(cmd::DeckJumpSizeDn, d),
+            "deck" + dn + ".jumpSizeDn", cat,
+            [p, d](float, CommandSource) {
+                if (p.perf) p.perf->setJumpSizeIndex(d,
+                    LoopSizeController::stepIndex(
+                        p.perf->jumpSizeIndex(d), -1,
+                        LoopSizeController::jumpCount()));
+            }));
+        cm.add(mk(cmd::forDeck(cmd::DeckRevHold, d),
+            "deck" + dn + ".revHold", cat,
+            [p, d](float v, CommandSource) {
+                if (p.perf) p.perf->reverseMomentary(d, v > 0.5f);
+            }));
     }
+
+    // ---- Phase 20 §41: performance undo/redo (global) ----
+    cm.add(mk(cmd::PerfUndo, "perf.undo", "Performance",
+        [p](float, CommandSource) { if (p.undo) p.undo->undo(); },
+        [p]() { return p.undo && p.undo->canUndo() ? 1 : 0; }));
+    cm.add(mk(cmd::PerfRedo, "perf.redo", "Performance",
+        [p](float, CommandSource) { if (p.undo) p.undo->redo(); },
+        [p]() { return p.undo && p.undo->canRedo() ? 1 : 0; }));
 
     // ---- mixer app-level nudges (fine controls live on the strip) ----
     cm.add(mk(cmd::MixMasterGainUp, "mixer.masterGainUp", "Mixer",

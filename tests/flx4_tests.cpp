@@ -75,6 +75,8 @@ struct Rig {
             add(ui::cmd::forDeck(ui::cmd::DeckLoopToggle, d),  "loopToggle");
             add(ui::cmd::forDeck(ui::cmd::DeckLoopHalve, d),   "loopHalve");
             add(ui::cmd::forDeck(ui::cmd::DeckLoopDouble, d),  "loopDouble");
+            add(ui::cmd::forDeck(ui::cmd::DeckLoopSizeTrig, d),"loopSized");
+            add(ui::cmd::forDeck(ui::cmd::DeckRollGate, d),    "roll");
             add(ui::cmd::forDeck(ui::cmd::DeckPflToggle, d),   "pflToggle");
             add(ui::cmd::forDeck(ui::cmd::DeckQuantizeTgl, d), "quantizeToggle");
             add(ui::cmd::forDeck(ui::cmd::DeckJumpFwd, d),     "jumpFwd");
@@ -243,8 +245,8 @@ TEST_CASE("FLX4: pad modes — hotcue trig/del, beatjump, loop, sampler",
     r.vc.padMode(1, flx4::PadMode::BeatLoop);
     r.vc.pad(1, flx4::kPadBankBeatLoop, 0, false);  // pad1 → halve
     REQUIRE(hit(ui::cmd::forDeck(ui::cmd::DeckLoopHalve, 1)));
-    r.vc.pad(1, flx4::kPadBankBeatLoop, 5, false);  // pad6 → toggle
-    REQUIRE(hit(ui::cmd::forDeck(ui::cmd::DeckLoopToggle, 1)));
+    r.vc.pad(1, flx4::kPadBankBeatLoop, 5, false);  // pad6 → sized loop
+    REQUIRE(hit(ui::cmd::forDeck(ui::cmd::DeckLoopSizeTrig, 1)));
 
     // sampler mode → domain sampler ports (not deck commands)
     r.vc.padMode(0, flx4::PadMode::Sampler);

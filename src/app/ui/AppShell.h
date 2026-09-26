@@ -21,6 +21,8 @@
 #include "ui/LayoutSpec.h"
 #include "ui/NotificationCenter.h"
 #include "ui/ShortcutManager.h"
+#include "ui/UndoManager.h"
+#include "ui/pads/PadFeedbackEngine.h"
 
 namespace onda::ui {
 
@@ -81,6 +83,9 @@ public:
             };
             decks_[(size_t)d]->bindPitch();
         }
+        // Phase 20 §41 — shared performance undo stack for the
+        // perf.undo/perf.redo commands and every cue/loop/grid edit.
+        bridge_->mutablePorts().undo = &undo_;
         // Phase 19: deck.*.wave.* / deck.*.deck.timeMode commands land
         // here — view-local presentation state, no engine calls.
         bridge_->mutablePorts().viewAction =
@@ -367,6 +372,35 @@ private:
         }
         decks_[(size_t)d]->setCuePads(cols, set);
         waves_[(size_t)d]->setMarkers(marks, loops);
+        // §8/§36-37 — memory-cue strip + pad lights + size readouts.
+        {
+            pads::PadDeckState ps;
+            ps.mode       = bridge_->pads().mode(d);
+            ps.playing    = ds.state == (int)DeckState::Playing;
+            ps.loopOn     = ds.loopOn;
+            ps.rolling    = perf_->rollActive(d);
+            ps.loopSizeIdx = perf_->loopSizeIndex(d);
+            ps.jumpSizeIdx = perf_->jumpSizeIndex(d);
+            ps.pendingLoopIn = perf_->loopInArmed(d) ? 0 : -1;
+            std::array<uint32_t, 8> mcol {};
+            std::array<bool, 8>     mset {};
+            for (const Cue& c : cues) {
+                if (c.type != CueType::Memory) {
+                    if (c.slot >= 0 && c.slot < 8)
+                        ps.hot[(size_t)c.slot] = &c;
+                } else if (c.slot >= 0 && c.slot < 8) {
+                    mcol[(size_t)c.slot] = c.argb;
+                    mset[(size_t)c.slot] = true;
+                    ps.mem[(size_t)c.slot] = &c;
+                }
+            }
+            auto& pp = decks_[(size_t)d]->perfPanel();
+            pp.setMemCues(mcol, mset);
+            pp.setPadLights(padFb_.lights(ps));
+            pp.setLoopBeats(perf_->loopSizeBeats(d));
+            pp.setJumpBeats(perf_->jumpSizeBeats(d));
+            pp.setLoopPending(ps.pendingLoopIn >= 0);
+        }
         // active loop from deck stats
         if (ds.loopOn)
             loops.push_back({ ds.loopInSec, ds.loopOutSec, true,
@@ -427,6 +461,8 @@ private:
 
     UiSnapshot snap_;
     LayoutPrefs prefs_;
+    UndoManager            undo_;     // §41 — perf edit undo stack
+    pads::PadFeedbackEngine padFb_;   // §36 — pad light model
     NotificationCenter* notes_;
     std::function<std::string()> selPort_;
 

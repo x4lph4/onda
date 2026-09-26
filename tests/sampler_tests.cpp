@@ -626,8 +626,11 @@ TEST_CASE("PadModeManager: every mode resolves to the right action",
             ui::cmd::forDeck(ui::cmd::DeckLoopHalve, 1));
     REQUIRE(m.resolve(1, 1, false, true).cmdId ==
             ui::cmd::forDeck(ui::cmd::DeckLoopDouble, 1));
-    REQUIRE(m.resolve(1, 6, false, true).cmdId ==
-            ui::cmd::forDeck(ui::cmd::DeckLoopToggle, 1));
+    // Phase 20: pads 5-8 fire sized auto-loops (arg = 10+size index)
+    auto lp = m.resolve(1, 6, false, true);
+    REQUIRE(lp.cmdId ==
+            ui::cmd::forDeck(ui::cmd::DeckLoopSizeTrig, 1));
+    REQUIRE(lp.arg == Catch::Approx(16.0f)); // kSz[2]=6 → 4-beat loop
 
     m.setMode(0, PadMode::PadFx);                        // reserved
     REQUIRE(m.resolve(0, 0, false, true).kind == PadAction::None);
