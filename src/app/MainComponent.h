@@ -1,48 +1,50 @@
 #pragma once
 
 #include <memory>
-#include <vector>
 
-#include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 
-#include "../platform/audio/AudioEngine.h"
-#include "../core/analysis/AnalysisService.h"
-#include "../core/performance/PerformanceEngine.h"
+#include "ui/AppShell.h"
+#include "ui/EngineBridge.h"
+#include "ui/OndaTheme.h"
+#include "ui/SettingsView.h"
+#include "core/analysis/AnalysisService.h"
+#include "core/library/MusicLibraryEngine.h"
+#include "core/performance/PerformanceEngine.h"
+#include "platform/audio/AudioEngine.h"
+#include "platform/config/Config.h"
+#include "ui/CommandManager.h"
+#include "ui/ShortcutManager.h"
+#include "ui/ThemeEngine.h"
 
 namespace onda {
 
-class DeckStrip;
-
-/// Phase-2 functional shell: every engine feature gets a control —
-/// deck transport, pitch/keylock/loops/seek, EQ/filter, faders,
-/// crossfader, cue bus, master + meters. Functional layout, not final UX.
-class MainComponent : public juce::Component, private juce::Timer {
+/// Phase-8 shell host: owns the UI framework pieces (theme, commands,
+/// shortcuts, notifications, engine bridge) and mounts the AppShell.
+/// All engine access inside views flows through EngineBridge +
+/// CommandManager — widgets never see AudioEngine.
+class MainComponent : public juce::Component {
 public:
-    MainComponent(audio::AudioEngine& engine, AnalysisService& analysis,
-                  PerformanceEngine& perf);
-    ~MainComponent() override = default;
+    MainComponent(audio::AudioEngine& engine,
+                  AnalysisService& analysis,
+                  PerformanceEngine& perf,
+                  library::MusicLibraryEngine& lib,
+                  Config& config);
+    ~MainComponent() override {
+        juce::Desktop::getInstance().setDefaultLookAndFeel(nullptr);
+    }
 
     void paint(juce::Graphics& g) override;
     void resized() override;
 
 private:
-    void timerCallback() override;
-
-private:
-    audio::AudioEngine& engine_;
-    AnalysisService& analysis_;
-    PerformanceEngine& perf_;
-
-    std::unique_ptr<juce::Component> headerBar_;
-    std::vector<std::unique_ptr<DeckStrip>> decks_;
-
-    // mixer column
-    juce::Slider masterGain_, cueVol_, cueMix_, crossfader_;
-    juce::ComboBox xfCurve_;
-    juce::Label masterLabel_, cueVolLabel_, cueMixLabel_, xfLabel_, meterLabel_;
-    juce::TextButton settingsBtn_;
-    std::unique_ptr<juce::Component> devicePanel_;
+    ui::ThemeEngine      theme_;
+    ui::OndaLookAndFeel  look_;
+    ui::CommandManager   commands_;
+    ui::ShortcutManager  shortcuts_;
+    ui::NotificationCenter notes_;
+    std::unique_ptr<ui::EngineBridge> bridge_;
+    std::unique_ptr<ui::AppShell>     shell_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

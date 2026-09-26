@@ -1,14 +1,15 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 
 #include "MainComponent.h"
-#include "OndaLookAndFeel.h"
 #include "../platform/audio/AudioEngine.h"
 #include "../platform/config/Config.h"
 #include "../platform/decode/FFmpegDecoder.h"
 #include "../platform/log/Log.h"
+#include "../platform/metadata/FFmpegMetadataReader.h"
 #include "../core/analysis/AnalysisService.h"
 #include "../core/data/Database.h"
 #include "../core/data/PerformanceStore.h"
+#include "../core/library/MusicLibraryEngine.h"
 #include "../core/performance/PerformanceEngine.h"
 
 namespace onda {
@@ -22,8 +23,6 @@ public:
     void initialise(const juce::String&) override {
         log::init();
         log::info("Onda " + getApplicationVersion() + " starting");
-
-        juce::Desktop::getInstance().setDefaultLookAndFeel(&lookAndFeel_);
 
         config_.load();
 
@@ -57,12 +56,29 @@ public:
                                &engine_->deckStats(i));
         }
 
+        // Phase 7 library on the same database; metadata via ffmpeg,
+        // analysis wired so imports enqueue automatically.
+        lib_ = std::make_unique<library::MusicLibraryEngine>();
+        if (!lib_->open((dbDir.getChildFile("onda.db")
+                            .getFullPathName().toStdString())))
+            log::error("Cannot open library database");
+        else {
+            lib_->setMetadataProvider(
+                [](const std::string& p, library::TrackMeta& m) {
+                    return FFmpegMetadataReader::read(p, m);
+                });
+            lib_->setAnalysisService(analysis_.get());
+            lib_->startWorker();
+        }
+
         mainWindow_ = std::make_unique<MainWindow>(getApplicationName(),
-                                                 *engine_, *analysis_, *perf_);
+                                                 *engine_, *analysis_,
+                                                 *perf_, *lib_, config_);
     }
 
     void shutdown() override {
         mainWindow_ = nullptr; // UI first: it references the engine
+        if (lib_) { lib_->stopWorker(); lib_->close(); lib_.reset(); }
         if (engine_) {
             engine_->shutdown();
             engine_.reset();
@@ -70,7 +86,6 @@ public:
         analysis_.reset();   // workers join before the DB closes
         db_.reset();
         config_.save();
-        juce::Desktop::getInstance().setDefaultLookAndFeel(nullptr);
         log::info("Onda shutdown");
     }
 
@@ -80,15 +95,17 @@ private:
     class MainWindow : public juce::DocumentWindow {
     public:
         MainWindow(const juce::String& name, audio::AudioEngine& engine,
-                   AnalysisService& analysis, PerformanceEngine& perf)
+                   AnalysisService& analysis, PerformanceEngine& perf,
+                   library::MusicLibraryEngine& lib, Config& config)
             : juce::DocumentWindow(name,
-                                   OndaLookAndFeel::kBackground,
+                                   juce::Colour(0xff0d0f12),
                                    juce::DocumentWindow::allButtons) {
             setUsingNativeTitleBar(true);
-            setContentOwned(new MainComponent(engine, analysis, perf), true);
+            setContentOwned(new MainComponent(engine, analysis, perf,
+                                              lib, config), true);
             setResizable(true, true);
-            setResizeLimits(960, 600, 10000, 10000);
-            centreWithSize(getWidth(), getHeight());
+            setResizeLimits(960, 540, 10000, 10000);
+            centreWithSize(1440, 860);
             setVisible(true);
         }
 
@@ -99,12 +116,12 @@ private:
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainWindow)
     };
 
-    OndaLookAndFeel lookAndFeel_;
     Config config_;
     std::unique_ptr<Database> db_;
     std::unique_ptr<AnalysisService> analysis_;
     std::unique_ptr<PerformanceStore> perfStore_;
     std::unique_ptr<PerformanceEngine> perf_;
+    std::unique_ptr<library::MusicLibraryEngine> lib_;
     std::unique_ptr<audio::AudioEngine> engine_;
     std::unique_ptr<MainWindow> mainWindow_;
 };

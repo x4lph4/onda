@@ -1,0 +1,43 @@
+#pragma once
+
+#include <cstdint>
+#include <functional>
+#include <string>
+
+#include "CommandManager.h"
+#include "core/library/MusicLibraryEngine.h"
+#include "core/mixer/MixerController.h"
+#include "core/model/DeckStats.h"
+#include "core/performance/PerformanceEngine.h"
+#include "core/rt/CommandQueue.h"
+
+namespace onda::ui {
+
+/// Ports the command layer needs from the rest of the app — every
+/// field is JUCE-free so tests wire fakes instead of a real
+/// AudioEngine. The app fills them once at startup; commands then
+/// execute identically from UI / keyboard / MIDI / HID.
+struct EnginePorts {
+    rt::CommandQueue*         queue  = nullptr;  // → audio thread
+    mixer::MixerController*   mixer  = nullptr;  // validated params
+    PerformanceEngine*        perf   = nullptr;
+    library::MusicLibraryEngine* lib = nullptr;
+
+    /// deck index → live stats (for toggle-state queries + cue trigger)
+    std::function<DeckStats*(int)>            deckStats;
+    /// (deck, path) → async load request
+    std::function<void(int, const std::string&)> loadTrack;
+    /// (deck) → unload
+    std::function<void(int)>                  unloadTrack;
+    /// → currently selected browser path, or "" (DeckLoad uses it)
+    std::function<std::string()>              browserSelection;
+    /// (id,state) → app-level toggles (settings/browser/layout/fx)
+    std::function<void(uint32_t)>             appAction;
+};
+
+/// Register the whole command surface. All commands are POD-safe:
+/// they push rt::Command / call non-RT facades — never touch RT code.
+void registerEngineCommands(CommandManager& cm,
+                            const EnginePorts& ports);
+
+} // namespace onda::ui

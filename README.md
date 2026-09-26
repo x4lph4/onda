@@ -2,6 +2,46 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 8 (UI framework + live-performance views)
+
+Two-layer UI: `src/ui/` is a **JUCE-free core** (commands, shortcuts,
+snapshots, theme, waveform math, virtual table model, layout math —
+all unit-tested without a window) and `src/app/ui/` holds the JUCE
+views that render only from plain-value snapshots.
+
+- `CommandManager` + `CommandIds`: one stable command surface for
+  every input — UI, keyboard, and later MIDI/HID invoke identical
+  handlers. `EngineCommands` registers ~120 commands once against
+  ports (rt `CommandQueue`, `MixerController`, `PerformanceEngine`,
+  `MusicLibraryEngine`, deck stats).
+- `ShortcutManager`: named-key grammar (`Ctrl+Shift+A`, `F1`, `Space`),
+  default DJ profile, remappable + serializable.
+- `EngineBridge` is the only engine gateway: builds `UiSnapshot` from
+  atomics, feeds edge-triggered `NotificationCenter` toasts (xruns,
+  clip deltas, device loss, analysis events).
+- `AppShell`: TopBar + deck/waveform row + mixer + fx strip + browser;
+  `LayoutSpec` computes regions with collapse priorities (browser →
+  fx → wave strip shrink; transport never hides), 1280×720 … 4K.
+- `WaveformView`: overview + detail from cached `AnalysisBundle`
+  bins (never recomputes audio), grid markers (beat/bar/downbeat),
+  cue/loop overlays, zoom-at-anchor, scroll, seek.
+- `DeckView` (info/transport/perf toggles/pitch/loop/8 cue pads),
+  `MixerView` (gain/EQ/filter/fader/PFL/meters/xf + master),
+  `FXView` (generic racks), `BrowserView` (search + rail +
+  virtualized table), `SettingsView` (12 sections incl. controller
+  placeholders).
+- `ThemeEngine`/`DesignTokens`: pro dark theme, accent, density,
+  per-deck waveform colors; `StateButton` encodes state by
+  shape + label + fill, not hue alone.
+- UI-FPS + frame time measured live in the TopBar.
+
+Tests: +14 `[ui]`/`[stress]` cases (148 total, 1.59M assertions) —
+command dispatch, shortcut grammar, theme roundtrip, paged model
+over 50k, waveform math, notifications, layout priorities, and a
+stress run: 600 frames over 50k rows avg 1.0 ms/frame
+(worst 4.8 ms) — no DSP in UI code, engine writes only via
+lock-free command push / non-RT facades.
+
 ## Status — Phase 7 (professional music library)
 
 `core/library/` — `MusicLibraryEngine` facade owning the SQLite
@@ -239,7 +279,9 @@ cmake --build build
 ```
 src/core/       pure C++20 engine primitives (no JUCE)
 src/platform/   JUCE-backed platform layer: audio HAL, log, config
-src/app/        JUCE application + UI shell
+src/ui/         JUCE-free UI core: commands, shortcuts, snapshots,
+                theme, waveform math, virtual table model, layout
+src/app/        JUCE application + UI views (app/ui/)
 tests/          Catch2 unit tests
 docs/adr/       architecture decision records
 ```
