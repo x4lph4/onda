@@ -13,9 +13,10 @@ EngineBridge::EngineBridge(audio::AudioEngine& engine,
                            CommandManager& cmds,
                            NotificationCenter& notes,
                            sampler::SamplerEngine* sampler,
-                           rec::RecordingEngine*   recorder)
+                           rec::RecordingEngine*   recorder,
+                           adevice::AudioDeviceEngine* adevice)
     : engine_(engine), perf_(perf), analysis_(analysis), lib_(lib),
-      notes_(notes), recorder_(recorder) {
+      notes_(notes), recorder_(recorder), adevice_(adevice) {
     ports_.queue  = &engine_.commands();
     ports_.mixer  = &engine_.mixerCtl();
     ports_.perf   = &perf_;
@@ -196,6 +197,15 @@ void EngineBridge::snapshot(UiSnapshot& o) {
     } else {
         o.audio.deviceName = "no device";
         o.audio.running    = false;
+    }
+    // Phase 13 — device engine layer (backend/latency/recovery/
+    // underruns); all atomic or status-call reads, no locks
+    o.audio.underruns    = as.underrunCount.load();
+    o.audio.deviceErrors = as.deviceErrors.load();
+    if (adevice_) {
+        o.audio.backend      = adevice_->backendName();
+        o.audio.estLatencyMs = adevice_->latency().roundTripMs;
+        o.audio.recovery     = (int)adevice_->recoveryState();
     }
 
     // fx slots — read param echoes back from the controller store

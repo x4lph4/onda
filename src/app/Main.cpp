@@ -2,6 +2,7 @@
 
 #include "MainComponent.h"
 #include "../platform/audio/AudioEngine.h"
+#include "../platform/audio/JuceAudioBackend.h"
 #include "../platform/config/Config.h"
 #include "../platform/decode/FFmpegDecoder.h"
 #include "../platform/log/Log.h"
@@ -109,15 +110,26 @@ public:
             recorder_->setOutputDir(cfgDir.toString().toStdString());
         }
 
+        // Phase 13: device layer over JUCE's AudioDeviceManager —
+        // enumerate/select/switch/recover on the control thread; the
+        // RT callback is untouched.
+        juceBackend_ = std::make_unique<audio::JuceAudioBackend>(
+            engine_->deviceManager());
+        adevice_ = std::make_unique<adevice::AudioDeviceEngine>(
+            *juceBackend_);
+
         mainWindow_ = std::make_unique<MainWindow>(getApplicationName(),
                                                  *engine_, *analysis_,
                                                  *perf_, *lib_, config_,
                                                  sampler_.get(),
-                                                 recorder_.get());
+                                                 recorder_.get(),
+                                                 adevice_.get());
     }
 
     void shutdown() override {
         mainWindow_ = nullptr; // UI first: it references the engine
+        adevice_.reset();      // device engine only holds refs
+        juceBackend_.reset();
         if (recorder_) {
             recorder_->shutdown();       // finalize any live session
             recorder_.reset();
@@ -151,14 +163,15 @@ private:
                    AnalysisService& analysis, PerformanceEngine& perf,
                    library::MusicLibraryEngine& lib, Config& config,
                    sampler::SamplerEngine* sampler,
-                   rec::RecordingEngine* recorder)
+                   rec::RecordingEngine* recorder,
+                   adevice::AudioDeviceEngine* adevice)
             : juce::DocumentWindow(name,
                                    juce::Colour(0xff0d0f12),
                                    juce::DocumentWindow::allButtons) {
             setUsingNativeTitleBar(true);
             setContentOwned(new MainComponent(engine, analysis, perf,
                                               lib, config, sampler,
-                                              recorder),
+                                              recorder, adevice),
                             true);
             setResizable(true, true);
             setResizeLimits(960, 540, 10000, 10000);
@@ -183,6 +196,8 @@ private:
     std::unique_ptr<sampler::SamplerEngine>  sampler_;
     std::unique_ptr<rec::RecordingRepository> recRepo_;
     std::unique_ptr<rec::RecordingEngine>  recorder_;
+    std::unique_ptr<audio::JuceAudioBackend> juceBackend_;
+    std::unique_ptr<adevice::AudioDeviceEngine> adevice_;
     std::unique_ptr<audio::AudioEngine> engine_;
     std::unique_ptr<MainWindow> mainWindow_;
 };

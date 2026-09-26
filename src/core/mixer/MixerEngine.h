@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <atomic>
 #include <cstddef>
 #include <vector>
 
@@ -104,6 +106,18 @@ public:
     const float* masterL() const { return mixL_.data(); }
     const float* masterR() const { return mixR_.data(); }
 
+    /// Phase 13: physical output mapping (non-RT set, atomic publish).
+    /// master→[0,1], cue→[2,3]; -1 disables a pair. Defaults {0,1,2,3}.
+    void setOutputMap(int mL, int mR, int cL, int cR) noexcept {
+        outMap_[0].store(mL, std::memory_order_relaxed);
+        outMap_[1].store(mR, std::memory_order_relaxed);
+        outMap_[2].store(cL, std::memory_order_relaxed);
+        outMap_[3].store(cR, std::memory_order_relaxed);
+    }
+    int outMap(int i) const noexcept {
+        return outMap_[i & 3].load(std::memory_order_relaxed);
+    }
+
 private:
     void rebuildRouting() noexcept;
 
@@ -118,6 +132,7 @@ private:
     fx::FXEngine            fx_;
 
     std::vector<float> mixL_, mixR_, cueL_, cueR_; // bus scratch (preallocated)
+    std::array<std::atomic<int>,4> outMap_ { 0, 1, 2, 3 }; // mL,mR,cL,cR
 
     MasterStats mstats_; // legacy published struct (filled from buses)
 };

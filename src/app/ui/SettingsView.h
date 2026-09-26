@@ -7,6 +7,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 
 #include "OndaTheme.h"
+#include "core/adevice/AudioDeviceEngine.h"
 #include "core/library/MusicLibraryEngine.h"
 #include "platform/config/Config.h"
 #include "ui/CommandManager.h"
@@ -19,15 +20,16 @@ namespace onda::ui {
 /// (foundation), Diagnostics. Device changes go through
 /// AudioDeviceSelectorComponent (proven JUCE path), never raw
 /// deviceManager calls scattered through widgets.
-class SettingsView : public juce::Component {
+class SettingsView : public juce::Component, private juce::Timer {
 public:
     SettingsView(const ThemeEngine& te, CommandManager& cm,
                  ShortcutManager& shortcuts,
                  juce::AudioDeviceManager& deviceManager,
                  Config& config,
-                 library::MusicLibraryEngine& lib)
+                 library::MusicLibraryEngine& lib,
+                 adevice::AudioDeviceEngine* adev = nullptr)
         : theme_(&te), cmds_(&cm), shortcuts_(&shortcuts),
-          config_(&config), lib_(&lib) {
+          config_(&config), lib_(&lib), adev_(adev) {
         rail_.setModel(&railModel_);
         rail_.setRowHeight(28);
         addAndMakeVisible(rail_);
@@ -36,6 +38,45 @@ public:
         deviceSel_ = std::make_unique<juce::AudioDeviceSelectorComponent>(
             deviceManager, 0, 2, 2, 8, false, false, true, true);
         addChildComponent(*deviceSel_);
+
+        // ---- Phase 13 device panel (below the JUCE selector) ----
+        latencyBox_.addItemList(
+            { "Low latency", "Balanced", "Stable" }, 1);
+        latencyBox_.setSelectedId(2, juce::dontSendNotification);
+        latencyBox_.onChange = [this] {
+            if (!adev_) return;
+            adevice::DeviceSettings s = adev_->settings();
+            s.pref = (adevice::LatencyPref)(latencyBox_.getSelectedId()-1);
+            s.bufferSize = 0;   // let the preset pick
+            const auto err = adev_->select(s);
+            if (!err.empty()) audioInfo_.setText(
+                "APPLY FAILED: " + juce::String(err),
+                juce::dontSendNotification);
+        };
+        addChildComponent(latencyBox_);
+        testSigBox_.addItem("Signal: off", 1);
+        for (int i = 1; i <= 7; ++i)
+            testSigBox_.addItem("Signal: " + juce::String(
+                adevice::testSignalName((adevice::TestSignal)i)), i + 1);
+        testSigBox_.setSelectedId(1, juce::dontSendNotification);
+        testSigBox_.onChange = [this] {
+            if (adev_)
+                adev_->setTestSignal(
+                    (adevice::TestSignal)(testSigBox_.getSelectedId()-1));
+        };
+        addChildComponent(testSigBox_);
+        copyDiag_.setButtonText("COPY DIAGNOSTICS");
+        copyDiag_.onClick = [this] {
+            if (adev_)
+                juce::SystemClipboard::copyTextToClipboard(
+                    adev_->diagnostics());
+        };
+        addChildComponent(copyDiag_);
+        audioInfo_.setJustificationType(juce::Justification::topLeft);
+        audioInfo_.setColour(juce::Label::textColourId,
+                             col(theme_->theme().palette.textDim));
+        addChildComponent(audioInfo_);
+        if (adev_) startTimerHz(2);
 
         // ---- appearance section ----
         themeBox_.addItemList({ "Dark", "Dark (high contrast)" }, 1);
@@ -101,13 +142,40 @@ public:
                          (juce::Component*)&libInfo_,
                          (juce::Component*)&shortcutList_,
                          (juce::Component*)&ctrlInfo_,
-                         (juce::Component*)&diag_ })
+                         (juce::Component*)&diag_,
+                         (juce::Component*)&latencyBox_,
+                         (juce::Component*)&testSigBox_,
+                         (juce::Component*)&copyDiag_,
+                         (juce::Component*)&audioInfo_ })
             c->setVisible(false);
         auto show = [&](juce::Component* c) {
             c->setVisible(true); c->setBounds(contentBounds());
         };
         switch (section) {
-            case 0: show(deviceSel_.get()); break;
+            case 0: {
+                auto b = contentBounds();
+                const bool panel = adev_ != nullptr;
+                deviceSel_->setVisible(true);
+                deviceSel_->setBounds(b.removeFromTop(
+                    panel ? (int)(b.getHeight() * 0.62)
+                          : b.getHeight()));
+                if (panel) {
+                    b.removeFromTop(8);
+                    auto row = b.removeFromTop(24);
+                    latencyBox_.setBounds(row.removeFromLeft(150));
+                    row.removeFromLeft(8);
+                    testSigBox_.setBounds(row.removeFromLeft(170));
+                    row.removeFromLeft(8);
+                    copyDiag_.setBounds(row.removeFromLeft(160));
+                    latencyBox_.setVisible(true);
+                    testSigBox_.setVisible(true);
+                    copyDiag_.setVisible(true);
+                    audioInfo_.setBounds(b.withTrimmedTop(6));
+                    audioInfo_.setVisible(true);
+                    refreshAudioInfo();
+                }
+                break;
+            }
             case 1:
                 themeBox_.setVisible(true);
                 densityBox_.setVisible(true);
@@ -143,6 +211,19 @@ public:
         diag_.setText(text, juce::dontSendNotification);
     }
 
+    /// 2 Hz — keep the audio-panel readout live while section 0 shows.
+    void timerCallback() override {
+        if (section_ == 0 && isShowing()) refreshAudioInfo();
+    }
+    void refreshAudioInfo() {
+        if (!adev_) return;
+        juce::String t = juce::String(adev_->diagnostics());
+        if (const auto* f = adev_->flx4())
+            t += "DDJ-FLX4: " + juce::String(f->name) +
+                 " detected\n";
+        audioInfo_.setText(t, juce::dontSendNotification);
+    }
+
     juce::Rectangle<int> contentBounds() const {
         auto b = getLocalBounds().reduced(16);
         b.removeFromTop(28);
@@ -173,6 +254,7 @@ public:
                          (juce::Component*)&ctrlInfo_,
                          (juce::Component*)&diag_ })
             c->setBounds(contentBounds());
+        select(section_);   // re-lay out the visible section
     }
 
     bool keyPressed(const juce::KeyPress&) override {
@@ -247,6 +329,11 @@ private:
     std::unique_ptr<juce::AudioDeviceSelectorComponent> deviceSel_;
     juce::ComboBox themeBox_, densityBox_;
     juce::Label libInfo_, ctrlInfo_, diag_;
+    // Phase 13 device panel
+    adevice::AudioDeviceEngine* adev_ = nullptr;
+    juce::ComboBox   latencyBox_, testSigBox_;
+    juce::TextButton copyDiag_;
+    juce::Label      audioInfo_;
     int section_ = 0;
 };
 

@@ -8,6 +8,7 @@
 #include "core/analysis/AnalysisService.h"
 #include "core/library/MusicLibraryEngine.h"
 #include "core/performance/PerformanceEngine.h"
+#include "core/adevice/AudioDeviceEngine.h"
 #include "core/rec/RecordingEngine.h"
 #include "core/sampler/SamplerEngine.h"
 #include "platform/audio/AudioEngine.h"
@@ -34,7 +35,8 @@ public:
                  CommandManager& cmds,
                  NotificationCenter& notes,
                  sampler::SamplerEngine* sampler = nullptr,
-                 rec::RecordingEngine*   recorder = nullptr);
+                 rec::RecordingEngine*   recorder = nullptr,
+                 adevice::AudioDeviceEngine* adevice = nullptr);
 
     const EnginePorts& ports() const { return ports_; }
     EnginePorts&       mutablePorts()  { return ports_; }
@@ -72,7 +74,8 @@ private:
     NotificationCenter&          notes_;
 
     pads::PadLayer  pads_;
-    rec::RecordingEngine* recorder_ = nullptr;
+    rec::RecordingEngine*       recorder_ = nullptr;
+    adevice::AudioDeviceEngine* adevice_ = nullptr; // borrowed, may be null
     EnginePorts ports_;
     std::string deckPath_[4];
     bool        pfl_[4] = { false, false, false, false };

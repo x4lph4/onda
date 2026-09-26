@@ -86,6 +86,12 @@ struct AudioStatus {
     double inputLatencySec = 0.0, outputLatencySec = 0.0;
     float  uiFps = 0.0f;       // measured UI update rate (Hz)
     float  uiFrameMs = 0.0f;   // measured snapshot/feed time (ms)
+    // Phase 13 — device engine layer
+    std::string backend;       // "WASAPI", "CoreAudio", "ASIO", ...
+    double   estLatencyMs = 0.0;   // estimated round-trip ms
+    int      recovery = 0;         // adevice::HealthState ordinal
+    uint64_t underruns = 0;        // over-budget callbacks
+    uint64_t deviceErrors = 0;     // backend-reported device errors
 };
 
 /// Recording strip snapshot (Phase 12) — plain values only; `state`

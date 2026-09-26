@@ -4,6 +4,7 @@
 
 #include "../config/Config.h"
 #include "../log/Log.h"
+#include "core/adevice/AudioTestTool.h"
 #include "core/dsp/WsolaStretcher.h"
 #include "core/engine/DeckCommand.h"
 
@@ -87,7 +88,8 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device) {
         d.setDeviceRate(sr);
     for (auto& d : decks_)
         d.prepareDsp(sr);
-    mixer_.prepare(sr);
+    mixer_.prepare(sr);            // strips, xf, master, phones, FX
+    if (sampler_) sampler_->prepare(sr);
     stats_.sampleRate.store(sr, std::memory_order_relaxed);
     stats_.bufferSize.store(device->getCurrentBufferSizeSamples(), std::memory_order_relaxed);
     stats_.running.store(true, std::memory_order_relaxed);
@@ -104,6 +106,11 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device) {
 void AudioEngine::audioDeviceStopped() {
     stats_.running.store(false, std::memory_order_relaxed);
     log::warn("Audio device stopped");
+}
+
+void AudioEngine::audioDeviceError(const juce::String& /*errorMessage*/) {
+    // may arrive on a driver-adjacent thread — atomics only, no logging
+    stats_.deviceErrors.fetch_add(1, std::memory_order_relaxed);
 }
 
 void AudioEngine::audioDeviceIOCallbackWithContext(
@@ -148,6 +155,18 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
         recorder_->pushPostMaster(mixer_.masterL(), mixer_.masterR(),
                                   numSamples);
 
+    // routing-test signal — replaces program audio on the mapped outs
+    const int tm = testMode_.load(std::memory_order_relaxed);
+    if (tm != 0) {
+        adevice::ChannelMapping m;
+        m.masterL = mixer_.outMap(0); m.masterR = mixer_.outMap(1);
+        m.cueL    = mixer_.outMap(2); m.cueR    = mixer_.outMap(3);
+        adevice::AudioTestTool::render(
+            (adevice::TestSignal)tm, m,
+            outputChannelData, numOutputChannels, numSamples,
+            sampleRate_.load(std::memory_order_relaxed), testPhase_);
+    }
+
     // ---- diagnostics (atomics only) ----
     const double sr_ = sampleRate_.load();
     const double periodSec = sr_ > 0.0 ? numSamples / sr_ : 0.0;
@@ -162,6 +181,8 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
 
     const auto end = std::chrono::steady_clock::now();
     const double durSec = std::chrono::duration<double>(end - start).count();
+    if (periodSec > 0.0 && durSec > periodSec)  // over-budget = underrun
+        stats_.underrunCount.fetch_add(1, std::memory_order_relaxed);
     stats_.lastCallbackMs.store((float)(durSec * 1000.0), std::memory_order_relaxed);
     float prev = stats_.maxCallbackMs.load(std::memory_order_relaxed);
     while ((float)(durSec * 1000.0) > prev &&

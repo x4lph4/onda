@@ -10,15 +10,44 @@ MainComponent::MainComponent(audio::AudioEngine& engine,
                              library::MusicLibraryEngine& lib,
                              Config& config,
                              sampler::SamplerEngine* sampler,
-                             rec::RecordingEngine* recorder)
-    : look_(theme_), sampler_(sampler), recorder_(recorder) {
+                             rec::RecordingEngine* recorder,
+                             adevice::AudioDeviceEngine* adevice)
+    : look_(theme_), sampler_(sampler), recorder_(recorder),
+      adevice_(adevice), engine_(&engine) {
     juce::Desktop::getInstance().setDefaultLookAndFeel(&look_);
     setLookAndFeel(&look_);
 
     shortcuts_ = ui::ShortcutManager::defaultProfile();
     bridge_ = std::make_unique<ui::EngineBridge>(
         engine, perf, analysis, lib, commands_, notes_, sampler,
-        recorder);
+        recorder, adevice);
+
+    // ---- Phase 13: device engine ports (control thread only) ----
+    if (adevice_) {
+        adevice_->ports.mixerMap = [&engine](const adevice::ChannelMapping& m) {
+            engine.setOutputMap(m.masterL, m.masterR, m.cueL, m.cueR);
+        };
+        adevice_->ports.testSig = [&engine](adevice::TestSignal m) {
+            engine.setTestSignal((int)m);
+        };
+        adevice_->ports.notify = [this](const std::string& t,
+                                        const std::string& d) {
+            notes_.warn(t, d);
+        };
+        adevice_->ports.cfgGet = [&config](const std::string& k) {
+            return config.get(juce::Identifier(k), "")
+                .toString().toStdString();
+        };
+        adevice_->ports.cfgSet = [&config](const std::string& k,
+                                           const std::string& v) {
+            config.set(juce::Identifier(k), juce::String(v));
+        };
+        adevice_->ports.micPermission = [](std::function<void(bool)> cb) {
+            juce::RuntimePermissions::request(
+                juce::RuntimePermissions::recordAudio, std::move(cb));
+        };
+        adevice_->enumerate();
+    }
     shell_ = std::make_unique<ui::AppShell>(
         theme_, commands_, shortcuts_, engine, perf, analysis, lib,
         *bridge_, config, notes_);
@@ -112,7 +141,7 @@ MainComponent::MainComponent(audio::AudioEngine& engine,
 
     shell_->attachSettings(std::make_unique<ui::SettingsView>(
         theme_, commands_, shortcuts_, engine.deviceManager(), config,
-        lib));
+        lib, adevice_));
     shell_->onThemeChange = [this](int id) {
         theme_.set((ui::ThemeId)id);
         look_.syncColors();
@@ -159,6 +188,14 @@ void MainComponent::timerCallback() {
         sampler_->tick();   // drain loader results + retire RT trash
     if (recorder_)
         recorder_->tick();  // writer health, splits, clips, setlist
+    if (adevice_ && engine_) {
+        const auto& as = engine_->stats();
+        adevice_->tick(
+            (int64_t)juce::Time::getMillisecondCounter(),
+            as.maxCallbackMs.load(), as.lastCallbackMs.load(),
+            as.xrunCount.load(), as.cpuLoad.load(),
+            (int64_t)as.underrunCount.load());
+    }
 }
 
 } // namespace onda

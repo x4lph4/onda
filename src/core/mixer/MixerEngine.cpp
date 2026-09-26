@@ -178,8 +178,20 @@ void MixerEngine::render(float* const* out, int numOut, int n,
 
     // 3) master bus in place -> outputs 0-1
     master_.process(mixL_.data(), mixR_.data(), n);
-    float* L = numOut > 0 ? out[0] : nullptr;
-    float* R = numOut > 1 ? out[1] : nullptr;
+
+    // physical output map (Phase 13 AudioRouting — atomic published)
+    const int mL = outMap_[0].load(std::memory_order_relaxed);
+    const int mR = outMap_[1].load(std::memory_order_relaxed);
+    const int cL = outMap_[2].load(std::memory_order_relaxed);
+    const int cR = outMap_[3].load(std::memory_order_relaxed);
+
+    // clear every channel first: unmapped outs must carry silence
+    for (int ch = 0; ch < numOut; ++ch)
+        if (out[ch] != nullptr)
+            std::memset(out[ch], 0, (size_t)n * sizeof(float));
+
+    float* L = (mL >= 0 && mL < numOut) ? out[mL] : nullptr;
+    float* R = (mR >= 0 && mR < numOut) ? out[mR] : nullptr;
     if (L != nullptr) std::memcpy(L, mixL_.data(), (size_t)n * sizeof(float));
     if (R != nullptr) std::memcpy(R, mixR_.data(), (size_t)n * sizeof(float));
 
@@ -190,15 +202,13 @@ void MixerEngine::render(float* const* out, int numOut, int n,
         stats.clipCount.fetch_add(clips - prev, std::memory_order_relaxed);
     mstats_.clipCount.store(clips, std::memory_order_relaxed);
 
-    // 4) phones bus -> outputs 2-3
-    const bool cue = numOut >= 4 && out[2] != nullptr && out[3] != nullptr;
+    // 4) phones bus -> mapped cue outputs
+    const bool cue = cL >= 0 && cR >= 0 && cL < numOut && cR < numOut
+                     && out[cL] != nullptr && out[cR] != nullptr;
     if (cue)
         phones_.process(cueL_.data(), cueR_.data(),
                         mixL_.data(), mixR_.data(),
-                        out[2], out[3], n);
-    for (int ch = 4; ch < numOut; ++ch)
-        if (out[ch] != nullptr)
-            std::memset(out[ch], 0, (size_t)n * sizeof(float));
+                        out[cL], out[cR], n);
 
     // 5) publish legacy MasterStats from bus meters
     const auto& mm = master_.meters();

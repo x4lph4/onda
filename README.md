@@ -2,6 +2,41 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 13 (audio device engine + low-latency layer)
+
+Professional device layer over JUCE's `AudioDeviceManager`
+(`docs/audio/audio-device-engine.md`,
+`docs/adr/0013-audio-device-engine.md`).
+
+- `src/core/adevice/` (JUCE-free, fake-backend tested):
+  `AudioDeviceEngine` orchestrator, `Backend` seam, `DeviceCatalog`
+  (stable `backend|name` ids, defaults, FLX4 detect), `AudioRouting`
+  (`ChannelMapping` validate/persist/auto-derive), `BufferManager` +
+  `SampleRateManager` (preset→nearest-supported; engine follows the
+  device rate — no hidden resampler), `LatencyManager` (estimated,
+  never faked), `AudioHealthMonitor` (underruns/xruns/budget/overload
+  with dedup'd warnings), `AudioRecoveryManager` (explicit FSM),
+  `AudioTestTool` (silence/sine/L-R/in-phase/ping/cue routing tests),
+  `DeviceProfile` JSON per device id.
+- `src/platform/audio/JuceAudioBackend.h`: enumerate/status/probe/
+  apply/reopenDefault over `juce::AudioDeviceManager` with rollback;
+  musical code never sees WASAPI/CoreAudio/ASIO.
+- `MixerEngine`: atomic output map — unmapped outs always silent,
+  master/cue can't duplicate. `AudioEngine`: `audioDeviceError`
+  counter, over-budget `underrunCount`, test-signal injection,
+  sampler reprepare on device restart.
+- Safe switching (`select()` = validate→probe→apply→verify→rollback)
+  and hot-plug recovery (2 Hz enumerate, 3 s retry, default fallback)
+  — all control-thread; the RT callback gained only atomic loads.
+- Settings → Audio: latency preset, routing-test signal, copyable
+  diagnostics (device/backend/rate/buffer/channels/est-latency/CPU/
+  underruns/xruns/status/recovery) + live info; snapshot exposes
+  backend/latency/recovery to the UI.
+- 20 new `[adev]` tests (**235 cases / 1.6M assertions green**):
+  catalog, caps, rate/buffer policy, routing, safe-switch rollback,
+  hot-plug, recovery FSM, health, profiles, diagnostics, test-signal
+  matrix, mixer map honoring.
+
 ## Status — Phase 12 (recording engine + session management)
 
 Professional session recording: master bus → realtime SPSC ring →

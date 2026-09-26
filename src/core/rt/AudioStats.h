@@ -11,6 +11,8 @@ struct AudioStats {
     std::atomic<uint64_t> callbackCount{0};
     std::atomic<uint64_t> xrunCount{0};       // detected underruns / scheduling gaps
     std::atomic<uint64_t> clipCount{0};       // clipped output samples
+    std::atomic<uint64_t> underrunCount{0};   // callbacks that overran the period
+    std::atomic<uint64_t> deviceErrors{0};    // backend-reported device errors
     std::atomic<float>    lastCallbackMs{0.0f};
     std::atomic<float>    maxCallbackMs{0.0f}; // worst callback duration seen
     std::atomic<float>    cpuLoad{0.0f};      // smoothed fraction of period consumed

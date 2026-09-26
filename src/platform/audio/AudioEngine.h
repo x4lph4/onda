@@ -16,6 +16,7 @@
 #include "core/rt/CommandQueue.h"
 #include "core/sampler/SamplerRt.h"
 #include "core/rec/RecordingBuffer.h"
+#include "core/adevice/AudioDeviceTypes.h"
 
 namespace onda { class Config; }
 
@@ -78,6 +79,18 @@ public:
     double sampleRate() const noexcept { return sampleRate_.load(); }
     bool   running()    const noexcept { return started_; }
 
+    /// Phase 13: physical output routing (master/cue stereo pairs onto
+    /// device channel indices). Non-RT; the mixer reads atomics.
+    void setOutputMap(int mL, int mR, int cL, int cR) noexcept {
+        mixer_.setOutputMap(mL, mR, cL, cR);
+    }
+    /// Phase 13: routing-test signal (adevice::TestSignal). Replaces
+    /// program audio on the mapped outs while active. Non-RT set.
+    void setTestSignal(int mode) noexcept {
+        testMode_.store(mode, std::memory_order_relaxed);
+        if (mode == 0) testPhase_ = 0;
+    }
+
 private:
     // ---- AudioIODeviceCallback (RT thread) ----
     void audioDeviceIOCallbackWithContext(
@@ -87,6 +100,7 @@ private:
         const juce::AudioIODeviceCallbackContext& context) override;
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override;
     void audioDeviceStopped() override;
+    void audioDeviceError(const juce::String& errorMessage) override;
 
     void applyCommand(const rt::Command& cmd) noexcept;
 
@@ -110,6 +124,8 @@ private:
     std::chrono::steady_clock::time_point lastCbStart_ {};
     bool haveLastCb_ { false };
     bool started_    { false };
+    std::atomic<int> testMode_ { 0 };   // adevice::TestSignal, non-RT set
+    uint64_t         testPhase_ { 0 };  // RT-owned continuity
 };
 
 } // namespace onda::audio
