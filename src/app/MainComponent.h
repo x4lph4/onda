@@ -34,7 +34,8 @@ public:
                   PerformanceEngine& perf,
                   library::MusicLibraryEngine& lib,
                   Config& config,
-                  sampler::SamplerEngine* sampler = nullptr);
+                  sampler::SamplerEngine* sampler = nullptr,
+                  rec::RecordingEngine* recorder = nullptr);
     ~MainComponent() override {
         stopTimer();
         juce::Desktop::getInstance().setDefaultLookAndFeel(nullptr);
@@ -59,6 +60,7 @@ private:
     std::unique_ptr<ctrl::MidiManager>      midi_;
     ctrl::flx4::Flx4Plugin                  flx4_;
     sampler::SamplerEngine*                 sampler_ = nullptr; // borrowed
+    rec::RecordingEngine*                   recorder_ = nullptr; // borrowed
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

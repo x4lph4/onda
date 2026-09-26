@@ -3,6 +3,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "OndaTheme.h"
+#include "RecordingView.h"
 #include "controls/StateButton.h"
 #include "ui/UiState.h"
 
@@ -17,10 +18,12 @@ public:
         : theme_(&te),
           settings_(te, cm, cmd::AppToggleSettings, "SET"),
           browser_(te, cm, cmd::BrowserTogglePanel, "LIB"),
-          fx_(te, cm, cmd::AppToggleFx, "FX") {
+          fx_(te, cm, cmd::AppToggleFx, "FX"),
+          rec_(te, cm) {
         addAndMakeVisible(settings_);
         addAndMakeVisible(browser_);
         addAndMakeVisible(fx_);
+        addAndMakeVisible(rec_);
         settings_.setState(ControlState::Off);
         browser_.setState(ControlState::On);
         fx_.setState(ControlState::On);
@@ -31,7 +34,7 @@ public:
     StateButton& fxButton()       { return fx_; }
 
     void setSnapshot(const UiSnapshot& s) {
-        snap_ = &s; repaint();
+        snap_ = &s; rec_.setSnapshot(s); repaint();
     }
 
     void paint(juce::Graphics& g) override {
@@ -56,7 +59,7 @@ public:
 
         // master tempo block — left of brand: "MASTER 128.0 BPM (A)"
         auto left = b;
-        left.removeFromRight(3 * 34 + 8); // buttons zone
+        left.removeFromRight(3 * 34 + 8 + 190); // buttons + rec zone
         g.setFont(juce::Font(juce::FontOptions((float)m.fontMd)));
         juce::String tempo;
         if (s.master.masterDeck >= 0 && s.master.masterBpm > 0.0) {
@@ -77,9 +80,11 @@ public:
         g.setColour(col(s.audio.running ? p.text : p.warn));
         g.drawText(dev, left, juce::Justification::centred);
 
-        // right status cluster (before the buttons): DSP%, XRUN, CLIP
+        // right status cluster (before rec widget + buttons):
+        // DSP%, XRUN, CLIP
         auto right = b;
         right.removeFromLeft(left.getWidth());
+        right.removeFromRight(190);        // rec strip zone
         auto stat = [&](juce::Rectangle<int>& r,
                         const juce::String& t, uint32_t c) {
             g.setColour(col(c));
@@ -104,18 +109,19 @@ public:
     }
 
     void resized() override {
-        const Metrics m = theme_->metrics();
-        auto r = getLocalBounds().removeFromRight(3 * 34 + 8)
+        auto r = getLocalBounds().removeFromRight(3 * 34 + 8 + 190)
                     .withTrimmedTop(3).withTrimmedBottom(3);
         settings_.setBounds(r.removeFromRight(34).reduced(1));
         fx_.setBounds(r.removeFromRight(34).reduced(1));
         browser_.setBounds(r.removeFromRight(34).reduced(1));
+        rec_.setBounds(r.withTrimmedLeft(6));
     }
 
 private:
     const ThemeEngine* theme_;
     const UiSnapshot*  snap_ = nullptr;
     StateButton settings_, browser_, fx_;
+    RecordingView rec_;
 };
 
 /// Floating toast stack — bottom-center, newest at bottom. Pure

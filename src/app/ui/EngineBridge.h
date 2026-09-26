@@ -8,6 +8,7 @@
 #include "core/analysis/AnalysisService.h"
 #include "core/library/MusicLibraryEngine.h"
 #include "core/performance/PerformanceEngine.h"
+#include "core/rec/RecordingEngine.h"
 #include "core/sampler/SamplerEngine.h"
 #include "platform/audio/AudioEngine.h"
 #include "ui/EngineCommands.h"
@@ -32,7 +33,8 @@ public:
                  library::MusicLibraryEngine& lib,
                  CommandManager& cmds,
                  NotificationCenter& notes,
-                 sampler::SamplerEngine* sampler = nullptr);
+                 sampler::SamplerEngine* sampler = nullptr,
+                 rec::RecordingEngine*   recorder = nullptr);
 
     const EnginePorts& ports() const { return ports_; }
     EnginePorts&       mutablePorts()  { return ports_; }
@@ -59,6 +61,8 @@ public:
 
     /// Phase 11: domain pad layer (pad.press / pad.mode commands).
     pads::PadLayer&          pads()    noexcept { return pads_; }
+    /// Phase 12: session recorder — may be null in minimal builds.
+    rec::RecordingEngine*    recorder() noexcept { return recorder_; }
 
 private:
     audio::AudioEngine&          engine_;
@@ -68,6 +72,7 @@ private:
     NotificationCenter&          notes_;
 
     pads::PadLayer  pads_;
+    rec::RecordingEngine* recorder_ = nullptr;
     EnginePorts ports_;
     std::string deckPath_[4];
     bool        pfl_[4] = { false, false, false, false };

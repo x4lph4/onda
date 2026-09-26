@@ -11,6 +11,8 @@
 #include "../core/data/PerformanceStore.h"
 #include "../core/library/MusicLibraryEngine.h"
 #include "../core/performance/PerformanceEngine.h"
+#include "../core/rec/RecordingEngine.h"
+#include "../core/rec/RecordingRepository.h"
 #include "../core/sampler/SampleRepository.h"
 #include "../core/sampler/SamplerEngine.h"
 
@@ -90,14 +92,37 @@ public:
         engine_->attachSampler(&sampler_->rt());
         if (db_->isOpen()) sampler_->loadAll();
 
+        // Phase 12: session recorder on the shared database. The RT
+        // tap attaches to AudioEngine inside EngineBridge; here we own
+        // persistence + lifecycle. Recordings land in
+        // <app-data>/Onda/Recordings unless configured otherwise.
+        recRepo_ = std::make_unique<rec::RecordingRepository>(*db_);
+        if (db_->isOpen()) recRepo_->init();
+        recorder_ = std::make_unique<rec::RecordingEngine>(
+            db_->isOpen() ? recRepo_.get() : nullptr);
+        recorder_->setAppVersion(getApplicationVersion().toStdString());
+        {
+            const auto defDir =
+                dbDir.getChildFile("Recordings").getFullPathName();
+            const auto cfgDir = config_.get(
+                juce::Identifier("recording.dir"), defDir);
+            recorder_->setOutputDir(cfgDir.toString().toStdString());
+        }
+
         mainWindow_ = std::make_unique<MainWindow>(getApplicationName(),
                                                  *engine_, *analysis_,
                                                  *perf_, *lib_, config_,
-                                                 sampler_.get());
+                                                 sampler_.get(),
+                                                 recorder_.get());
     }
 
     void shutdown() override {
         mainWindow_ = nullptr; // UI first: it references the engine
+        if (recorder_) {
+            recorder_->shutdown();       // finalize any live session
+            recorder_.reset();
+            recRepo_.reset();
+        }
         if (sampler_) {
             sampler_->stopAll();
             if (db_ && db_->isOpen()) sampler_->saveAll();
@@ -105,6 +130,7 @@ public:
         if (engine_) {
             engine_->shutdown();
             engine_->attachSampler(nullptr);   // RT engine gone
+            engine_->attachRecorder(nullptr);
             engine_.reset();
         }
         sampler_.reset();
@@ -124,13 +150,15 @@ private:
         MainWindow(const juce::String& name, audio::AudioEngine& engine,
                    AnalysisService& analysis, PerformanceEngine& perf,
                    library::MusicLibraryEngine& lib, Config& config,
-                   sampler::SamplerEngine* sampler)
+                   sampler::SamplerEngine* sampler,
+                   rec::RecordingEngine* recorder)
             : juce::DocumentWindow(name,
                                    juce::Colour(0xff0d0f12),
                                    juce::DocumentWindow::allButtons) {
             setUsingNativeTitleBar(true);
             setContentOwned(new MainComponent(engine, analysis, perf,
-                                              lib, config, sampler),
+                                              lib, config, sampler,
+                                              recorder),
                             true);
             setResizable(true, true);
             setResizeLimits(960, 540, 10000, 10000);
@@ -153,6 +181,8 @@ private:
     std::unique_ptr<library::MusicLibraryEngine> lib_;
     std::unique_ptr<sampler::SampleRepository> sampleRepo_;
     std::unique_ptr<sampler::SamplerEngine>  sampler_;
+    std::unique_ptr<rec::RecordingRepository> recRepo_;
+    std::unique_ptr<rec::RecordingEngine>  recorder_;
     std::unique_ptr<audio::AudioEngine> engine_;
     std::unique_ptr<MainWindow> mainWindow_;
 };

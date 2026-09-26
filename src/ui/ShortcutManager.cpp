@@ -169,6 +169,10 @@ ShortcutManager ShortcutManager::defaultProfile() {
     b("Ctrl+Comma",AppToggleSettings);
     b("Ctrl+T",    AppLayoutNext);
     b("Escape",    AppPanic);
+
+    // ---- recording (Phase 12) ----
+    b("Ctrl+R",    RecToggle);           // quick record start/stop
+    b("Ctrl+Shift+R", RecSplit);         // split session file
     return m;
 }
 

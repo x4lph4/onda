@@ -1,6 +1,7 @@
 #include "EngineCommands.h"
 
 #include "core/mixer/MixerTypes.h"
+#include "core/rec/RecordingEngine.h"
 #include "core/sampler/SamplerEngine.h"
 
 namespace onda::ui {
@@ -372,6 +373,42 @@ void registerEngineCommands(CommandManager& cm,
             if (p.sampler) p.sampler->selectBank((int)v);
         },
         [p]() { return p.sampler ? p.sampler->activeBank() : -1; }));
+
+    // ---- recording (Phase 12) ----
+    cm.add(mk(cmd::RecArm, "rec.arm", "Recording",
+        [p](float, CommandSource) {
+            if (p.recorder) p.recorder->arm();
+        }));
+    cm.add(mk(cmd::RecStart, "rec.start", "Recording",
+        [p](float, CommandSource) {
+            if (p.recorder) p.recorder->start();
+        }));
+    cm.add(mk(cmd::RecStop, "rec.stop", "Recording",
+        [p](float, CommandSource) {
+            if (p.recorder) p.recorder->stop();
+        }));
+    cm.add(mk(cmd::RecPause, "rec.pause", "Recording",
+        [p](float, CommandSource) {
+            if (p.recorder) p.recorder->pause();
+        }));
+    cm.add(mk(cmd::RecResume, "rec.resume", "Recording",
+        [p](float, CommandSource) {
+            if (p.recorder) p.recorder->resume();
+        }));
+    cm.add(mk(cmd::RecSplit, "rec.split", "Recording",
+        [p](float, CommandSource) {
+            if (p.recorder) p.recorder->split();
+        }));
+    cm.add(mk(cmd::RecToggle, "rec.toggle", "Recording",
+        [p](float, CommandSource) {
+            if (p.recorder) p.recorder->toggle();
+        },
+        [p]() {
+            if (!p.recorder) return 0;
+            const auto st = p.recorder->state();
+            return (st == rec::State::Recording
+                 || st == rec::State::Paused) ? 1 : 0;
+        }));
 }
 
 } // namespace onda::ui

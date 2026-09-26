@@ -12,6 +12,7 @@
 #include "core/rt/CommandQueue.h"
 
 namespace onda::sampler { class SamplerEngine; }
+namespace onda::rec     { class RecordingEngine; }
 
 namespace onda::ui {
 
@@ -25,6 +26,7 @@ struct EnginePorts {
     PerformanceEngine*        perf   = nullptr;
     library::MusicLibraryEngine* lib = nullptr;
     sampler::SamplerEngine*   sampler = nullptr;  // Phase 11
+    rec::RecordingEngine*     recorder = nullptr; // Phase 12
 
     /// deck index → live stats (for toggle-state queries + cue trigger)
     std::function<DeckStats*(int)>            deckStats;

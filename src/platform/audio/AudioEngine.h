@@ -15,6 +15,7 @@
 #include "core/rt/AudioStats.h"
 #include "core/rt/CommandQueue.h"
 #include "core/sampler/SamplerRt.h"
+#include "core/rec/RecordingBuffer.h"
 
 namespace onda { class Config; }
 
@@ -68,6 +69,15 @@ public:
     }
     sampler::SamplerRt* sampler() noexcept { return sampler_; }
 
+    /// Phase 12: attach the recorder's RT tap — post-master program
+    /// is pushed into its SPSC ring after mixer_.render() each block.
+    /// Non-RT; wire at startup before recording.
+    void attachRecorder(rec::RecorderRt* r) noexcept { recorder_ = r; }
+    rec::RecorderRt*    recorder() noexcept { return recorder_; }
+    /// Real device sample rate — written by audioDeviceAboutToStart.
+    double sampleRate() const noexcept { return sampleRate_.load(); }
+    bool   running()    const noexcept { return started_; }
+
 private:
     // ---- AudioIODeviceCallback (RT thread) ----
     void audioDeviceIOCallbackWithContext(
@@ -92,9 +102,10 @@ private:
     mixer::MixerController mixerCtl_;
     SyncRtCore  syncRt_;
     sampler::SamplerRt* sampler_ = nullptr;  // borrowed; owned by app
+    rec::RecorderRt*    recorder_ = nullptr; // borrowed; owned by app
 
     // ---- state owned by the RT thread ----
-    double sampleRate_    { 0.0 };
+    std::atomic<double> sampleRate_   { 0.0 };
     float smoothedLoad_   { 0.0f };
     std::chrono::steady_clock::time_point lastCbStart_ {};
     bool haveLastCb_ { false };

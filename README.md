@@ -2,6 +2,41 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 12 (recording engine + session management)
+
+Professional session recording: master bus → realtime SPSC ring →
+background WAV writer, with crash recovery, setlists and a
+command-driven REC strip (`docs/recording.md`,
+`docs/adr/0012-recording-engine.md`).
+
+- `src/core/rec/`: `RecorderRt` (audio-thread tap: bounded copy +
+  atomics only — no locks, no fs, no alloc), `SpscRing` (~8 s buffer),
+  `RecordingWriter` thread (`WavEncoder` PCM16/24/float32, chunked,
+  3.8 GB auto-split), `Journal` (crash-safe event log),
+  `RecordingRepository` (`recording_sessions/files/events/
+  session_tracks/recovery` on `onda.db`), `RecordingRecovery`
+  (journal scan → in-place header repair), `RecordingExport`
+  (JSON/CSV/TXT), `RecordingManager`, `RecordingEngine` façade with
+  an enforced state machine (Idle→…→Completed/Failed/Recoverable).
+- Tap point: post-master bus in `AudioEngine` after
+  `MixerEngine.render` — recording is transparent to decks/FX/
+  sampler. Pause excludes frames; split loses none.
+- Setlist: deck-play edges → `session_tracks` rows + shared
+  `HistoryManager.recordPlay`; `<file>.meta.json` sidecar written at
+  finalize, audio file never modified.
+- Commands `rec.arm|start|stop|pause|resume|split|toggle`
+  (0x7000 space) — Ctrl+R quick record, Ctrl+Shift+R split;
+  `RecordingView` in the TopBar (REC dot, elapsed, meter, CLIP/DROP,
+  disk space).
+- 19 new `[rec]` tests (**215 cases / 1.59M assertions green**):
+  state machine, ring, encoder roundtrip, lifecycle, split, crash →
+  scan → recover → validate → discard, HistoryManager link, known-
+  signal equivalence (<1.5e-6 @24-bit), and a 4-hour-equivalent
+  48 kHz stereo 24-bit stream: 691M frames ≈ 4.15 GB, auto-split,
+  zero dropped frames.
+- Also fixed a latent FLX4 test UAF (stale `DeviceState*` after
+  reconnect) exposed by heap layout changes.
+
 ## Status — Phase 11 (professional sampler + performance pads)
 
 Performance sampler on a JUCE-free RT core, plus a domain pad layer

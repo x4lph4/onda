@@ -1,5 +1,7 @@
 #include "MainComponent.h"
 
+#include "platform/log/Log.h"
+
 namespace onda {
 
 MainComponent::MainComponent(audio::AudioEngine& engine,
@@ -7,14 +9,16 @@ MainComponent::MainComponent(audio::AudioEngine& engine,
                              PerformanceEngine& perf,
                              library::MusicLibraryEngine& lib,
                              Config& config,
-                             sampler::SamplerEngine* sampler)
-    : look_(theme_), sampler_(sampler) {
+                             sampler::SamplerEngine* sampler,
+                             rec::RecordingEngine* recorder)
+    : look_(theme_), sampler_(sampler), recorder_(recorder) {
     juce::Desktop::getInstance().setDefaultLookAndFeel(&look_);
     setLookAndFeel(&look_);
 
     shortcuts_ = ui::ShortcutManager::defaultProfile();
     bridge_ = std::make_unique<ui::EngineBridge>(
-        engine, perf, analysis, lib, commands_, notes_, sampler);
+        engine, perf, analysis, lib, commands_, notes_, sampler,
+        recorder);
     shell_ = std::make_unique<ui::AppShell>(
         theme_, commands_, shortcuts_, engine, perf, analysis, lib,
         *bridge_, config, notes_);
@@ -120,6 +124,22 @@ MainComponent::MainComponent(audio::AudioEngine& engine,
         repaint();
     };
 
+    // Phase 12: report recordings interrupted by a previous crash —
+    // journal scan happens on the app thread before the timer starts.
+    if (recorder_) {
+        const auto items = recorder_->scanRecovery();
+        if (!items.empty()) {
+            notes_.warn("Unfinished recordings",
+                std::to_string(items.size()) +
+                " interrupted session(s) found in " +
+                recorder_->outputDir() +
+                " — recover from the session store");
+            for (const auto& it : items)
+                log::warn("Recoverable recording: " +
+                          juce::String(it.wavPath));
+        }
+    }
+
     addAndMakeVisible(*shell_);
     setSize(1440, 860);
 }
@@ -137,6 +157,8 @@ void MainComponent::timerCallback() {
         ctrl_->tick(juce::Time::getMillisecondCounterHiRes() / 1000.0);
     if (sampler_)
         sampler_->tick();   // drain loader results + retire RT trash
+    if (recorder_)
+        recorder_->tick();  // writer health, splits, clips, setlist
 }
 
 } // namespace onda

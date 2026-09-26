@@ -65,7 +65,8 @@ void AudioEngine::shutdown() {
 void AudioEngine::loadTrack(int deck, const juce::String& path) {
     if (deck < 0 || deck >= kNumDecks)
         return;
-    const double rate = sampleRate_ > 0.0 ? sampleRate_ : 48000.0;
+    const double sr = sampleRate_.load();
+    const double rate = sr > 0.0 ? sr : 48000.0;
     loaders_[(size_t)deck]->requestLoad(path.toStdString(), rate);
     log::info("Deck " + juce::String(deck) + " loading: " + path);
 }
@@ -80,13 +81,14 @@ void AudioEngine::cancelLoad(int deck) {
 }
 
 void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device) {
-    sampleRate_ = device->getCurrentSampleRate();
+    const double sr = device->getCurrentSampleRate();
+    sampleRate_.store(sr);
     for (auto& d : decks_)
-        d.setDeviceRate(sampleRate_);
+        d.setDeviceRate(sr);
     for (auto& d : decks_)
-        d.prepareDsp(sampleRate_);
-    mixer_.prepare(sampleRate_);
-    stats_.sampleRate.store(sampleRate_, std::memory_order_relaxed);
+        d.prepareDsp(sr);
+    mixer_.prepare(sr);
+    stats_.sampleRate.store(sr, std::memory_order_relaxed);
     stats_.bufferSize.store(device->getCurrentBufferSizeSamples(), std::memory_order_relaxed);
     stats_.running.store(true, std::memory_order_relaxed);
     stats_.xrunCount.store(0, std::memory_order_relaxed);
@@ -95,7 +97,7 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device) {
     haveLastCb_ = false;
     smoothedLoad_ = 0.0f;
     log::info("Audio device started: " + device->getName()
-              + " @ " + juce::String(sampleRate_) + " Hz, "
+              + " @ " + juce::String(sr) + " Hz, "
               + juce::String(device->getCurrentBufferSizeSamples()) + " smp");
 }
 
@@ -140,8 +142,15 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     mixer_.render(outputChannelData, numOutputChannels, numSamples,
                   decks_.data(), (int)decks_.size(), stats_, sampler_);
 
+    // recording tap — post-master program into the SPSC ring (bounded
+    // copy + atomics only; the writer thread does all disk IO)
+    if (recorder_)
+        recorder_->pushPostMaster(mixer_.masterL(), mixer_.masterR(),
+                                  numSamples);
+
     // ---- diagnostics (atomics only) ----
-    const double periodSec = sampleRate_ > 0.0 ? numSamples / sampleRate_ : 0.0;
+    const double sr_ = sampleRate_.load();
+    const double periodSec = sr_ > 0.0 ? numSamples / sr_ : 0.0;
 
     if (haveLastCb_ && periodSec > 0.0) {
         const double gapSec = std::chrono::duration<double>(start - lastCbStart_).count();

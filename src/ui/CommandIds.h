@@ -74,6 +74,15 @@ enum Id : uint32_t {
     SamplerBankPrev = 0x6084,
     SamplerBankSet  = 0x6085,  // value = bank index
 
+    // ---- recording: 0x7000 (Phase 12) ----
+    RecArm    = 0x7000,
+    RecStart  = 0x7001,
+    RecStop   = 0x7002,
+    RecPause  = 0x7003,
+    RecResume = 0x7004,
+    RecSplit  = 0x7005,
+    RecToggle = 0x7006,   // Quick Record: start/stop
+
     // ---- app: 0x3F00 ----
     AppToggleSettings  = 0x3F00,
     AppLayoutNext      = 0x3F01,

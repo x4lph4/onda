@@ -342,6 +342,8 @@ TEST_CASE("FLX4: hot-plug — disconnect safe, reconnect restores",
     r.vc.pressPlay(0);
     // reconnect → same device id, profile re-applied, LEDs repaint
     r.vc.attach(3.0);
+    st = r.eng.device(flx4::VirtualFlx4::kId);   // attach replaces the
+                                               // DeviceState — refetch
     REQUIRE(st->connected);
     REQUIRE(r.plug.bound());
     REQUIRE_FALSE(st->profileId.empty());

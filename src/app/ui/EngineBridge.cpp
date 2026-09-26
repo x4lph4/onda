@@ -12,14 +12,16 @@ EngineBridge::EngineBridge(audio::AudioEngine& engine,
                            library::MusicLibraryEngine& lib,
                            CommandManager& cmds,
                            NotificationCenter& notes,
-                           sampler::SamplerEngine* sampler)
+                           sampler::SamplerEngine* sampler,
+                           rec::RecordingEngine*   recorder)
     : engine_(engine), perf_(perf), analysis_(analysis), lib_(lib),
-      notes_(notes) {
+      notes_(notes), recorder_(recorder) {
     ports_.queue  = &engine_.commands();
     ports_.mixer  = &engine_.mixerCtl();
     ports_.perf   = &perf_;
     ports_.lib    = &lib_;
     ports_.sampler = sampler;
+    ports_.recorder = recorder;
     ports_.deckStats = [this](int d) -> DeckStats* {
         return d >= 0 && d < audio::AudioEngine::kNumDecks
              ? &engine_.deckStats(d) : nullptr;
@@ -54,6 +56,52 @@ EngineBridge::EngineBridge(audio::AudioEngine& engine,
             [sampler](int slot)            { sampler->stop(slot); },
         });
         pads_.registerCommands(cmds);
+    }
+
+    // Phase 12: recorder ports — deck play edges feed session_tracks,
+    // track stops feed the library HistoryManager, and the recorder
+    // reads the real device rate (never resamples).
+    if (recorder) {
+        rec::RecordingEngine::Ports rp;
+        rp.notify = [this](std::string t, std::string d, int lvl) {
+            if      (lvl == 1) notes_.warn(t, d);
+            else if (lvl == 2) notes_.error(t, d);
+            else if (lvl == 3) notes_.success(t, d);
+            else               notes_.info(t, d);
+        };
+        rp.deckPlaying = [this](int d) -> int {
+            if (d < 0 || d >= audio::AudioEngine::kNumDecks) return -1;
+            return engine_.deckStats(d).state.load()
+                == (int)DeckState::Playing ? 1 : 0;
+        };
+        rp.deckPath = [this](int d) -> std::string {
+            return d >= 0 && d < 4 ? deckPath_[d] : std::string{};
+        };
+        rp.trackMeta = [this](int d,
+                              const std::string& path) -> rec::TrackPlay {
+            rec::TrackPlay t; t.deck = d; t.path = path;
+            if (lib_.isOpen()) {
+                library::Track lt;
+                if (lib_.tracks().getByPath(path, lt)) {
+                    t.trackId = lt.id;
+                    t.title = lt.title.empty() ? lt.filename : lt.title;
+                    t.artist = lt.artist;
+                    t.bpm = lt.bpm;
+                    if (lt.keyIndex >= 0)
+                        t.key = KeyAnalyzer::camelotName(lt.keyIndex);
+                }
+            }
+            return t;
+        };
+        rp.recordPlay = [this](int64_t trackId, int deck, int64_t ts,
+                               double secs) {
+            if (lib_.isOpen() && trackId >= 0)
+                lib_.history().recordPlay(trackId, deck, ts, secs);
+        };
+        rp.sampleRate = [this] { return engine_.sampleRate(); };
+        rp.audioRunning = [this] { return engine_.running(); };
+        recorder->setPorts(std::move(rp));
+        engine_.attachRecorder(&recorder->rt());
     }
 }
 
@@ -175,6 +223,27 @@ void EngineBridge::snapshot(UiSnapshot& o) {
     readFx((int)fx::FXTarget::Master, o.fxMaster, 4);
     o.fxReturn[0] = engine_.fxEngine().sendReturn(0);
     o.fxReturn[1] = engine_.fxEngine().sendReturn(1);
+
+    // recording strip — atomic meter pull, no locks
+    if (recorder_) {
+        const auto rm = recorder_->meter();
+        const auto rd = recorder_->diag();
+        const auto rs = recorder_->session();
+        o.rec.state = (int)recorder_->state();
+        o.rec.elapsedSec = rs.durationSec;
+        o.rec.peakL = rm.peakL;  o.rec.peakR = rm.peakR;
+        o.rec.rmsL  = rm.rmsL;   o.rec.rmsR  = rm.rmsR;
+        o.rec.maxPeak = std::max(rm.maxPeakL, rm.maxPeakR);
+        o.rec.clips = rm.clipCount;
+        o.rec.droppedFrames = rm.droppedFrames;
+        o.rec.fillPct = rm.fillPct;
+        o.rec.diskFreeBytes = rd.diskFreeBytes;
+        o.rec.diskWarn = rd.diskWarn;
+        o.rec.diskError = rd.diskError;
+        o.rec.fileName = rs.filePath.empty() ? std::string{}
+            : juce::File(juce::String(rs.filePath))
+                  .getFileName().toStdString();
+    }
     ++o.frame;
 }
 

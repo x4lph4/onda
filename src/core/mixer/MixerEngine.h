@@ -99,6 +99,11 @@ public:
     /// Deck index -> crossfader side: 0,2 = A; 1,3 = B.
     static bool deckOnSideA(int deck) noexcept { return (deck % 2) == 0; }
 
+    /// Post-master program bus — valid after render() inside the same
+    /// callback (limiter/comp already applied). Read-only taps only.
+    const float* masterL() const { return mixL_.data(); }
+    const float* masterR() const { return mixR_.data(); }
+
 private:
     void rebuildRouting() noexcept;
 

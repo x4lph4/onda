@@ -88,11 +88,29 @@ struct AudioStatus {
     float  uiFrameMs = 0.0f;   // measured snapshot/feed time (ms)
 };
 
+/// Recording strip snapshot (Phase 12) — plain values only; `state`
+/// mirrors rec::State so the view doesn't include the engine header.
+struct RecordingSnapshot {
+    int    state       = 0;    // rec::State ordinal
+    double elapsedSec  = 0.0;
+    float  peakL = 0.0f, peakR = 0.0f;
+    float  rmsL  = 0.0f, rmsR  = 0.0f;
+    float  maxPeak = 0.0f;
+    uint32_t clips = 0;
+    int64_t droppedFrames = 0;
+    int    fillPct = 0;
+    int64_t diskFreeBytes = 0;
+    bool   diskWarn = false;
+    bool   diskError = false;
+    std::string fileName;
+};
+
 struct UiSnapshot {
     DeckSnapshot    deck[4];
     ChannelSnapshot channel[4];
     MasterSnapshot  master;
     AudioStatus     audio;
+    RecordingSnapshot rec;
     FxSlotSnapshot  fxDeck[4][4];        // [deck][slot]
     FxSlotSnapshot  fxSend[2][4];
     FxSlotSnapshot  fxMaster[4];
