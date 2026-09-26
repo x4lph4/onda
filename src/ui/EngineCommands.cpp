@@ -1,5 +1,6 @@
 #include "EngineCommands.h"
 
+#include "core/analysis/AnalysisTypes.h"
 #include "core/mixer/MixerTypes.h"
 #include "core/rec/RecordingEngine.h"
 #include "core/sampler/SamplerEngine.h"
@@ -202,6 +203,32 @@ void registerEngineCommands(CommandManager& cm,
                 using R = mixer::ParameterRegistry;
                 return p.mixer->value(R::channelCue(d)) >= 0.5f ? 1 : 0;
             }));
+
+        // ---- analysis edits (Phase 14): value -1 = derive at handler ----
+        auto ana = [&](uint32_t id, const char* name, int action,
+                       double value) {
+            cm.add(mk(cmd::forDeck((cmd::Id)id, d),
+                "deck" + dn + "." + name, cat,
+                [p, d, action, value](float, CommandSource) {
+                    if (p.analysisEdit) p.analysisEdit(d, action, value);
+                }));
+        };
+        ana(cmd::AnaSetFirstBeat, "ana.setFirstBeat",
+            (int)AnalysisEdit::SetFirstBeat, -1.0);
+        ana(cmd::AnaNudgeLeft, "ana.nudgeLeft",
+            (int)AnalysisEdit::NudgeGrid, -10.0);
+        ana(cmd::AnaNudgeRight, "ana.nudgeRight",
+            (int)AnalysisEdit::NudgeGrid, 10.0);
+        ana(cmd::AnaBpmDouble, "ana.bpmDouble",
+            (int)AnalysisEdit::DoubleTempo, 0.0);
+        ana(cmd::AnaBpmHalf, "ana.bpmHalf",
+            (int)AnalysisEdit::HalfTempo, 0.0);
+        ana(cmd::AnaSetDownbeat, "ana.setDownbeat",
+            (int)AnalysisEdit::SetDownbeat, -1.0);
+        ana(cmd::AnaGridReset, "ana.gridReset",
+            (int)AnalysisEdit::ResetGrid, 0.0);
+        ana(cmd::AnaReanalyze, "ana.reanalyze",
+            (int)AnalysisEdit::Reanalyze, 0.0);
 
         // hot cues: trigger/set/delete per slot
         for (int s = 0; s < 8; ++s) {

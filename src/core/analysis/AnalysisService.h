@@ -7,7 +7,9 @@
 #include <vector>
 
 #include "AnalysisQueue.h"
+#include "BeatGridEngine.h"
 #include "MusicAnalysisEngine.h"
+#include "SyncReference.h"
 #include "../data/AnalysisStore.h"
 
 namespace onda {
@@ -26,7 +28,8 @@ namespace onda {
 /// saveUserGrid so detection data survives correction.
 class AnalysisService {
 public:
-    AnalysisService(DecoderFactory factory, Database& db);
+    /// `numWorkers` — analysis worker threads (≤0 → auto from CPU).
+    AnalysisService(DecoderFactory factory, Database& db, int numWorkers = -1);
 
     // ---- jobs ----
     int64_t analyzeTrack(const std::string& path, int priority = 0);
@@ -36,6 +39,13 @@ public:
     void pauseQueue()                   { queue_.pause(); }
     void resumeQueue()                  { queue_.resume(); }
     AnalysisQueue& queue()              { return queue_; }
+    int  workerCount() const            { return queue_.workerCount(); }
+
+    /// CPU gate (§29): while true, only ≥HIGH priority jobs run so
+    /// background analysis never competes with playback/recording.
+    void setPlaybackActive(bool active) {
+        queue_.setMinActivePriority(active ? (int)AnalysisPriority::High : 0);
+    }
 
     void addListener(AnalysisQueue::Listener l) { queue_.addListener(std::move(l)); }
 
@@ -53,6 +63,20 @@ public:
     void setUserKey(const std::string& path, int keyIndex); // -1 clears
     void saveUserGrid(const std::string& path, const BeatGrid& g);
     int  invalidateStale() { return store_.invalidateStale(); }
+
+    /// Unified edit surface (AnalysisEdit actions). Returns the new
+    /// effective grid so callers can republish it to decks; an invalid
+    /// action yields an empty grid.
+    BeatGrid applyEdit(const std::string& path, AnalysisEdit action,
+                       double value = 0.0);
+
+    // ---- component-level status & review (§26–27) ----
+    int      componentState(const std::string& path, AnalysisComponent c);
+    bool     needsReview(const std::string& path);
+    bool     hasOverride(const std::string& path);
+
+    /// Sync-ready view for the performance engine (§32).
+    std::optional<SyncReference> syncReference(const std::string& path);
 
     AnalysisStore& store() { return store_; }
 

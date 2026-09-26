@@ -1,5 +1,7 @@
 #include "EngineBridge.h"
 
+#include <juce_events/juce_events.h>
+
 #include "core/analysis/AnalysisTypes.h"
 #include "core/analysis/KeyAnalyzer.h"
 #include "core/mixer/ParameterRegistry.h"
@@ -30,20 +32,75 @@ EngineBridge::EngineBridge(audio::AudioEngine& engine,
     ports_.loadTrack = [this](int d, const std::string& path) {
         deckPath_[d & 3] = path;
         engine_.loadTrack(d, juce::String(path));
-        // queue analysis so the deck gets its grid/waveform ASAP
-        if (lib_.isOpen()) {
-            library::Track t;
-            if (lib_.tracks().getByPath(path, t))
-                analysis_.analyzeTrack(path, 10);
-            else
-                analysis_.analyzeTrack(path, 10);
+        // If the track is already analyzed, attach its grid NOW (the
+        // completion path below only covers fresh analysis).
+        if (analysis_.stateFor(path) == AnalysisState::Analyzed) {
+            if (auto b = analysis_.getAnalysis(path); b && !b->grid.empty()) {
+                auto g = std::make_shared<BeatGrid>(
+                    b->effectiveGrid().rescaled(engine_.sampleRate()));
+                perf_.attachGrid(d, g, analysis_.trackIdFor(path));
+            }
         }
+        // queue analysis so the deck gets its grid/waveform ASAP
+        analysis_.analyzeTrack(path, (int)AnalysisPriority::High);
         notifyTrackLoaded(d, path);
     };
     ports_.unloadTrack = [this](int d) {
         engine_.unloadTrack(d);
         deckPath_[d & 3].clear();
     };
+    // ---- Phase 14: analysis edit surface (0x9000 commands) ----
+    ports_.analysisEdit = [this](int d, int action, double value) {
+        const std::string path = deckPath_[d & 3];
+        if (path.empty()) return;
+        const auto a = (AnalysisEdit)action;
+        // Playhead-derived values: deck frames are device-rate, the
+        // stored grid lives at the analysis reference rate.
+        const double ar = [&] {
+            if (auto b = analysis_.getAnalysis(path))
+                if (b->result.sampleRate > 0.0) return b->result.sampleRate;
+            return 48000.0;
+        }();
+        const double dev = engine_.sampleRate() > 0.0
+                         ? engine_.sampleRate() : ar;
+        if (a == AnalysisEdit::SetFirstBeat && value < 0.0) {
+            value = (double)engine_.deckStats(d).framesRead.load()
+                  * ar / dev;
+        } else if (a == AnalysisEdit::SetDownbeat && value < 0.0) {
+            const double anaPos =
+                (double)engine_.deckStats(d).framesRead.load() * ar / dev;
+            if (auto b = analysis_.getAnalysis(path))
+                value = std::floor(
+                    b->effectiveGrid().frameToBeat((int64_t)anaPos) + 0.5);
+        }
+        BeatGrid g = analysis_.applyEdit(path, a, value);
+        if (!g.empty())   // republish effective grid to the deck
+            perf_.attachGrid(d,
+                std::make_shared<BeatGrid>(g.rescaled(dev)),
+                analysis_.trackIdFor(path));
+    };
+
+    // Completed analysis → attach the effective grid (rescaled to the
+    // device rate) to every deck holding that track. The queue fires
+    // on a worker thread; attachGrid is control-thread only.
+    analysis_.addListener([this](const AnalysisQueue::Notification& n) {
+        if (n.event != AnalysisQueue::Event::Completed || !n.bundle)
+            return;
+        const std::string path = n.path;
+        juce::MessageManager::callAsync([this, path] {
+            for (int d = 0; d < 4; ++d) {
+                if (deckPath_[d] != path) continue;
+                BeatGrid g = analysis_.getBeatGrid(path);
+                if (g.empty()) continue;
+                perf_.attachGrid(d,
+                    std::make_shared<BeatGrid>(
+                        g.rescaled(engine_.sampleRate())),
+                    analysis_.trackIdFor(path));
+            }
+            notifyAnalysis(path, true);
+        });
+    });
+
     // app-level actions are bound by AppShell after construction
     registerEngineCommands(cmds, ports_);
 
@@ -253,6 +310,17 @@ void EngineBridge::snapshot(UiSnapshot& o) {
         o.rec.fileName = rs.filePath.empty() ? std::string{}
             : juce::File(juce::String(rs.filePath))
                   .getFileName().toStdString();
+    }
+    // Phase 14 §29: analysis workers yield while playback/recording
+    // is live — only ≥HIGH priority jobs run under the gate.
+    bool busy = false;
+    for (int d = 0; d < 4 && !busy; ++d)
+        busy = o.deck[d].state == (int)DeckState::Playing;
+    if (!busy && recorder_)
+        busy = o.rec.state == (int)rec::State::Recording;
+    if (busy != lastBusy_) {
+        analysis_.setPlaybackActive(busy);
+        lastBusy_ = busy;
     }
     ++o.frame;
 }

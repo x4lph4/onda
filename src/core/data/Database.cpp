@@ -184,6 +184,22 @@ CREATE INDEX IF NOT EXISTS idx_tracks_hash ON tracks(content_hash);
 CREATE INDEX IF NOT EXISTS idx_analysis_bpm ON analysis(bpm);
 CREATE INDEX IF NOT EXISTS idx_analysis_key ON analysis(key_index);
 )SQL",
+
+    // v4 — Phase 14 analysis deepening: loudness + transients +
+    // component status + review flag (compact columns, not per-row
+    // beats/transients — see docs/analysis/music-analysis-engine.md)
+    R"SQL(
+ALTER TABLE analysis ADD COLUMN peak REAL NOT NULL DEFAULT 0;
+ALTER TABLE analysis ADD COLUMN rms REAL NOT NULL DEFAULT 0;
+ALTER TABLE analysis ADD COLUMN lufs_i REAL NOT NULL DEFAULT -70;
+ALTER TABLE analysis ADD COLUMN lra REAL NOT NULL DEFAULT 0;
+ALTER TABLE analysis ADD COLUMN transients TEXT;   -- JSON [[frame,strength],…]
+ALTER TABLE analysis ADD COLUMN comp_status INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE analysis ADD COLUMN needs_review INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE waveforms ADD COLUMN mid BLOB;         -- 1024-frame pyramid level
+ALTER TABLE user_overrides ADD COLUMN grid_json TEXT;    -- edited grid (detected kept)
+ALTER TABLE user_overrides ADD COLUMN downbeat_offset INTEGER;
+)SQL",
 };
 
 bool Database::open(const std::string& path) {

@@ -80,6 +80,7 @@ private:
     std::string deckPath_[4];
     bool        pfl_[4] = { false, false, false, false };
     uint64_t    lastClipCount_ = 0;
+    bool        lastBusy_ = false;
 };
 
 } // namespace onda::ui

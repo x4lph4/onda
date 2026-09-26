@@ -6,9 +6,12 @@
 
 #include "../decode/IDecoder.h"
 #include "BeatGridEngine.h"
+#include "BeatGridValidator.h"
 #include "BpmAnalyzer.h"
 #include "KeyAnalyzer.h"
+#include "LoudnessAnalyzer.h"
 #include "OnsetDetector.h"
+#include "TransientAnalyzer.h"
 #include "WaveformGenerator.h"
 
 namespace onda {
@@ -109,6 +112,14 @@ std::shared_ptr<AnalysisBundle> MusicAnalysisEngine::analyzeBuffer(
     r.numFrames = numFrames;
     r.sampleRate = sampleRate;
     r.durationSec = numFrames / sampleRate;
+    // component ledger (§26): Decode is implied done here; the rest
+    // start NotAnalyzed and flip as stages complete or fail.
+    auto comp = [&](AnalysisComponent c, AnalysisState s, float p) {
+        r.components[(int)c] = { (int)s, p };
+    };
+    comp(AnalysisComponent::Decode, AnalysisState::Analyzed, 1.0f);
+    for (int c = 1; c < kNumComponents; ++c)
+        comp((AnalysisComponent)c, AnalysisState::Analyzing, 0.0f);
 
     if (cancelled(cancel)) return nullptr;
 
@@ -119,22 +130,58 @@ std::shared_ptr<AnalysisBundle> MusicAnalysisEngine::analyzeBuffer(
 
     BpmAnalyzer bpm;
     r.bpm = bpm.analyze(onsets);
+    comp(AnalysisComponent::Bpm,
+         r.bpm.bpm > 0.0 ? AnalysisState::Analyzed
+                         : AnalysisState::Failed, 1.0f);
     if (cancelled(cancel)) return nullptr;
 
-    // ---- key ----
+    // ---- key (failure isolated: other components keep their data) ----
     KeyAnalyzer key;
-    r.key = key.analyze(samples, numFrames, channels, sampleRate);
+    try {
+        r.key = key.analyze(samples, numFrames, channels, sampleRate);
+        comp(AnalysisComponent::Key,
+             r.key.key >= 0 ? AnalysisState::Analyzed
+                            : AnalysisState::Failed, 1.0f);
+    } catch (...) {
+        r.key = {};
+        comp(AnalysisComponent::Key, AnalysisState::Failed, 1.0f);
+    }
     if (cancelled(cancel)) return nullptr;
 
     // ---- silence + waveform ----
     silenceScan(r, samples, numFrames, channels);
     WaveformGenerator wg;
     b->waveform = wg.generate(samples, numFrames, channels, sampleRate);
+    comp(AnalysisComponent::Waveform,
+         !b->waveform.empty() ? AnalysisState::Analyzed
+                              : AnalysisState::Failed, 1.0f);
     if (cancelled(cancel)) return nullptr;
 
-    // ---- beatgrid ----
+    // ---- transients (marker list reused by slicer/sampler) ----
+    TransientAnalyzer ta;
+    r.transients = ta.analyze(onsets);
+    comp(AnalysisComponent::Transients,
+         AnalysisState::Analyzed, 1.0f);
+
+    // ---- loudness (informational; never alters audio) ----
+    LoudnessAnalyzer la;
+    r.loudness = la.analyze(samples, numFrames, channels, sampleRate);
+    comp(AnalysisComponent::Loudness,
+         r.loudness.valid ? AnalysisState::Analyzed
+                          : AnalysisState::Failed, 1.0f);
+
+    // ---- beatgrid + validation ----
     BeatGridEngine ge;
     b->grid = ge.build(sampleRate, r.bpm, onsets, numFrames);
+    {
+        BeatGridValidator v;
+        const auto verdict = v.check(b->grid, r.bpm, onsets, numFrames);
+        r.needsReview   = verdict.needsReview;
+        r.reviewReasons = verdict.reasons;
+    }
+    comp(AnalysisComponent::BeatGrid,
+         !b->grid.empty() ? AnalysisState::Analyzed
+                          : AnalysisState::Failed, 1.0f);
 
     r.state = AnalysisState::Analyzed;
     return b;

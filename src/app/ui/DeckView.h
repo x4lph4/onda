@@ -172,6 +172,11 @@ public:
             badge(badges, "ERROR", p.danger);
         else if (snap_.syncLimited)
             badge(badges, "SYNC LIMITED", p.warn);
+        // Phase 14 §31: unanalyzed tracks advertise it — sync/quantize
+        // wait for real data instead of trusting nothing.
+        if (!snap_.path.empty() && !snap_.analyzed &&
+            st != DeckState::Loading && st != DeckState::Error)
+            badge(badges, "ANALYSIS PENDING", p.warn);
 
         // ---- time readout (elapsed / remaining) ----
         auto tr = b.removeFromTop(m.fontXl + m.gap4);

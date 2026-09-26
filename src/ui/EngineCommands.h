@@ -38,6 +38,9 @@ struct EnginePorts {
     std::function<std::string()>              browserSelection;
     /// (id,state) → app-level toggles (settings/browser/layout/fx)
     std::function<void(uint32_t)>             appAction;
+    /// (deck, AnalysisEdit action, value) → analysis edit surface;
+    /// value < 0 lets the handler derive it (e.g. playhead frame)
+    std::function<void(int, int, double)>     analysisEdit;
 };
 
 /// Register the whole command surface. All commands are POD-safe:

@@ -37,6 +37,28 @@ WaveformData WaveformGenerator::generate(const float* samples,
         }
     }
 
+    // ---- mid level: aggregate detail 4:1 (1024-frame bins) ----
+    const int64_t detPerMid =
+        WaveformData::kMidFrames / WaveformData::kDetailFrames;
+    const int64_t nMid = (nDet + detPerMid - 1) / detPerMid;
+    w.mid.resize((size_t)nMid * (size_t)channels);
+    for (int64_t b = 0; b < nMid; ++b) {
+        const int64_t d0 = b * detPerMid;
+        const int64_t d1 = std::min<int64_t>(nDet, d0 + detPerMid);
+        for (int c = 0; c < channels; ++c) {
+            WaveformBin& mb = w.mid[(size_t)b * (size_t)channels + (size_t)c];
+            mb.min = 1.0f; mb.max = -1.0f;
+            double acc = 0.0; int cnt = 0;
+            for (int64_t i = d0; i < d1; ++i) {
+                const WaveformBin& db = w.detail[(size_t)i * (size_t)channels + (size_t)c];
+                mb.min = std::min(mb.min, db.min);
+                mb.max = std::max(mb.max, db.max);
+                acc += (double)db.rms * db.rms; ++cnt;
+            }
+            mb.rms = cnt > 0 ? (float)std::sqrt(acc / cnt) : 0.0f;
+        }
+    }
+
     // ---- overview: aggregate detail bins ----
     const double detPerOv = (double)numFrames /
                             (WaveformData::kOverviewBins * WaveformData::kDetailFrames);

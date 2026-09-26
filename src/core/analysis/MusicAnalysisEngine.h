@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 
+#include "AnalysisOverride.h"
 #include "AnalysisTypes.h"
 #include "BeatGrid.h"
 #include "WaveformData.h"
@@ -14,12 +15,23 @@ namespace onda {
 class IDecoder;
 using DecoderFactory = std::function<std::unique_ptr<IDecoder>()>;
 
-/// One complete analysis output.
+/// One complete analysis output. `overrides` is populated by the
+/// store/service layer (never the worker) — detected data above,
+/// user corrections below, strictly separated (§25).
 struct AnalysisBundle {
-    AnalysisResult result;
-    BeatGrid       grid;
-    WaveformData   waveform;
-    int            version { kAnalysisVersion };
+    AnalysisResult   result;
+    BeatGrid         grid;         // detected grid (may be empty)
+    WaveformData     waveform;
+    AnalysisOverride overrides;    // user edits, if any
+    int              version { kAnalysisVersion };
+
+    /// Effective grid for playback/sync/UI.
+    BeatGrid effectiveGrid() const {
+        return overrides.effectiveGrid(grid);
+    }
+    double effectiveBpm() const {
+        return overrides.effectiveBpm(result.bpm.bpm);
+    }
 };
 
 /// Orchestrates the analysis pipeline over a fully-decoded track.

@@ -2,6 +2,42 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 14 (professional music analysis engine)
+
+Deepened the Phase-3 analysis foundation into a professional engine
+(`docs/analysis/music-analysis-engine.md`,
+`docs/adr/0014-music-analysis-engine.md`).
+
+- New components: `LoudnessAnalyzer` (peak/RMS, BS.1770-style gated
+  LUFS + LRA — informational only), `TransientAnalyzer` (≤4000
+  strongest-first markers for slicer/sampler/beat-repeat),
+  `BeatGridValidator` (tempo plausibility, onset↔grid agreement,
+  confidence/coverage → `needsReview` + reasons), `AnalysisOverride`
+  (user edits strictly separate from detection), `SyncReference`
+  (sync-ready view with a `reliable` gate).
+- Per-component status ledger — a key failure no longer sinks a good
+  waveform/grid; persisted as `analysis.comp_status` (schema v4).
+- Waveform pyramid → three levels: overview 4096 bins, mid 1024-frame
+  bins, detail 256-frame bins; `query()` picks the cheapest fit.
+- User grid overrides move to `user_overrides.grid_json` — re-analysis
+  refreshes detection freely, edits survive (verified round-trip).
+- Production fix: analysis completion now actually attaches the
+  effective grid (`rescaled(deviceRate)`) to every deck holding the
+  track, and loading an already-analyzed track attaches instantly —
+  sync/quantize get real data outside tests.
+- CPU gate: `AnalysisQueue::setMinActivePriority` yields background
+  analysis while any deck plays or recording runs; `analysis.workers`
+  config controls worker count.
+- `0x9000` command range (per deck): set-first-beat at playhead,
+  ±10 ms nudge, BPM ×2/÷2, set-downbeat, grid reset, re-analyze —
+  all republish the effective grid to the deck.
+- `ANALYSIS PENDING` badge on unanalyzed deck tracks.
+- 15 new tests (**250 cases / 1.6M assertions green**): loudness
+  honesty, transient caps, validator verdicts, mid level, store-v4
+  round-trip, override persistence, service edits, queue gate,
+  rescaled grids, sync refs, 100-track throughput benchmark
+  (~187 ms/track, 5.3 tracks/s Debug).
+
 ## Status — Phase 13 (audio device engine + low-latency layer)
 
 Professional device layer over JUCE's `AudioDeviceManager`

@@ -436,3 +436,430 @@ TEST_CASE("Engine + sync sync foundation: grid frame<->beat is stable") {
     const double nominal = (beatsTotal - 1) * 60.0 / bpm * rate;
     REQUIRE((double)f == Approx(nominal).margin(rate * 60.0 / bpm));
 }
+
+// ==================================================================
+// Phase 14 — loudness / transients / validator / overrides / service
+// ==================================================================
+#include "core/analysis/AnalysisOverride.h"
+#include "core/analysis/BeatGridValidator.h"
+#include "core/analysis/LoudnessAnalyzer.h"
+#include "core/analysis/SyncReference.h"
+#include "core/analysis/TransientAnalyzer.h"
+
+// ---------------------------------------------------------------- loudness
+TEST_CASE("Loudness: sine reports honest peak/RMS, LUFS in range") {
+    const double rate = 48000.0;
+    const int64_t n = (int64_t)(rate * 4.0);
+    std::vector<float> pcm((size_t)n * 2);
+    for (int64_t i = 0; i < n; ++i) {
+        const float v = 0.5f * (float)std::sin(2.0 * 3.14159265 * 440.0 * i / rate);
+        pcm[(size_t)i * 2] = pcm[(size_t)i * 2 + 1] = v;
+    }
+    LoudnessAnalyzer la;
+    const auto r = la.analyze(pcm.data(), n, 2, rate);
+    REQUIRE(r.peak == Approx(0.5).margin(0.001));
+    REQUIRE(r.rms == Approx(0.5 / 1.41421356).margin(0.005));
+    REQUIRE(r.valid);
+    // K-weighted, both channels summed: expect a few LUFS, not silence
+    REQUIRE(r.integratedLufs > -15.0f);
+    REQUIRE(r.integratedLufs < 5.0f);
+}
+
+TEST_CASE("Loudness: silence stays invalid, no fake numbers") {
+    std::vector<float> pcm(48000 * 2, 0.0f);
+    LoudnessAnalyzer la;
+    const auto r = la.analyze(pcm.data(), 48000, 2, 48000.0);
+    REQUIRE(r.peak == 0.0f);
+    REQUIRE_FALSE(r.valid); // gate blocks it — honest "not measurable"
+}
+
+// -------------------------------------------------------------- transients
+TEST_CASE("Transients: click track yields strength-sorted markers on beats") {
+    const double rate = 48000.0, bpm = 128.0;
+    const auto pcm = clickTrack(rate, 8.0, bpm);
+    OnsetDetector od;
+    const auto o = od.detect(pcm.data(), (int64_t)pcm.size() / 2, 2, rate);
+    TransientAnalyzer ta;
+    const auto ev = ta.analyze(o);
+    // ~17 beats in 8 s; allow detector slack
+    REQUIRE(ev.size() >= 10);
+    for (const auto& e : ev)
+        REQUIRE(e.strength >= TransientAnalyzer::kMinStrength);
+    for (size_t i = 1; i < ev.size(); ++i)
+        REQUIRE(ev[i].frame >= ev[i - 1].frame); // chronological
+}
+
+TEST_CASE("Transients: cap keeps only the strongest markers") {
+    OnsetDetector::Result o;
+    for (int i = 0; i < 6000; ++i)
+        o.onsets.push_back({ (int64_t)i * 100, (float)(i % 7) / 7.0f + 0.1f });
+    TransientAnalyzer ta;
+    const auto ev = ta.analyze(o);
+    REQUIRE(ev.size() <= TransientAnalyzer::kMaxEvents);
+    // 6 strength tiers ×857: the cap drops the weakest tier(s)
+    float weakest = 1.0f; int strong = 0;
+    for (const auto& e : ev) {
+        weakest = std::min(weakest, e.strength);
+        if (e.strength > 0.9f) ++strong;
+    }
+    REQUIRE(strong >= 850);            // every top-tier marker survives
+    REQUIRE(weakest >= 0.38f);         // bottom tier (0.1) is dropped
+}
+
+// ----------------------------------------------------------------- validator
+TEST_CASE("BeatGridValidator: good grid passes, broken grids flag review") {
+    const double rate = 48000.0, bpm = 128.0;
+    const auto pcm = clickTrack(rate, 16.0, bpm);
+    OnsetDetector od;
+    const auto ons = od.detect(pcm.data(), (int64_t)pcm.size() / 2, 2, rate);
+    BpmAnalyzer ba; const auto bpmR = ba.analyze(ons);
+    BeatGridEngine ge;
+    BeatGrid good = ge.build(rate, bpmR, ons, (int64_t)pcm.size() / 2);
+    BeatGridValidator v;
+
+    const auto ok = v.check(good, bpmR, ons, (int64_t)pcm.size() / 2);
+    REQUIRE_FALSE(ok.needsReview);
+    REQUIRE(ok.score > 0.55f);
+
+    // empty grid
+    const auto e = v.check(BeatGrid{}, bpmR, ons, 100);
+    REQUIRE(e.needsReview);
+    REQUIRE_FALSE(e.reasons.empty());
+
+    // implausible tempo
+    BeatGrid fast; fast.setRate(rate);
+    fast.segments = { TempoSegment{0, 0, 300.0} };
+    BpmResult hi = bpmR; hi.confidence = 0.9f;
+    const auto f = v.check(fast, hi, ons, (int64_t)pcm.size() / 2);
+    REQUIRE(f.needsReview);
+
+    // low confidence
+    BpmResult lc = bpmR; lc.confidence = 0.1f;
+    const auto l = v.check(good, lc, ons, (int64_t)pcm.size() / 2);
+    REQUIRE(l.needsReview);
+
+    // grid shifted half a beat → onsets land off-grid
+    BeatGrid off = good;
+    const int64_t halfBeat = (int64_t)(rate * 30.0 / bpm);
+    off.firstBeatFrame += halfBeat;
+    for (auto& s : off.segments) s.startFrame += halfBeat;
+    const auto sv = v.check(off, bpmR, ons, (int64_t)pcm.size() / 2);
+    REQUIRE(sv.needsReview);
+    REQUIRE(sv.score < 0.55f);
+}
+
+// --------------------------------------------------------- component status
+TEST_CASE("analyzeBuffer: per-component statuses + review fields populated") {
+    const auto pcm = clickTrack(48000.0, 20.0, 128.0);
+    MusicAnalysisEngine engine(nullptr);
+    const auto b = engine.analyzeBuffer(pcm.data(),
+        (int64_t)pcm.size() / 2, 2, 48000.0, nullptr);
+    REQUIRE(b != nullptr);
+    const auto& r = b->result;
+    const auto st = [&](AnalysisComponent c) {
+        return r.components[(int)c].state; };
+    REQUIRE(st(AnalysisComponent::Decode)    == (int)AnalysisState::Analyzed);
+    REQUIRE(st(AnalysisComponent::Waveform)  == (int)AnalysisState::Analyzed);
+    REQUIRE(st(AnalysisComponent::Bpm)       == (int)AnalysisState::Analyzed);
+    REQUIRE(st(AnalysisComponent::BeatGrid)  == (int)AnalysisState::Analyzed);
+    REQUIRE(st(AnalysisComponent::Transients)== (int)AnalysisState::Analyzed);
+    REQUIRE(st(AnalysisComponent::Loudness)  == (int)AnalysisState::Analyzed);
+    REQUIRE(r.loudness.valid);
+    REQUIRE_FALSE(r.transients.empty());
+    REQUIRE_FALSE(r.needsReview); // clean synthetic grid should pass
+}
+
+// ----------------------------------------------------------------- rescaled
+TEST_CASE("BeatGrid::rescaled: device-rate publish keeps beat positions") {
+    BeatGrid g; g.setRate(48000.0);
+    g.firstBeatFrame = 4800;
+    g.segments = { TempoSegment{4800, 0, 120.0} };
+    const auto g44 = g.rescaled(44100.0);
+    REQUIRE(g44.rate() == Approx(44100.0));
+    REQUIRE(g44.firstBeatFrame == 4410);
+    // beat 4 at 44.1k == beat 4 at 48k in seconds
+    const double s48 = (double)g.beatToFrame(4.0)  / 48000.0;
+    const double s44 = (double)g44.beatToFrame(4.0) / 44100.0;
+    REQUIRE(s44 == Approx(s48).margin(1e-4));
+    // same rate → unchanged
+    const auto same = g.rescaled(48000.0);
+    REQUIRE(same.firstBeatFrame == 4800);
+}
+
+// ----------------------------------------------------------------- overrides
+TEST_CASE("AnalysisOverride: merges without touching detected data") {
+    AnalysisOverride o;
+    REQUIRE(o.empty());
+    REQUIRE(o.effectiveBpm(120.0) == 120.0);
+    o.bpm = 130.0;
+    REQUIRE(o.effectiveBpm(120.0) == 130.0);
+    REQUIRE_FALSE(o.empty());
+
+    BeatGrid det; det.setRate(48000.0);
+    det.segments = { TempoSegment{0, 0, 120.0} };
+    BeatGrid usr = det; usr.segments[0].bpm = 128.0;
+    o.grid = usr;
+    const auto eff = o.effectiveGrid(det);
+    REQUIRE(eff.segments[0].bpm == Approx(128.0));
+    REQUIRE(det.segments[0].bpm == Approx(120.0)); // detected untouched
+    o.grid.reset();
+    REQUIRE(o.effectiveGrid(det).segments[0].bpm == Approx(120.0));
+}
+
+// -------------------------------------------------------------- sync ref
+TEST_CASE("SyncReference: reliability gate uses confidence+review+grid") {
+    AnalysisResult r;
+    r.sampleRate = 48000.0;
+    r.bpm.bpm = 128.0; r.bpm.confidence = 0.9f;
+    BeatGrid g; g.setRate(48000.0);
+    g.segments = { TempoSegment{0, 0, 128.0} };
+
+    const auto s = SyncReference::from(r, g);
+    REQUIRE(s.reliable);
+    REQUIRE(s.bpm == Approx(128.0));
+    REQUIRE(s.firstBeatSec == Approx(0.0));
+
+    r.needsReview = true;
+    REQUIRE_FALSE(SyncReference::from(r, g).reliable);
+    r.needsReview = false; r.bpm.confidence = 0.1f;
+    REQUIRE_FALSE(SyncReference::from(r, g).reliable);
+    r.bpm.confidence = 0.9f;
+    REQUIRE_FALSE(SyncReference::from(r, BeatGrid{}).reliable);
+
+    // BPM override flows through
+    AnalysisOverride o; o.bpm = 64.0;
+    REQUIRE(SyncReference::from(r, g, o).bpm == Approx(64.0));
+}
+
+// -------------------------------------------------------------- store v4
+TEST_CASE("AnalysisStore v4: loudness/transients/status/review/mid round-trip") {
+    ensureDir();
+    auto db = makeDb(kTmp / "store_v4.db");
+    AnalysisStore store(db);
+    const std::string path = (kTmp / "v4.wav").string();
+    { std::ofstream f(path, std::ios::binary); f.write("z", 1); }
+
+    AnalysisBundle b;
+    b.result.state = AnalysisState::Analyzed;
+    b.result.durationSec = 2.0; b.result.sampleRate = 48000.0;
+    b.result.numFrames = 96000;
+    b.result.bpm.bpm = 128.0; b.result.bpm.confidence = 0.8f;
+    b.result.loudness.peak = 0.9f; b.result.loudness.rms = 0.4f;
+    b.result.loudness.integratedLufs = -8.5f;
+    b.result.loudness.loudnessRange = 3.2f;
+    b.result.loudness.valid = true;
+    b.result.transients = { {100, 0.9f}, {24000, 0.8f}, {48000, 0.7f} };
+    b.result.components[(int)AnalysisComponent::Waveform].state =
+        (int)AnalysisState::Analyzed;
+    b.result.components[(int)AnalysisComponent::Bpm].state =
+        (int)AnalysisState::Analyzed;
+    b.result.components[(int)AnalysisComponent::Key].state =
+        (int)AnalysisState::Failed; // isolated failure persists
+    b.result.needsReview = true;
+    b.grid.setRate(48000.0);
+    b.grid.segments = { TempoSegment{0, 0, 128.0} };
+    std::vector<float> pcm(96000 * 2, 0.1f);
+    b.waveform = WaveformGenerator().generate(pcm.data(), 96000, 2, 48000.0);
+    store.save(path, b, {}, {});
+
+    const auto l = store.load(path);
+    REQUIRE(l != nullptr);
+    REQUIRE(l->result.loudness.peak == Approx(0.9f));
+    REQUIRE(l->result.loudness.integratedLufs == Approx(-8.5f));
+    REQUIRE(l->result.loudness.loudnessRange == Approx(3.2f));
+    REQUIRE(l->result.transients.size() == 3);
+    REQUIRE(l->result.transients[1].frame == 24000);
+    REQUIRE(l->result.transients[1].strength == Approx(0.8f));
+    REQUIRE(l->result.components[(int)AnalysisComponent::Bpm].state
+            == (int)AnalysisState::Analyzed);
+    REQUIRE(l->result.components[(int)AnalysisComponent::Key].state
+            != (int)AnalysisState::Analyzed);
+    REQUIRE(l->result.needsReview);
+    // mid pyramid level persisted
+    REQUIRE(l->waveform.mid.size() == b.waveform.mid.size());
+}
+
+TEST_CASE("AnalysisStore: user grid override survives re-analysis save") {
+    ensureDir();
+    auto db = makeDb(kTmp / "gridovr.db");
+    AnalysisStore store(db);
+    const std::string path = (kTmp / "g.wav").string();
+    { std::ofstream f(path, std::ios::binary); f.write("g", 1); }
+
+    AnalysisBundle b;
+    b.result.state = AnalysisState::Analyzed;
+    b.result.durationSec = 2.0; b.result.sampleRate = 48000.0;
+    b.result.numFrames = 96000; b.result.bpm.bpm = 120.0;
+    b.grid.setRate(48000.0);
+    b.grid.segments = { TempoSegment{0, 0, 120.0} };
+    std::vector<float> pcm(96000 * 2, 0.1f);
+    b.waveform = WaveformGenerator().generate(pcm.data(), 96000, 2, 48000.0);
+    store.save(path, b, {}, {});
+
+    // user edits: half-time the grid + shift first beat
+    const int64_t id = store.trackIdFor(path);
+    BeatGrid edited = b.grid;
+    edited.firstBeatFrame = 2400;
+    edited.segments[0].bpm = 60.0;
+    store.saveUserGrid(id, edited);
+
+    // re-analysis writes fresh detected data — override must persist
+    AnalysisBundle b2 = b;
+    b2.grid.segments[0].bpm = 122.0;
+    store.save(path, b2, {}, {});
+
+    const auto l = store.load(path);
+    REQUIRE(l != nullptr);
+    REQUIRE(l->grid.segments[0].bpm == Approx(122.0));  // new detection
+    REQUIRE(l->overrides.grid.has_value());
+    REQUIRE(l->overrides.grid->segments[0].bpm == Approx(60.0));
+    REQUIRE(l->overrides.grid->firstBeatFrame == 2400);
+    REQUIRE(l->effectiveGrid().segments[0].bpm == Approx(60.0));
+
+    store.clearUserGrid(id);
+    const auto l2 = store.load(path);
+    REQUIRE(l2 != nullptr);
+    REQUIRE_FALSE(l2->overrides.grid.has_value());
+    REQUIRE(l2->effectiveGrid().segments[0].bpm == Approx(122.0));
+}
+
+// ----------------------------------------------------------------- mid level
+TEST_CASE("Waveform: mid pyramid level generated and queryable") {
+    const double rate = 48000.0;
+    const int64_t n = (int64_t)(rate * 2.0);
+    std::vector<float> pcm((size_t)n * 2);
+    for (int64_t i = 0; i < n; ++i) {
+        const float v = 0.5f * (float)std::sin(2.0 * 3.14159265 * 220.0 * i / rate);
+        pcm[(size_t)i * 2] = pcm[(size_t)i * 2 + 1] = v;
+    }
+    WaveformGenerator wg;
+    const auto w = wg.generate(pcm.data(), n, 2, rate);
+    const int64_t nDet = (n + WaveformData::kDetailFrames - 1)
+                       / WaveformData::kDetailFrames;
+    const int64_t nMid = (nDet + 3) / 4;
+    REQUIRE(w.mid.size() == (size_t)nMid * 2);
+
+    // a ~2 s region with a small bin budget should still resolve data
+    std::vector<WaveformBin> bins;
+    w.query(n / 4, n / 4 + rate / 2, 40, bins, 0);
+    REQUIRE(bins.size() == 40);
+    float pk = 0.0f;
+    for (const auto& bb : bins) pk = std::max(pk, bb.max);
+    REQUIRE(pk > 0.45f);
+}
+
+// ------------------------------------------------------------- service edits
+TEST_CASE("AnalysisService::applyEdit: overrides persist, detected intact") {
+    ensureDir();
+    const auto wav = kTmp / "edit.wav";
+    const auto pcm = clickTrack(48000.0, 12.0, 128.0);
+    std::vector<int16_t> pcm16(pcm.size());
+    for (size_t i = 0; i < pcm.size(); ++i)
+        pcm16[i] = (int16_t)std::clamp(pcm[i] * 30000.0f, -32000.0f, 32000.0f);
+    writeTestWav(wav, 48000, 2, pcm16);
+
+    auto db = makeDb(kTmp / "edit.db");
+    AnalysisService svc([] { return std::make_unique<FFmpegDecoder>(); },
+                        db, 2);
+    REQUIRE(svc.workerCount() == 2);
+    const auto b = svc.analyzeTrackSync(wav.string());
+    REQUIRE(b != nullptr);
+    const int64_t detectedFirst = b->grid.firstBeatFrame;
+    REQUIRE_FALSE(b->grid.empty());
+
+    // move first beat → effective changes, detected does not
+    auto g = svc.applyEdit(wav.string(), AnalysisEdit::SetFirstBeat,
+                           12345.0);
+    REQUIRE(g.firstBeatFrame == 12345);
+    REQUIRE(svc.getBeatGrid(wav.string()).firstBeatFrame == 12345);
+    const auto b2 = svc.getAnalysis(wav.string());
+    REQUIRE(b2->grid.firstBeatFrame == detectedFirst); // detected intact
+    REQUIRE(svc.hasOverride(wav.string()));
+
+    // half tempo
+    const double bpm0 = svc.getBeatGrid(wav.string()).bpmAt(0);
+    auto g2 = svc.applyEdit(wav.string(), AnalysisEdit::HalfTempo);
+    REQUIRE(g2.bpmAt(0) == Approx(bpm0 * 0.5));
+
+    // persistence: fresh store read sees the override row
+    const auto loaded = svc.store().load(wav.string());
+    REQUIRE(loaded != nullptr);
+    REQUIRE(loaded->overrides.grid.has_value());
+    REQUIRE(loaded->grid.firstBeatFrame == detectedFirst);
+
+    // reset → effective == detected again
+    auto g3 = svc.applyEdit(wav.string(), AnalysisEdit::ResetGrid);
+    REQUIRE(g3.firstBeatFrame == detectedFirst);
+    REQUIRE_FALSE(svc.hasOverride(wav.string()));
+
+    // bpm override channel is separate
+    svc.applyEdit(wav.string(), AnalysisEdit::SetBpmOverride, 131.0);
+    REQUIRE(svc.getBpm(wav.string()) == Approx(131.0));
+    svc.applyEdit(wav.string(), AnalysisEdit::SetBpmOverride, -1.0);
+    REQUIRE(svc.getBpm(wav.string()) ==
+            Approx(b2->result.bpm.bpm).margin(0.01));
+
+    // sync reference is produced for analyzed tracks
+    const auto sr = svc.syncReference(wav.string());
+    REQUIRE(sr.has_value());
+    REQUIRE(sr->reliable);
+}
+
+// --------------------------------------------------------------- queue gate
+TEST_CASE("AnalysisQueue: CPU gate blocks background, high priority runs") {
+    ensureDir();
+    const auto wav = kTmp / "gate.wav";
+    const auto pcm = clickTrack(48000.0, 6.0, 120.0);
+    std::vector<int16_t> pcm16(pcm.size());
+    for (size_t i = 0; i < pcm.size(); ++i)
+        pcm16[i] = (int16_t)std::clamp(pcm[i] * 30000.0f, -32000.0f, 32000.0f);
+    writeTestWav(wav, 48000, 2, pcm16);
+
+    auto db = makeDb(kTmp / "gate.db");
+    AnalysisService svc([] { return std::make_unique<FFmpegDecoder>(); },
+                        db, 1);
+    std::atomic<int> done{0};
+    svc.addListener([&](const AnalysisQueue::Notification& n) {
+        if (n.event == AnalysisQueue::Event::Completed) ++done;
+    });
+
+    svc.setPlaybackActive(true); // gate at ≥HIGH
+    svc.analyzeTrack(wav.string(), (int)AnalysisPriority::Normal);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    REQUIRE(done.load() == 0);   // background job must NOT have run
+
+    // high-priority job proceeds under the gate
+    svc.analyzeTrack(wav.string(), (int)AnalysisPriority::High);
+    const auto dl = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (done.load() == 0 && std::chrono::steady_clock::now() < dl)
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    REQUIRE(done.load() == 1);
+
+    // reopening the gate lets queued background work flow again
+    svc.setPlaybackActive(false);
+    const auto dl2 = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (done.load() < 2 && std::chrono::steady_clock::now() < dl2)
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    REQUIRE(done.load() == 2);
+}
+
+// ----------------------------------------------------------------- benchmark
+TEST_CASE("Benchmark: analysis throughput on synthetic 128 BPM tracks") {
+    const auto pcm = clickTrack(48000.0, 3.0, 128.0);
+    MusicAnalysisEngine engine(nullptr);
+    constexpr int kTracks = 100;
+    const auto t0 = std::chrono::steady_clock::now();
+    int ok = 0;
+    for (int i = 0; i < kTracks; ++i) {
+        const auto b = engine.analyzeBuffer(pcm.data(),
+            (int64_t)pcm.size() / 2, 2, 48000.0, nullptr);
+        if (b && b->result.state == AnalysisState::Analyzed) ++ok;
+    }
+    const double ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t0).count();
+    std::printf("[analysis-bench] %d tracks, %.0f ms total, "
+                "%.1f ms/track, %.1f tracks/s\n",
+                kTracks, ms, ms / kTracks, kTracks * 1000.0 / ms);
+    REQUIRE(ok == kTracks);
+    REQUIRE(kTracks * 1000.0 / ms > 2.0); // >2 tracks/s even in Debug
+}

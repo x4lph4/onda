@@ -70,6 +70,11 @@ void AnalysisQueue::retry(int64_t jobId) {
 void AnalysisQueue::pause()  { paused_.store(true); }
 void AnalysisQueue::resume() { paused_.store(false); cv_.notify_all(); }
 
+void AnalysisQueue::setMinActivePriority(int p) {
+    minActivePriority_.store(p);
+    cv_.notify_all();   // reopen the gate
+}
+
 std::unordered_map<int64_t, AnalysisQueue::JobInfo> AnalysisQueue::snapshot() const {
     std::lock_guard<std::mutex> lk(m_);
     return states_;
@@ -105,7 +110,10 @@ void AnalysisQueue::workerMain() {
         {
             std::unique_lock<std::mutex> lk(m_);
             cv_.wait(lk, [&] {
-                return exit_.load() || (!paused_.load() && !heap_.empty());
+                return exit_.load()
+                    || (!paused_.load() && !heap_.empty()
+                        && heap_.front()->priority
+                               >= minActivePriority_.load());
             });
             if (exit_.load()) return;
             if (paused_.load() || heap_.empty()) continue;

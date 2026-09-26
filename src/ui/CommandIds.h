@@ -83,6 +83,16 @@ enum Id : uint32_t {
     RecSplit  = 0x7005,
     RecToggle = 0x7006,   // Quick Record: start/stop
 
+    // ---- analysis edits: 0x9000 + deck*0x400 (Phase 14) ----
+    AnaSetFirstBeat = 0x9000,  // grid beat 0 = current playhead
+    AnaNudgeLeft    = 0x9001,  // shift grid −10 ms
+    AnaNudgeRight   = 0x9002,  // shift grid +10 ms
+    AnaBpmDouble    = 0x9003,  // grid BPM ×2 (60→120 interpretation)
+    AnaBpmHalf      = 0x9004,  // grid BPM ÷2
+    AnaSetDownbeat  = 0x9005,  // beat at playhead becomes bar beat 1
+    AnaGridReset    = 0x9006,  // drop user override → detected grid
+    AnaReanalyze    = 0x9007,  // requeue analysis at high priority
+
     // ---- app: 0x3F00 ----
     AppToggleSettings  = 0x3F00,
     AppLayoutNext      = 0x3F01,

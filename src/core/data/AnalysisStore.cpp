@@ -169,12 +169,26 @@ void AnalysisStore::save(const std::string& path, const AnalysisBundle& b,
     }
     sils += "]";
 
+    // compact JSON packs for the new Phase-14 columns
+    std::string trans = "[";
+    for (size_t i = 0; i < r.transients.size(); ++i) {
+        trans += "[" + std::to_string(r.transients[i].frame) + ","
+               + jnum(r.transients[i].strength) + "]";
+        if (i + 1 < r.transients.size()) trans += ",";
+    }
+    trans += "]";
+    int64_t compMask = 0;
+    for (int c = 0; c < kNumComponents; ++c)
+        if (r.components[c].state == (int)AnalysisState::Analyzed)
+            compMask |= (int64_t)1 << c;
+
     {
         auto s = db_.prepare(
             "INSERT INTO analysis(track_id,bpm,bpm_confidence,bpm_stability,"
             "bpm_variable,bpm_candidates,key_index,key_confidence,"
-            "first_sound_frame,last_sound_frame,silences,first_onset_frame)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"
+            "first_sound_frame,last_sound_frame,silences,first_onset_frame,"
+            "peak,rms,lufs_i,lra,transients,comp_status,needs_review)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
             " ON CONFLICT(track_id) DO UPDATE SET bpm=excluded.bpm,"
             "bpm_confidence=excluded.bpm_confidence,"
             "bpm_stability=excluded.bpm_stability,"
@@ -185,7 +199,11 @@ void AnalysisStore::save(const std::string& path, const AnalysisBundle& b,
             "first_sound_frame=excluded.first_sound_frame,"
             "last_sound_frame=excluded.last_sound_frame,"
             "silences=excluded.silences,"
-            "first_onset_frame=excluded.first_onset_frame");
+            "first_onset_frame=excluded.first_onset_frame,"
+            "peak=excluded.peak,rms=excluded.rms,lufs_i=excluded.lufs_i,"
+            "lra=excluded.lra,transients=excluded.transients,"
+            "comp_status=excluded.comp_status,"
+            "needs_review=excluded.needs_review");
         s.bind(1, id);
         s.bind(2, r.bpm.bpm); s.bind(3, (double)r.bpm.confidence);
         s.bind(4, (double)r.bpm.stability);
@@ -194,25 +212,34 @@ void AnalysisStore::save(const std::string& path, const AnalysisBundle& b,
         s.bind(7, (int64_t)r.key.key); s.bind(8, (double)r.key.confidence);
         s.bind(9, r.firstSoundFrame); s.bind(10, r.lastSoundFrame);
         s.bind(11, sils); s.bind(12, r.bpm.firstOnsetFrame);
+        s.bind(13, (double)r.loudness.peak);
+        s.bind(14, (double)r.loudness.rms);
+        s.bind(15, (double)r.loudness.integratedLufs);
+        s.bind(16, (double)r.loudness.loudnessRange);
+        s.bind(17, trans);
+        s.bind(18, compMask);
+        s.bind(19, (int64_t)(r.needsReview ? 1 : 0));
         s.step(); s.finalize();
     }
     saveGrid(id, b.grid, false);
 
-    // ---- waveform blobs ----
+    // ---- waveform blobs (3-level pyramid) ----
     auto& w = b.waveform;
     const size_t ovBytes = w.overview.size() * sizeof(WaveformBin);
+    const size_t mdBytes = w.mid.size() * sizeof(WaveformBin);
     const size_t dtBytes = w.detail.size() * sizeof(WaveformBin);
     {
         auto s = db_.prepare(
-            "INSERT INTO waveforms(track_id,channels,num_frames,sample_rate,overview,detail)"
-            " VALUES(?,?,?,?,?,?)"
+            "INSERT INTO waveforms(track_id,channels,num_frames,sample_rate,overview,mid,detail)"
+            " VALUES(?,?,?,?,?,?,?)"
             " ON CONFLICT(track_id) DO UPDATE SET channels=excluded.channels,"
             "num_frames=excluded.num_frames,sample_rate=excluded.sample_rate,"
-            "overview=excluded.overview,detail=excluded.detail");
+            "overview=excluded.overview,mid=excluded.mid,detail=excluded.detail");
         s.bind(1, id); s.bind(2, (int64_t)w.channels);
         s.bind(3, w.numFrames); s.bind(4, w.sampleRate);
         s.bind(5, w.overview.data(), (int)ovBytes);
-        s.bind(6, w.detail.data(), (int)dtBytes);
+        s.bind(6, w.mid.data(), (int)mdBytes);
+        s.bind(7, w.detail.data(), (int)dtBytes);
         s.step(); s.finalize();
     }
 }
@@ -237,6 +264,34 @@ void AnalysisStore::markGridManual(int64_t trackId) {
     s.bind(1, trackId); s.step(); s.finalize();
 }
 
+void AnalysisStore::saveUserGrid(int64_t trackId, const BeatGrid& g) {
+    auto s = db_.prepare(
+        "INSERT INTO user_overrides(track_id,grid_json,downbeat_offset,updated_at)"
+        " VALUES(?,?,?,?)"
+        " ON CONFLICT(track_id) DO UPDATE SET grid_json=excluded.grid_json,"
+        "downbeat_offset=excluded.downbeat_offset,"
+        "updated_at=excluded.updated_at");
+    s.bind(1, trackId);
+    s.bind(2, serializeGrid(g));
+    s.bind(3, (int64_t)g.downbeatOffset);
+    s.bind(4, (int64_t)::time(nullptr));
+    s.step(); s.finalize();
+    markGridManual(trackId); // flag on detected row: user grid in effect
+}
+
+void AnalysisStore::clearUserGrid(int64_t trackId) {
+    auto s = db_.prepare(
+        "INSERT INTO user_overrides(track_id,grid_json,downbeat_offset,updated_at)"
+        " VALUES(?,NULL,NULL,?)"
+        " ON CONFLICT(track_id) DO UPDATE SET grid_json=NULL,"
+        "downbeat_offset=NULL,updated_at=excluded.updated_at");
+    s.bind(1, trackId);
+    s.bind(2, (int64_t)::time(nullptr));
+    s.step(); s.finalize();
+    auto u = db_.prepare("UPDATE beatgrids SET manual=0 WHERE track_id=?");
+    u.bind(1, trackId); u.step(); u.finalize();
+}
+
 std::shared_ptr<AnalysisBundle> AnalysisStore::load(const std::string& path) {
     const int64_t id = trackIdFor(path);
     if (stateFor(path) != AnalysisState::Analyzed) return nullptr;
@@ -255,7 +310,8 @@ std::shared_ptr<AnalysisBundle> AnalysisStore::load(const std::string& path) {
         auto s = db_.prepare(
             "SELECT bpm,bpm_confidence,bpm_stability,bpm_variable,"
             "key_index,key_confidence,first_sound_frame,last_sound_frame,"
-            "first_onset_frame FROM analysis WHERE track_id=?");
+            "first_onset_frame,peak,rms,lufs_i,lra,transients,"
+            "comp_status,needs_review FROM analysis WHERE track_id=?");
         s.bind(1, id);
         if (s.step()) {
             r.bpm.bpm = s.colDouble(0); r.bpm.confidence = (float)s.colDouble(1);
@@ -266,6 +322,26 @@ std::shared_ptr<AnalysisBundle> AnalysisStore::load(const std::string& path) {
             r.key.camelot  = KeyAnalyzer::camelotName(r.key.key);
             r.firstSoundFrame = s.colInt(6); r.lastSoundFrame = s.colInt(7);
             r.bpm.firstOnsetFrame = s.colInt(8);
+            r.loudness.peak = (float)s.colDouble(9);
+            r.loudness.rms = (float)s.colDouble(10);
+            r.loudness.integratedLufs = (float)s.colDouble(11);
+            r.loudness.loudnessRange = (float)s.colDouble(12);
+            // transients JSON-lite parse: [[frame,strength],…]
+            const std::string t = s.colText(13);
+            const char* p = t.c_str();
+            while ((p = std::strstr(p, "[")) && p[1] != ']') {
+                ++p;
+                TransientEvent tr;
+                tr.frame = std::strtoll(p, (char**)&p, 10);
+                while (*p == ' ' || *p == ',') ++p;
+                tr.strength = (float)std::strtod(p, (char**)&p);
+                if (tr.frame > 0) r.transients.push_back(tr);
+            }
+            const int64_t mask = s.colInt(14);
+            for (int c = 0; c < kNumComponents; ++c)
+                if (mask & ((int64_t)1 << c))
+                    r.components[c].state = (int)AnalysisState::Analyzed;
+            r.needsReview = s.colInt(15) != 0;
         }
         s.finalize();
     }
@@ -277,17 +353,38 @@ std::shared_ptr<AnalysisBundle> AnalysisStore::load(const std::string& path) {
     }
     {
         auto s = db_.prepare(
-            "SELECT channels,num_frames,sample_rate,overview,detail FROM waveforms WHERE track_id=?");
+            "SELECT channels,num_frames,sample_rate,overview,mid,detail FROM waveforms WHERE track_id=?");
         s.bind(1, id);
         if (s.step()) {
             auto& w = b->waveform;
             w.channels = (int)s.colInt(0); w.numFrames = s.colInt(1);
             w.sampleRate = s.colDouble(2);
-            const auto ov = s.colBlob(3), dt = s.colBlob(4);
+            const auto ov = s.colBlob(3), md = s.colBlob(4), dt = s.colBlob(5);
             w.overview.resize(ov.size() / sizeof(WaveformBin));
+            w.mid.resize(md.size() / sizeof(WaveformBin));
             w.detail.resize(dt.size() / sizeof(WaveformBin));
             std::memcpy(w.overview.data(), ov.data(), ov.size());
+            std::memcpy(w.mid.data(), md.data(), md.size());
             std::memcpy(w.detail.data(), dt.data(), dt.size());
+        }
+        s.finalize();
+    }
+    // user overrides — separate table, detected data untouched
+    {
+        auto s = db_.prepare(
+            "SELECT bpm,key_index,grid_json,downbeat_offset FROM user_overrides WHERE track_id=?");
+        s.bind(1, id);
+        if (s.step()) {
+            const double ubpm = s.colDouble(0);
+            if (ubpm > 0.0) b->overrides.bpm = ubpm;
+            const int64_t ukey = s.colInt(1);
+            if (ukey >= 0) b->overrides.keyIndex = (int)ukey;
+            const std::string g = s.colText(2);
+            if (!g.empty())
+                b->overrides.grid = deserializeGrid(g, r.sampleRate);
+            const int64_t dbo = s.colInt(3);
+            if (dbo > 0 && b->overrides.grid)
+                b->overrides.grid->downbeatOffset = (int)dbo;
         }
         s.finalize();
     }

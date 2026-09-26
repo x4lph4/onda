@@ -50,6 +50,14 @@ public:
     void resume();
     bool paused() const { return paused_.load(); }
 
+    /// CPU gate (§29): while set, only jobs with
+    /// `priority >= minActivePriority` run — background work yields to
+    /// playback/recording. Lower-priority jobs stay queued; they resume
+    /// automatically when the gate reopens (0 = gate off).
+    void setMinActivePriority(int p);
+    int  minActivePriority() const { return minActivePriority_.load(); }
+    int  workerCount() const { return numWorkers_; }
+
     /// Job states for UI panels: id -> {state, progress}.
     struct JobInfo { int state; float progress; int attempts; };
     std::unordered_map<int64_t, JobInfo> snapshot() const;
@@ -73,6 +81,7 @@ private:
     int numWorkers_;
     std::vector<std::thread> workers_;
     std::atomic<bool> exit_{false}, paused_{false};
+    std::atomic<int>  minActivePriority_{0};
 
     mutable std::mutex m_;
     std::condition_variable cv_;

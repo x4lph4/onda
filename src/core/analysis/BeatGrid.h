@@ -76,6 +76,30 @@ struct BeatGrid {
         return s.bpm > 0.0 ? rate_ * 60.0 / s.bpm : 1e30;
     }
 
+    /// Copy rescaled to a different frame rate. Analysis runs at the
+    /// reference rate while decks position themselves in device-rate
+    /// frames — publish `grid.rescaled(deviceRate)` to a deck.
+    BeatGrid rescaled(double newRate) const {
+        BeatGrid g;
+        g.beatsPerBar    = beatsPerBar;
+        g.downbeatOffset = downbeatOffset;
+        if (newRate <= 0.0 || rate_ <= 0.0 || newRate == rate_) {
+            g.firstBeatFrame = firstBeatFrame;
+            g.segments = segments;
+            g.rate_ = newRate > 0.0 ? newRate : rate_;
+            return g;
+        }
+        const double k = newRate / rate_;
+        g.firstBeatFrame = (int64_t)llround(firstBeatFrame * k);
+        g.segments.reserve(segments.size());
+        for (auto s : segments) {
+            s.startFrame = (int64_t)llround(s.startFrame * k);
+            g.segments.push_back(s);
+        }
+        g.rate_ = newRate;
+        return g;
+    }
+
 private:
     double rate_ { 48000.0 };
 };

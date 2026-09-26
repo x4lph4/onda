@@ -42,6 +42,10 @@ public:
     void setUserKey(int64_t trackId, int keyIndex);      // -1 clears
     void markGridManual(int64_t trackId);
     void saveGrid(int64_t trackId, const BeatGrid& g, bool manual);
+    /// Phase 14: user grid lives in user_overrides.grid_json — the
+    /// detected `beatgrids` row is never overwritten by edits.
+    void saveUserGrid(int64_t trackId, const BeatGrid& g);
+    void clearUserGrid(int64_t trackId);
 
     /// Effective BPM for playback/UI: user override if present.
     double effectiveBpm(int64_t trackId, double detected) const;

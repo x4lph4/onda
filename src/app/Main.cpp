@@ -37,8 +37,13 @@ public:
                         .toStdString())))
             log::error("Cannot open analysis database");
 
+        // Phase 14 §3: worker count is configurable — 0 = auto
+        // (half the cores, capped at 4).
+        const int anaWorkers = (int)config_.get(
+            juce::Identifier("analysis.workers"), 0);
         analysis_ = std::make_unique<AnalysisService>(
-            [] { return std::make_unique<FFmpegDecoder>(); }, *db_);
+            [] { return std::make_unique<FFmpegDecoder>(); }, *db_,
+            anaWorkers);
         analysis_->addListener([](const AnalysisQueue::Notification& n) {
             if (n.event == AnalysisQueue::Event::Failed)
                 log::error("Analysis failed: " + juce::String(n.path) + " — " +
