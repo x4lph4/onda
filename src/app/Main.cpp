@@ -11,6 +11,8 @@
 #include "../core/data/PerformanceStore.h"
 #include "../core/library/MusicLibraryEngine.h"
 #include "../core/performance/PerformanceEngine.h"
+#include "../core/sampler/SampleRepository.h"
+#include "../core/sampler/SamplerEngine.h"
 
 namespace onda {
 
@@ -71,18 +73,43 @@ public:
             lib_->startWorker();
         }
 
+        // Phase 11: sampler on the shared database + decoder factory.
+        // RT engine renders into mixer channel 4 (aux strip).
+        sampleRepo_ = std::make_unique<sampler::SampleRepository>(*db_);
+        if (db_->isOpen()) sampleRepo_->init();
+        sampler_ = std::make_unique<sampler::SamplerEngine>();
+        sampler_->init(
+            [] { return std::make_unique<FFmpegDecoder>(); });
+        sampler_->attachRepository(sampleRepo_.get());
+        sampler_->setPorts({ &engine_->commands(),
+            [](const std::string& t, const std::string& d, int lvl) {
+                if (lvl >= 2)
+                    log::warn("Sampler: " + juce::String(t) + " — " +
+                              juce::String(d));
+            } });
+        engine_->attachSampler(&sampler_->rt());
+        if (db_->isOpen()) sampler_->loadAll();
+
         mainWindow_ = std::make_unique<MainWindow>(getApplicationName(),
                                                  *engine_, *analysis_,
-                                                 *perf_, *lib_, config_);
+                                                 *perf_, *lib_, config_,
+                                                 sampler_.get());
     }
 
     void shutdown() override {
         mainWindow_ = nullptr; // UI first: it references the engine
-        if (lib_) { lib_->stopWorker(); lib_->close(); lib_.reset(); }
+        if (sampler_) {
+            sampler_->stopAll();
+            if (db_ && db_->isOpen()) sampler_->saveAll();
+        }
         if (engine_) {
             engine_->shutdown();
+            engine_->attachSampler(nullptr);   // RT engine gone
             engine_.reset();
         }
+        sampler_.reset();
+        sampleRepo_.reset();
+        if (lib_) { lib_->stopWorker(); lib_->close(); lib_.reset(); }
         analysis_.reset();   // workers join before the DB closes
         db_.reset();
         config_.save();
@@ -96,13 +123,15 @@ private:
     public:
         MainWindow(const juce::String& name, audio::AudioEngine& engine,
                    AnalysisService& analysis, PerformanceEngine& perf,
-                   library::MusicLibraryEngine& lib, Config& config)
+                   library::MusicLibraryEngine& lib, Config& config,
+                   sampler::SamplerEngine* sampler)
             : juce::DocumentWindow(name,
                                    juce::Colour(0xff0d0f12),
                                    juce::DocumentWindow::allButtons) {
             setUsingNativeTitleBar(true);
             setContentOwned(new MainComponent(engine, analysis, perf,
-                                              lib, config), true);
+                                              lib, config, sampler),
+                            true);
             setResizable(true, true);
             setResizeLimits(960, 540, 10000, 10000);
             centreWithSize(1440, 860);
@@ -122,6 +151,8 @@ private:
     std::unique_ptr<PerformanceStore> perfStore_;
     std::unique_ptr<PerformanceEngine> perf_;
     std::unique_ptr<library::MusicLibraryEngine> lib_;
+    std::unique_ptr<sampler::SampleRepository> sampleRepo_;
+    std::unique_ptr<sampler::SamplerEngine>  sampler_;
     std::unique_ptr<audio::AudioEngine> engine_;
     std::unique_ptr<MainWindow> mainWindow_;
 };

@@ -14,6 +14,7 @@
 #include "core/performance/SyncRt.h"
 #include "core/rt/AudioStats.h"
 #include "core/rt/CommandQueue.h"
+#include "core/sampler/SamplerRt.h"
 
 namespace onda { class Config; }
 
@@ -58,6 +59,15 @@ public:
     /// other than through commands.
     DeckEngine*             deckRaw(int i)   noexcept { return &decks_[(size_t)i]; }
 
+    /// Phase 11: attach the sampler's RT engine — renders into mixer
+    /// channel 4 as a first-class aux source (non-RT, call at startup).
+    void attachSampler(sampler::SamplerRt* s) noexcept {
+        sampler_ = s;
+        mixer_.setActiveChannels(s ? MixerEngine::kSamplerChannel + 1
+                                   : 4);
+    }
+    sampler::SamplerRt* sampler() noexcept { return sampler_; }
+
 private:
     // ---- AudioIODeviceCallback (RT thread) ----
     void audioDeviceIOCallbackWithContext(
@@ -81,6 +91,7 @@ private:
     MixerEngine mixer_;
     mixer::MixerController mixerCtl_;
     SyncRtCore  syncRt_;
+    sampler::SamplerRt* sampler_ = nullptr;  // borrowed; owned by app
 
     // ---- state owned by the RT thread ----
     double sampleRate_    { 0.0 };

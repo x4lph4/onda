@@ -45,6 +45,34 @@ inline constexpr int deckParamKind(uint16_t id) {
     return (id - kDeckParamBase) & 1;
 }
 
+/// Sample-slot parameters (Phase 11) — ids in the 0x8100 space so
+/// mixer channels (0x0000+), FX (0x1000+) and deck params (0x8000+)
+/// stay disjoint. Routed by the host port to SamplerEngine.
+///   id = kSampleParamBase + slot*8 + kind
+///   Names: SMP_<n>_VOL / PAN / GAIN / PITCH / MODE / FILTER
+inline constexpr uint16_t kSampleParamBase = 0x8100;
+inline constexpr int      kSampleParamStride = 8;
+inline constexpr int      kSampleParamMaxSlots = 32;
+enum SampleParamKind : int {
+    kSmpVol = 0, kSmpPan, kSmpGain, kSmpPitch,
+    kSmpMode, kSmpFilter, kSmpQuant, kSmpSync,
+};
+inline constexpr uint16_t sampleParamId(int slot, int kind) {
+    return (uint16_t)(kSampleParamBase +
+                      slot * kSampleParamStride + kind);
+}
+inline constexpr bool isSampleParam(uint16_t id) {
+    return id >= kSampleParamBase &&
+           id < kSampleParamBase +
+                kSampleParamMaxSlots * kSampleParamStride;
+}
+inline constexpr int sampleParamSlot(uint16_t id) {
+    return (id - kSampleParamBase) / kSampleParamStride;
+}
+inline constexpr int sampleParamKind(uint16_t id) {
+    return (id - kSampleParamBase) % kSampleParamStride;
+}
+
 namespace detail {
 
 inline const char* chKindName(mixer::ChParam k) {

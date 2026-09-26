@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "../engine/DeckEngine.h"
+#include "../sampler/SamplerRt.h"
 
 namespace onda {
 
@@ -117,17 +118,28 @@ void MixerEngine::setParam(uint16_t id, float v) noexcept {
 
 void MixerEngine::render(float* const* out, int numOut, int n,
                          DeckEngine* decks, int numDecks,
-                         rt::AudioStats& stats) noexcept {
+                         rt::AudioStats& stats,
+                         sampler::SamplerRt* sampler) noexcept {
     n = std::min(n, (int)AudioFormat::kMaxBlockFrames);
-    const int chans = std::min({ active_, numDecks, kMaxChannels });
-    if (chans > active_) {} // unreachable, kept for clarity
+    const int chans = std::min(active_, kMaxChannels);
 
-    // 1) each source renders into its strip's input; per-deck insert
-    //    FX racks process the channel's input pre-strip, and feed the
-    //    FX tempo contexts (deck effBpm -> sync-aware effects)
+    // 1) each source renders into its strip's input: decks 0..numDecks-1,
+    //    the sampler on kSamplerChannel (any active aux strip without a
+    //    source renders silence). Insert FX + tempo contexts per strip.
     for (int d = 0; d < chans; ++d) {
-        decks[d].renderPcm(strips_[d].inL(), strips_[d].inR(), n);
-        fx_.setTempo(d, (float)decks[d].effBpm());
+        if (d < numDecks) {
+            decks[d].renderPcm(strips_[d].inL(), strips_[d].inR(), n);
+            fx_.setTempo(d, (float)decks[d].effBpm());
+        } else if (sampler && d == kSamplerChannel) {
+            // SamplerRt sums into the buffers — must start from zero
+            std::memset(strips_[d].inL(), 0, (size_t)n * sizeof(float));
+            std::memset(strips_[d].inR(), 0, (size_t)n * sizeof(float));
+            sampler->renderPcm(strips_[d].inL(), strips_[d].inR(), n);
+            fx_.setTempo(d, (float)sampler->clockBpm());
+        } else {
+            std::memset(strips_[d].inL(), 0, (size_t)n * sizeof(float));
+            std::memset(strips_[d].inR(), 0, (size_t)n * sizeof(float));
+        }
         fx_.processDeckInsert(d, strips_[d].inL(), strips_[d].inR(), n);
     }
 

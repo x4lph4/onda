@@ -1,6 +1,7 @@
 #include "EngineCommands.h"
 
 #include "core/mixer/MixerTypes.h"
+#include "core/sampler/SamplerEngine.h"
 
 namespace onda::ui {
 
@@ -312,6 +313,65 @@ void registerEngineCommands(CommandManager& cm,
                 if (!s.empty()) p.loadTrack(1, s);
             }
         }));
+
+    // ---- sampler (Phase 11): trigger/stop + bank + sync controls ----
+    for (int s = 0; s < 32; ++s) {
+        const std::string sn = "sampler." + std::to_string(s);
+        cm.add(mk(cmd::SamplerTrigBase + (uint32_t)s, sn + ".trigger",
+            "Sampler",
+            [p, s](float v, CommandSource) {
+                if (p.sampler) p.sampler->trigger(s, v > 0.0f ? v : 1.0f);
+            }));
+        cm.add(mk(cmd::SamplerStopBase + (uint32_t)s, sn + ".stop",
+            "Sampler",
+            [p, s](float, CommandSource) {
+                if (p.sampler) p.sampler->stop(s);
+            }));
+    }
+    cm.add(mk(cmd::SamplerStopAll, "sampler.stopAll", "Sampler",
+        [p](float, CommandSource) {
+            if (p.sampler) p.sampler->stopAll();
+        }));
+    cm.add(mk(cmd::SamplerQuantize, "sampler.quantize", "Sampler",
+        [p](float v, CommandSource) {
+            if (p.sampler)
+                for (int s = 0; s < 8; ++s)
+                    p.sampler->setSlotParam(s, sampler::SP_Quantize, v);
+        }));
+    cm.add(mk(cmd::SamplerSyncTgl, "sampler.syncToggle", "Sampler",
+        [p](float, CommandSource) {
+            if (!p.sampler) return;
+            const float cur =
+                p.sampler->slotParam(0, sampler::SP_SyncOn);
+            for (int s = 0; s < 8; ++s)
+                p.sampler->setSlotParam(s, sampler::SP_SyncOn,
+                                        cur < 0.5f ? 1.f : 0.f);
+        },
+        [p]() {
+            return p.sampler
+                 ? (p.sampler->slotParam(0, sampler::SP_SyncOn) > 0.5f
+                    ? 1 : 0) : 0;
+        }));
+    cm.add(mk(cmd::SamplerBankNext, "sampler.bankNext", "Sampler",
+        [p](float, CommandSource) {
+            if (p.sampler && p.sampler->bankCount() > 0)
+                p.sampler->selectBank(
+                    (p.sampler->activeBank() + 1) %
+                    p.sampler->bankCount());
+        }));
+    cm.add(mk(cmd::SamplerBankPrev, "sampler.bankPrev", "Sampler",
+        [p](float, CommandSource) {
+            if (p.sampler && p.sampler->bankCount() > 0)
+                p.sampler->selectBank(
+                    (p.sampler->activeBank() +
+                     p.sampler->bankCount() - 1) %
+                    p.sampler->bankCount());
+        }));
+    cm.add(mk(cmd::SamplerBankSet, "sampler.bankSet", "Sampler",
+        [p](float v, CommandSource) {
+            if (p.sampler) p.sampler->selectBank((int)v);
+        },
+        [p]() { return p.sampler ? p.sampler->activeBank() : -1; }));
 }
 
 } // namespace onda::ui

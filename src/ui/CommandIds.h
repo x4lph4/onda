@@ -60,6 +60,20 @@ enum Id : uint32_t {
     BrowserTogglePanel = 0x3005,
     BrowserAddToPlaylist = 0x3006,
 
+    // ---- performance pads: 0x5000 (Phase 11) ----
+    PadPressBase   = 0x5000,   // + deck*0x20 + pad(0..7) + (shift? 0x10:0)
+    PadModeSetBase = 0x5080,   // + deck; value = PadMode enum
+
+    // ---- sampler: 0x6000 (Phase 11) ----
+    SamplerTrigBase = 0x6000,  // + slot (0..31); value = velocity 0..1
+    SamplerStopBase = 0x6040,  // + slot
+    SamplerStopAll  = 0x6080,
+    SamplerQuantize = 0x6081,  // value = QuantizeMode
+    SamplerSyncTgl  = 0x6082,
+    SamplerBankNext = 0x6083,
+    SamplerBankPrev = 0x6084,
+    SamplerBankSet  = 0x6085,  // value = bank index
+
     // ---- app: 0x3F00 ----
     AppToggleSettings  = 0x3F00,
     AppLayoutNext      = 0x3F01,
@@ -80,5 +94,13 @@ constexpr uint32_t actionOf(uint32_t id) { return id & 0x3FFu; }
 constexpr uint32_t forHotCue(int deck, int slot, int action) {
     return forDeck(DeckHotCueBase, deck) + (uint32_t)(slot * 4 + action);
 }
+/// Pad press: id = PadPressBase + deck*0x20 + pad + (shift? 0x10 : 0)
+constexpr uint32_t forPad(int deck, int pad, bool shift = false) {
+    return PadPressBase + (uint32_t)(deck * 0x20) +
+           (uint32_t)(pad & 7) + (shift ? 0x10u : 0u);
+}
+constexpr int  padDeckOf(uint32_t id)  { return (int)((id - PadPressBase) >> 5); }
+constexpr int  padIndexOf(uint32_t id) { return (int)(id & 7); }
+constexpr bool padShiftOf(uint32_t id) { return (id & 0x10) != 0; }
 
 } // namespace onda::ui::cmd

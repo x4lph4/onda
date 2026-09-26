@@ -6,14 +6,15 @@ MainComponent::MainComponent(audio::AudioEngine& engine,
                              AnalysisService& analysis,
                              PerformanceEngine& perf,
                              library::MusicLibraryEngine& lib,
-                             Config& config)
-    : look_(theme_) {
+                             Config& config,
+                             sampler::SamplerEngine* sampler)
+    : look_(theme_), sampler_(sampler) {
     juce::Desktop::getInstance().setDefaultLookAndFeel(&look_);
     setLookAndFeel(&look_);
 
     shortcuts_ = ui::ShortcutManager::defaultProfile();
     bridge_ = std::make_unique<ui::EngineBridge>(
-        engine, perf, analysis, lib, commands_, notes_);
+        engine, perf, analysis, lib, commands_, notes_, sampler);
     shell_ = std::make_unique<ui::AppShell>(
         theme_, commands_, shortcuts_, engine, perf, analysis, lib,
         *bridge_, config, notes_);
@@ -134,6 +135,8 @@ void MainComponent::resized() {
 void MainComponent::timerCallback() {
     if (ctrl_)
         ctrl_->tick(juce::Time::getMillisecondCounterHiRes() / 1000.0);
+    if (sampler_)
+        sampler_->tick();   // drain loader results + retire RT trash
 }
 
 } // namespace onda

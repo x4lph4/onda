@@ -23,6 +23,7 @@
 #include "core/rt/CommandQueue.h"
 #include "ui/CommandIds.h"
 #include "ui/CommandManager.h"
+#include "ui/pads/PadLayer.h"
 
 using namespace onda;
 using namespace onda::ctrl;
@@ -44,11 +45,15 @@ struct Rig {
     flx4::Flx4Plugin   plug;
     flx4::VirtualFlx4  vc { eng };
     ui::CommandManager cm;
+    ui::pads::PadLayer pads;
     std::unordered_map<uint32_t, int>   cmdStates;
     std::unordered_map<uint16_t, float> parVals;
     std::vector<std::array<double,3>>   jogs;
     std::vector<std::string>            notes;
-    std::vector<uint32_t>               cmds;
+    std::vector<uint32_t>               cmds;      // wire-level sends
+    std::vector<uint32_t>               resolved;  // every invoked id
+    std::vector<std::array<float,2>>    trigs;     // (slot, vel)
+    std::vector<int>                    releases, stops;
 
     Rig() {
         // minimal command surface matching EngineCommands naming
@@ -87,6 +92,18 @@ struct Rig {
         {   ui::Command c; c.id = ui::cmd::BrowserPrevTrack;
             c.name = "browser.prevTrack"; c.category = "Browser";
             c.run = [](float, ui::CommandSource) {}; cm.add(std::move(c)); }
+
+        // domain pad layer — resolves pad.press/pad.mode commands the
+        // plugin emits into deck commands or sampler actions
+        pads.setPorts({
+            [this](int slot, float vel) { trigs.push_back({(float)slot, vel}); },
+            [this](int slot)            { releases.push_back(slot); },
+            [this](int slot)            { stops.push_back(slot); },
+        });
+        pads.registerCommands(cm);
+        cm.addListener([this](uint32_t id, ui::CommandSource) {
+            resolved.push_back(id);
+        });
 
         ControllerEngine::Ports p;
         p.sendCommand = [this](uint32_t id, float v) {
@@ -201,30 +218,42 @@ TEST_CASE("FLX4: 14-bit merge on tempo/EQ/fader/crossfader", "[flx4]") {
     REQUIRE(r.parVals[xf] == Catch::Approx(-1.0f).margin(0.001));
 }
 
-TEST_CASE("FLX4: pad modes — hotcue trig/del, beatjump, beatloop",
+TEST_CASE("FLX4: pad modes — hotcue trig/del, beatjump, loop, sampler",
           "[flx4]") {
+    // Phase 11: pads emit pad.press commands; the domain PadLayer
+    // resolves them against the current mode (single semantic truth).
     Rig r;
     r.vc.attach();
+    auto hit = [&](uint32_t id) {
+        return std::find(r.resolved.begin(), r.resolved.end(), id)
+               != r.resolved.end();
+    };
     r.vc.padMode(0, flx4::PadMode::HotCue);
-    r.vc.pad(0, flx4::kPadBankHotCue, 2, false);    // pad3 → hotcue2
-    REQUIRE(std::find(r.cmds.begin(), r.cmds.end(),
-        ui::cmd::forHotCue(0, 2, 0)) != r.cmds.end());
+    r.vc.pad(0, flx4::kPadBankHotCue, 2, false);    // pad3 → hotcue2 trig
+    REQUIRE(hit(ui::cmd::forHotCue(0, 2, 0)));
     r.vc.pad(0, flx4::kPadBankHotCue, 2, true);     // shift → delete
-    REQUIRE(std::find(r.cmds.begin(), r.cmds.end(),
-        ui::cmd::forHotCue(0, 2, 2)) != r.cmds.end());
+    REQUIRE(hit(ui::cmd::forHotCue(0, 2, 2)));
 
     r.vc.padMode(1, flx4::PadMode::BeatJump);
     r.vc.pad(1, flx4::kPadBankBeatJump, 1, false);  // pad2 → back
-    REQUIRE(std::find(r.cmds.begin(), r.cmds.end(),
-        ui::cmd::forDeck(ui::cmd::DeckJumpBack, 1)) != r.cmds.end());
+    REQUIRE(hit(ui::cmd::forDeck(ui::cmd::DeckJumpBack, 1)));
     r.vc.pad(1, flx4::kPadBankBeatJump, 6, false);  // pad7 → fwd
-    REQUIRE(std::find(r.cmds.begin(), r.cmds.end(),
-        ui::cmd::forDeck(ui::cmd::DeckJumpFwd, 1)) != r.cmds.end());
+    REQUIRE(hit(ui::cmd::forDeck(ui::cmd::DeckJumpFwd, 1)));
 
     r.vc.padMode(1, flx4::PadMode::BeatLoop);
-    r.vc.pad(1, flx4::kPadBankBeatLoop, 0, false);
-    REQUIRE(std::find(r.cmds.begin(), r.cmds.end(),
-        ui::cmd::forDeck(ui::cmd::DeckLoopToggle, 1)) != r.cmds.end());
+    r.vc.pad(1, flx4::kPadBankBeatLoop, 0, false);  // pad1 → halve
+    REQUIRE(hit(ui::cmd::forDeck(ui::cmd::DeckLoopHalve, 1)));
+    r.vc.pad(1, flx4::kPadBankBeatLoop, 5, false);  // pad6 → toggle
+    REQUIRE(hit(ui::cmd::forDeck(ui::cmd::DeckLoopToggle, 1)));
+
+    // sampler mode → domain sampler ports (not deck commands)
+    r.vc.padMode(0, flx4::PadMode::Sampler);
+    r.vc.pad(0, flx4::kPadBankSampler, 4, false);   // press → trig(4)
+    REQUIRE(r.trigs.size() == 1);
+    REQUIRE((int)r.trigs[0][0] == 4);
+    r.vc.pad(0, flx4::kPadBankSampler, 4, true);    // shift → stop(4)
+    REQUIRE(r.stops.size() == 1);
+    REQUIRE(r.stops[0] == 4);
 }
 
 TEST_CASE("FLX4: pad-mode selector LEDs repaint (echo scheme)",

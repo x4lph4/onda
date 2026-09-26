@@ -11,6 +11,8 @@
 #include "core/performance/PerformanceEngine.h"
 #include "core/rt/CommandQueue.h"
 
+namespace onda::sampler { class SamplerEngine; }
+
 namespace onda::ui {
 
 /// Ports the command layer needs from the rest of the app — every
@@ -22,6 +24,7 @@ struct EnginePorts {
     mixer::MixerController*   mixer  = nullptr;  // validated params
     PerformanceEngine*        perf   = nullptr;
     library::MusicLibraryEngine* lib = nullptr;
+    sampler::SamplerEngine*   sampler = nullptr;  // Phase 11
 
     /// deck index → live stats (for toggle-state queries + cue trigger)
     std::function<DeckStats*(int)>            deckStats;

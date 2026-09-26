@@ -11,13 +11,15 @@ EngineBridge::EngineBridge(audio::AudioEngine& engine,
                            AnalysisService& analysis,
                            library::MusicLibraryEngine& lib,
                            CommandManager& cmds,
-                           NotificationCenter& notes)
+                           NotificationCenter& notes,
+                           sampler::SamplerEngine* sampler)
     : engine_(engine), perf_(perf), analysis_(analysis), lib_(lib),
       notes_(notes) {
     ports_.queue  = &engine_.commands();
     ports_.mixer  = &engine_.mixerCtl();
     ports_.perf   = &perf_;
     ports_.lib    = &lib_;
+    ports_.sampler = sampler;
     ports_.deckStats = [this](int d) -> DeckStats* {
         return d >= 0 && d < audio::AudioEngine::kNumDecks
              ? &engine_.deckStats(d) : nullptr;
@@ -41,6 +43,18 @@ EngineBridge::EngineBridge(audio::AudioEngine& engine,
     };
     // app-level actions are bound by AppShell after construction
     registerEngineCommands(cmds, ports_);
+
+    // Phase 11: domain pad layer — pad.press/pad.mode commands route
+    // through CommandManager; sampler actions reach the engine
+    // through its trigger/release/stop facade (rt queue inside).
+    if (sampler) {
+        pads_.setPorts({
+            [sampler](int slot, float vel) { sampler->trigger(slot, vel); },
+            [sampler](int slot)            { sampler->release(slot); },
+            [sampler](int slot)            { sampler->stop(slot); },
+        });
+        pads_.registerCommands(cmds);
+    }
 }
 
 void EngineBridge::snapshotDeck(int deck, DeckSnapshot& o) {

@@ -11,6 +11,7 @@
 #include "core/analysis/AnalysisService.h"
 #include "core/library/MusicLibraryEngine.h"
 #include "core/performance/PerformanceEngine.h"
+#include "core/sampler/SamplerEngine.h"
 #include "controller/ControllerEngine.h"
 #include "controller/flx4/Flx4Plugin.h"
 #include "platform/audio/AudioEngine.h"
@@ -32,7 +33,8 @@ public:
                   AnalysisService& analysis,
                   PerformanceEngine& perf,
                   library::MusicLibraryEngine& lib,
-                  Config& config);
+                  Config& config,
+                  sampler::SamplerEngine* sampler = nullptr);
     ~MainComponent() override {
         stopTimer();
         juce::Desktop::getInstance().setDefaultLookAndFeel(nullptr);
@@ -56,6 +58,7 @@ private:
     std::unique_ptr<ctrl::ControllerEngine> ctrl_;
     std::unique_ptr<ctrl::MidiManager>      midi_;
     ctrl::flx4::Flx4Plugin                  flx4_;
+    sampler::SamplerEngine*                 sampler_ = nullptr; // borrowed
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

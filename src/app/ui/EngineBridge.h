@@ -8,10 +8,12 @@
 #include "core/analysis/AnalysisService.h"
 #include "core/library/MusicLibraryEngine.h"
 #include "core/performance/PerformanceEngine.h"
+#include "core/sampler/SamplerEngine.h"
 #include "platform/audio/AudioEngine.h"
 #include "ui/EngineCommands.h"
 #include "ui/NotificationCenter.h"
 #include "ui/UiState.h"
+#include "ui/pads/PadLayer.h"
 
 namespace onda::ui {
 
@@ -29,7 +31,8 @@ public:
                  AnalysisService& analysis,
                  library::MusicLibraryEngine& lib,
                  CommandManager& cmds,
-                 NotificationCenter& notes);
+                 NotificationCenter& notes,
+                 sampler::SamplerEngine* sampler = nullptr);
 
     const EnginePorts& ports() const { return ports_; }
     EnginePorts&       mutablePorts()  { return ports_; }
@@ -54,6 +57,9 @@ public:
     /// library row when the path matches a library track.
     void refreshDeckMeta(int deck, DeckSnapshot& out);
 
+    /// Phase 11: domain pad layer (pad.press / pad.mode commands).
+    pads::PadLayer&          pads()    noexcept { return pads_; }
+
 private:
     audio::AudioEngine&          engine_;
     PerformanceEngine&           perf_;
@@ -61,6 +67,7 @@ private:
     library::MusicLibraryEngine& lib_;
     NotificationCenter&          notes_;
 
+    pads::PadLayer  pads_;
     EnginePorts ports_;
     std::string deckPath_[4];
     bool        pfl_[4] = { false, false, false, false };

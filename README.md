@@ -2,6 +2,36 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 11 (professional sampler + performance pads)
+
+Performance sampler on a JUCE-free RT core, plus a domain pad layer
+shared by every control surface (`docs/sampler.md`,
+`docs/adr/0011-sampler-performance-pads.md`).
+
+- `src/core/sampler/`: `SamplerRt` (32 slots via atomic mailbox,
+  32-voice pool with oldest/quietest/same-sample/deny steal,
+  envelope-faded, quantize delay vs master clock, renders into mixer
+  channel 4 — full strip EQ/filter/fader/cue/FX-send for free),
+  `SamplerEngine` façade (banks, async loader worker, LRU+pinned
+  cache, sqlite `SampleRepository`, `SampleRecorder` ring→WAV
+  foundation — no source armed by default).
+- `src/ui/pads/`: `PadModeManager` (one resolution table: HotCue /
+  Sampler / BeatJump / Loop now, PadFx + Stems/Roll/Slicer reserved)
+  + `PadLayer` (`pad.<d>.<n>[.shift]`, `pad.<d>.mode` commands —
+  controllers emit commands, the domain resolves them).
+- New `rt::Command`s: `SampleTrigger/Release/Stop/SlotParam/
+  SamplerParam`; new command space `0x5000` (pads) / `0x6000`
+  (sampler) wired in `EngineCommands`.
+- DDJ-FLX4 pads now route through the domain layer — hardware stays
+  semantics-free; the same commands drive UI and keyboard.
+- 21 new `[sampler]` tests + reworked FLX4 pad test (**198 cases /
+  1.59M assertions green**): playback modes, voice pool+steal,
+  quantize-to-grid, sync speed, mute/solo/pan/velocity, cache LRU,
+  sqlite roundtrip, real-WAV decode, pad dispatch, recorder,
+  1600-trigger stress — all finite, bounded.
+- HARDWARE TEST PENDING — physical pad behavior validated on
+  `VirtualFlx4` only.
+
 ## Status — Phase 10 (Pioneer DDJ-FLX4 integration)
 
 First-class DDJ-FLX4 support built only on **documented public MIDI

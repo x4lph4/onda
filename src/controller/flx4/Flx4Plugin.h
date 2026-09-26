@@ -7,6 +7,7 @@
 #include "../ControllerEngine.h"
 #include "../ParamNames.h"
 #include "ui/CommandIds.h"
+#include "ui/pads/PadTypes.h"
 #include "Flx4Ids.h"
 #include "Flx4Profile.h"
 #include "JogWheelProcessor.h"
@@ -71,9 +72,15 @@ public:
         // SHIFT held state (deck channels, note 0x3F)
         if (shift_.ingest(m)) return true;
 
-        // pad-mode selectors (deck channel notes)
+        // pad-mode selectors (deck channel notes) — set domain mode
+        // (single source of truth) + repaint hw selector LEDs
         const int sel = pads_.ingestSelector(m);
-        if (sel >= 0) { repaintModes(); return true; }
+        if (sel >= 0) {
+            sendCmd(ui::cmd::PadModeSetBase + (uint32_t)m.channel,
+                    (float)(int)toDomainMode((PadMode)sel));
+            repaintModes();
+            return true;
+        }
 
         // performance pads (ch 7..10)
         int deck, bank, pad; bool sh;
@@ -121,6 +128,24 @@ public:
         }
     }
 
+    /// hw selector mode → domain PadMode (PadTypes.h). Unimplemented
+    /// banks map to reserved domain modes so pads are consumed, never
+    /// misrouted (a KEYBOARD bank pad must not fire hot cues).
+    static ui::pads::PadMode toDomainMode(PadMode m) {
+        using D = ui::pads::PadMode;
+        switch (m) {
+            case PadMode::HotCue:   return D::HotCue;
+            case PadMode::Sampler:  return D::Sampler;
+            case PadMode::BeatJump: return D::BeatJump;
+            case PadMode::BeatLoop: return D::Loop;
+            case PadMode::PadFx1:
+            case PadMode::PadFx2:   return D::PadFx;
+            case PadMode::Keyboard: return D::Keyboard;
+            case PadMode::KeyShift: return D::KeyShift;
+        }
+        return D::HotCue;
+    }
+
     static bool nameMatches(const std::string& osName) {
         // match the OS-reported endpoint name, case-insensitive
         std::string n; n.reserve(osName.size());
@@ -147,29 +172,17 @@ private:
             st->sendRaw(makeOut(a, v));
     }
 
+    /// Every pad event → the domain pad layer (ui::pads::PadLayer),
+    /// which resolves action by the app's current mode — the plugin
+    /// carries zero pad semantics (one semantic source of truth for
+    /// all controllers). Velocity normalized 0..1.
     bool handlePad(int deck, bool sh, int pad, int bank,
                    const MidiMsg& m) {
         const bool press =
             (m.type == MsgType::NoteOn && m.data2 > 0);
-        if (!press) return true;   // releases consumed silently
-        if (bank == kPadBankHotCue) {
-            // pads 1-8: trigger / shift = delete (documented)
-            sendCmd(ui::cmd::forHotCue(deck, pad, sh ? 2 : 0));
-            return true;
-        }
-        if (bank == kPadBankBeatJump) {
-            // convention: pads 1-4 back, 5-8 fwd (layout assumption)
-            sendCmd(ui::cmd::forDeck(
-                pad < 4 ? ui::cmd::DeckJumpBack : ui::cmd::DeckJumpFwd,
-                deck));
-            return true;
-        }
-        if (bank == kPadBankBeatLoop) {
-            sendCmd(ui::cmd::forDeck(ui::cmd::DeckLoopToggle, deck));
-            return true;
-        }
-        // sampler / keyboard / padfx / keyshift banks: reserved for
-        // the Phase-11 sampler — consumed, unmapped (documented).
+        (void)bank;   // bank is implied by domain mode (selector sets it)
+        sendCmd(ui::cmd::forPad(deck, pad, sh),
+                press ? (float)m.data2 / 127.0f : 0.0f);
         return true;
     }
 

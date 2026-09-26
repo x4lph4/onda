@@ -125,8 +125,20 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     // FX tempo source for sends/master: the sync master deck
     mixer_.setFxSyncMaster(syncRt_.masterDeck >= 0 ? syncRt_.masterDeck : 0);
 
+    // sampler clock: master deck's beat phase feeds quantized triggers
+    // + sync'd sample speed. Stopped/missing master → hold (bpm<=0).
+    if (sampler_) {
+        const int m = syncRt_.masterDeck;
+        if (m >= 0 && m < kNumDecks) {
+            const auto& ds = deckStats_[(size_t)m];
+            sampler_->setClock(ds.effBpm.load(), ds.beatPos.load());
+        } else {
+            sampler_->setClock(0.0, 0.0);
+        }
+    }
+
     mixer_.render(outputChannelData, numOutputChannels, numSamples,
-                  decks_.data(), (int)decks_.size(), stats_);
+                  decks_.data(), (int)decks_.size(), stats_, sampler_);
 
     // ---- diagnostics (atomics only) ----
     const double periodSec = sampleRate_ > 0.0 ? numSamples / sampleRate_ : 0.0;
@@ -156,7 +168,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
 }
 
 void AudioEngine::applyCommand(const rt::Command& cmd) noexcept {
-    std::visit([this](const auto& c) {
+    std::visit([this, &cmd](const auto& c) {
         using T = std::decay_t<decltype(c)>;
         const int deck = [&] { if constexpr (requires { c.deck; }) return (int)c.deck;
                                else return 0; }();
@@ -180,6 +192,13 @@ void AudioEngine::applyCommand(const rt::Command& cmd) noexcept {
             mixer_.setParam(c.id, c.v);
         else if constexpr (std::is_same_v<T, rt::SyncSetMaster>)
             syncRt_.masterDeck = (c.deck >= kNumDecks) ? -1 : (int)c.deck;
+        else if constexpr (std::is_same_v<T, rt::SampleTrigger> ||
+                           std::is_same_v<T, rt::SampleRelease> ||
+                           std::is_same_v<T, rt::SampleStop> ||
+                           std::is_same_v<T, rt::SampleSlotParam> ||
+                           std::is_same_v<T, rt::SamplerParam>) {
+            if (sampler_) sampler_->applyCommand(cmd);
+        }
         else if (deck < 0 || deck >= kNumDecks) { /* invalid deck */ }
         else applyDeckCommand(decks_[(size_t)deck], deck, c);
     }, cmd);

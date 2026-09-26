@@ -18,6 +18,7 @@
 namespace onda {
 
 class DeckEngine;
+namespace sampler { class SamplerRt; }
 
 /// Central mix engine. Per block:
 ///
@@ -42,6 +43,9 @@ class MixerEngine {
 public:
     static constexpr int kMaxChannels = mixer::ParameterRegistry::kMaxChannels;
     static constexpr int kMaxDecks    = kMaxChannels; // legacy alias
+    /// Channel strip the sampler engine writes into (Phase 11): gets
+    /// gain/EQ/filter/fader/cue/send for free through chParam(4,*).
+    static constexpr int kSamplerChannel = 4;
 
     MixerEngine();
     void prepare(double sampleRate) noexcept; // allocate + init (non-RT)
@@ -83,9 +87,12 @@ public:
     // ------------------------------------------------------------
 
     /// RT. outs[0..1]=master, outs[2..3]=headphones (if numOut>=4).
+    /// `sampler` (nullable) renders into channel kSamplerChannel —
+    /// needs setActiveChannels(kSamplerChannel+1) to be audible.
     void render(float* const* out, int numOut, int numSamples,
                 DeckEngine* decks, int numDecks,
-                rt::AudioStats& stats) noexcept;
+                rt::AudioStats& stats,
+                sampler::SamplerRt* sampler = nullptr) noexcept;
 
     const MasterStats& masterStats() const noexcept { return mstats_; }
 

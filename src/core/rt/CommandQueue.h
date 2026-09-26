@@ -46,6 +46,13 @@ struct SlipEnd        { uint8_t deck; };
 // ---- generic mixer parameter (ids from mixer::ParameterRegistry) ----
 struct SetParam       { uint16_t id; float v; };
 
+// ---- sampler commands (Phase 11) ----
+struct SampleTrigger  { uint8_t slot; float vel; };      // vel 0..1
+struct SampleRelease  { uint8_t slot; };                 // HOLD pad up
+struct SampleStop     { uint8_t slot; };                 // 255 = all slots
+struct SampleSlotParam{ uint8_t slot; uint8_t kind; float v; }; // SP_*
+struct SamplerParam   { uint8_t kind; float v; };        // bank params
+
 using Command = std::variant<
     SetMasterGain, SetLimiterOn, SetCueVol, SetCueMix,
     SetCrossfader, SetXfCurve, SetPfl, SetFader,
@@ -54,7 +61,9 @@ using Command = std::variant<
     SetQuantize, SetLoop, SetLoopOn, SetLoopSize,
     SetEqBand, SetFilter,
     DeckSeekFrame, SetLoopFrames, SyncSetMaster, SyncSetMode,
-    SlipBegin, SlipEnd, SetParam>;
+    SlipBegin, SlipEnd, SetParam,
+    SampleTrigger, SampleRelease, SampleStop,
+    SampleSlotParam, SamplerParam>;
 
 /// UI thread pushes, audio thread drains at the top of every callback.
 using CommandQueue = SpscRingBuffer<Command, 512>;
