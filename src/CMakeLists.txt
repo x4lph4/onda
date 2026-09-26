@@ -20,13 +20,21 @@ add_library(onda_core STATIC
     core/analysis/AnalysisService.cpp
     core/data/Database.cpp
     core/data/AnalysisStore.cpp
+    core/library/TrackRepository.cpp
+    core/library/TrackImporter.cpp
+    core/library/LibraryScanner.cpp
+    core/library/PlaylistManager.cpp
+    core/library/HistoryManager.cpp
+    core/library/MusicLibraryEngine.cpp
     core/performance/PerformanceEngine.cpp)
 target_include_directories(onda_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(onda_core PUBLIC sqlite3)
 target_compile_features(onda_core PUBLIC cxx_std_20)
 
 # --- ffmpeg decoder -------------------------------------------------------
-add_library(onda_decode STATIC platform/decode/FFmpegDecoder.cpp)
+add_library(onda_decode STATIC
+    platform/decode/FFmpegDecoder.cpp
+    platform/metadata/FFmpegMetadataReader.cpp)
 target_include_directories(onda_decode PRIVATE "${FFMPEG_INCLUDE_DIR}")
 target_link_libraries(onda_decode PUBLIC onda_core ${ONDA_FFMPEG_LIBS})
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -60,9 +61,30 @@ public:
 
     Stmt prepare(const char* sql) { return Stmt(db_, sql); }
 
+    /// Guards every statement on this connection. Recursive so a caller
+    /// holding the lock across several repo calls (multi-statement
+    /// operations) doesn't deadlock against inner calls.
+    std::recursive_mutex& mutex() { return m_; }
+
+    /// RAII transaction: BEGIN IMMEDIATE on construction, ROLLBACK on
+    /// destruction unless commit() ran. Failed operations never leave
+    /// partial rows behind.
+    class Tx {
+    public:
+        explicit Tx(Database& d) : d_(d) { d_.exec("BEGIN IMMEDIATE"); }
+        ~Tx() { if (!done_) d_.exec("ROLLBACK"); }
+        Tx(const Tx&) = delete;
+        void commit() { d_.exec("COMMIT"); done_ = true; }
+        void rollback() { d_.exec("ROLLBACK"); done_ = true; }
+    private:
+        Database& d_;
+        bool done_ { false };
+    };
+
 private:
     bool migrate();
     sqlite3* db_ { nullptr };
+    std::recursive_mutex m_;
 };
 
 } // namespace onda

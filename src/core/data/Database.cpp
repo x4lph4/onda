@@ -93,6 +93,97 @@ CREATE TABLE IF NOT EXISTS kv(
     key TEXT PRIMARY KEY,
     value TEXT);
 )SQL",
+
+    // v3 — professional library: rich track metadata, user data,
+    // tags, playlists/crates, smart playlists, sessions/history,
+    // missing-file status, FTS index, query indexes
+    R"SQL(
+ALTER TABLE tracks ADD COLUMN filename TEXT;
+ALTER TABLE tracks ADD COLUMN album TEXT;
+ALTER TABLE tracks ADD COLUMN album_artist TEXT;
+ALTER TABLE tracks ADD COLUMN genre TEXT;
+ALTER TABLE tracks ADD COLUMN year INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN track_num INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN disc_num INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN bitrate INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN channels INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN format TEXT;
+ALTER TABLE tracks ADD COLUMN file_size INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN mtime INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN content_hash INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN artwork_hash INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN rating INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN color INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN energy INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN comments TEXT;
+ALTER TABLE tracks ADD COLUMN play_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN last_played INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN date_added INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN status INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS tags(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE);
+
+CREATE TABLE IF NOT EXISTS track_tags(
+    track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    PRIMARY KEY(track_id, tag_id));
+
+CREATE TABLE IF NOT EXISTS folders(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    parent_id INTEGER REFERENCES folders(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL DEFAULT 0);
+
+CREATE TABLE IF NOT EXISTS playlists(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL,
+    kind INTEGER NOT NULL DEFAULT 0,      -- 0 static, 1 smart
+    rules TEXT,                           -- smart: FilterSpec JSON
+    created_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0);
+
+CREATE TABLE IF NOT EXISTS playlist_items(
+    playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    added_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(playlist_id, track_id));
+CREATE INDEX IF NOT EXISTS idx_pl_items ON playlist_items(playlist_id, position);
+
+CREATE TABLE IF NOT EXISTS sessions(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    started_at INTEGER NOT NULL DEFAULT 0,
+    ended_at INTEGER NOT NULL DEFAULT 0);
+
+CREATE TABLE IF NOT EXISTS history(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+    deck INTEGER NOT NULL DEFAULT 0,
+    started_at INTEGER NOT NULL DEFAULT 0,
+    played_sec REAL NOT NULL DEFAULT 0,
+    counted INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS idx_history_track ON history(track_id);
+CREATE INDEX IF NOT EXISTS idx_history_session ON history(session_id);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS tracks_fts USING fts5(
+    title, artist, album, genre, filename, tags, comments,
+    content='');
+
+CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks(title);
+CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);
+CREATE INDEX IF NOT EXISTS idx_tracks_genre ON tracks(genre);
+CREATE INDEX IF NOT EXISTS idx_tracks_rating ON tracks(rating);
+CREATE INDEX IF NOT EXISTS idx_tracks_added ON tracks(date_added);
+CREATE INDEX IF NOT EXISTS idx_tracks_status ON tracks(status);
+CREATE INDEX IF NOT EXISTS idx_tracks_hash ON tracks(content_hash);
+CREATE INDEX IF NOT EXISTS idx_analysis_bpm ON analysis(bpm);
+CREATE INDEX IF NOT EXISTS idx_analysis_key ON analysis(key_index);
+)SQL",
 };
 
 bool Database::open(const std::string& path) {

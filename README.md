@@ -2,6 +2,48 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 7 (professional music library)
+
+`core/library/` — `MusicLibraryEngine` facade owning the SQLite
+database (schema v3, WAL, recursive mutex, RAII nested transactions)
+and a dedicated library worker: the audio thread never touches it,
+heavy ops are async, queries are indexed + paged so the UI never
+loads the whole library.
+
+- `TrackRepository`: full DJ track model (identity, embedded meta,
+  analysis refs, user meta), CRUD, FTS5 sync, `QuerySpec` =
+  search + filters + sort + page + total.
+- `FileFingerprint`: `fingerprint` (size+mtime+sampled FNV-1a →
+  change detection) vs `contentHash` (mtime-free → move/duplicate
+  identity) — the scanner separates "modified" from "moved".
+- `TrackImporter`: files/folders/recursive; fingerprint → dedup →
+  FFmpeg metadata → transactional upsert → analysis queue. Batch
+  import keeps one transaction per track.
+- `LibraryScanner`: new / modified / missing / relocated detection;
+  vanished rows become `MISSING` (never deleted), content-hash
+  match at a new path relinks the same track id.
+- `SearchEngine` (FTS5, quoted prefix tokens) + `FilterEngine`
+  (parameterized WHERE: bpm/key/genre/rating/dates/tags/missing/
+  analyzed, Camelot-compatible key matching) + indexed sorting.
+- `PlaylistManager`: static playlists with explicit order, folders/
+  crates (nested), smart playlists re-evaluated from rule JSON.
+- `HistoryManager`: sessions, entries, configurable play-count rule
+  (≥60 s or ≥50 %, loading never counts), async writes.
+- `DuplicateDetector` (hash + size/duration/meta candidates — never
+  deletes), `MissingFileManager` (relink/locate),
+  `FileWatcher` (polling foundation), artwork provider + disk cache.
+- `platform/metadata/FFmpegMetadataReader`: read-only tags/stream
+  info; embedded vs user metadata stay separate. Formats:
+  WAV/AIFF/FLAC/MP3/M4A (FFmpeg decode — see ADR-0007 licensing).
+- Integrity: FK cascade/SET NULL everywhere, `integrityCheck()`,
+  WAL crash recovery — no orphans, no partial imports.
+
+Tests: +18 `[lib]` cases (134 total, 1.59M assertions) — import,
+fingerprint, search/filter/sort, playlists/smart, history, tags,
+missing/relink/move, duplicates, transactions, worker concurrency,
+and a 50k-track perf suite (FTS 15 ms, filter+sort+page 30 ms,
+DB 17.5 MB).
+
 ## Status — Phase 6 (professional FX engine)
 
 `core/fx/` — modular effects engine on top of the mixer: insert racks
