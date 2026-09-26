@@ -18,7 +18,8 @@ add_executable(onda_tests
     flx4_tests.cpp
     sampler_tests.cpp
     recording_tests.cpp
-    adevice_tests.cpp)
+    adevice_tests.cpp
+    sync_tests.cpp)
 target_link_libraries(onda_tests PRIVATE onda_core onda_ui onda_ctrl onda_decode Catch2::Catch2WithMain)
 target_compile_features(onda_tests PRIVATE cxx_std_20)
 onda_copy_runtime_dlls(onda_tests)

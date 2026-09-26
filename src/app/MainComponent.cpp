@@ -83,14 +83,13 @@ MainComponent::MainComponent(audio::AudioEngine& engine,
         p.commandIdFor = [this](const std::string& n) {
             return commands_.idFor(n);
         };
-        p.setParam = [&engine](uint16_t id, float v) {
+        p.setParam = [&engine, &perf](uint16_t id, float v) {
             // deck params (0x8000 space) ride the lock-free rt queue;
             // mixer params go through MixerController as before
             if (ctrl::isDeckParam(id)) {
                 const auto deck = (uint8_t)ctrl::deckParamDeck(id);
                 if (ctrl::deckParamKind(id) == ctrl::kDeckParamPitch)
-                    engine.commands().tryPush(
-                        rt::SetPitch{deck, v});
+                    perf.onUserPitch(deck, v);   // §26 pitch policy
                 else
                     engine.commands().tryPush(
                         rt::SetPitchRange{deck, v});

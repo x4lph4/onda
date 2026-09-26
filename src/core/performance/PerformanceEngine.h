@@ -10,6 +10,10 @@
 #include "../engine/DeckEngine.h"
 #include "../model/DeckStats.h"
 #include "../rt/CommandQueue.h"
+#include "../sync/MasterClock.h"
+#include "../sync/SyncDiagnostics.h"
+#include "../sync/SyncTypes.h"
+#include "../sync/TempoMaster.h"
 #include "BeatJumpEngine.h"
 #include "CueEngine.h"
 #include "PerformanceTypes.h"
@@ -31,14 +35,8 @@ class PerformanceEngine {
 public:
     static constexpr int kMaxDecks = 4;
 
-    /// Snapshot of the musical master clock (non-RT view).
-    struct ClockSample {
-        bool   valid   { false };
-        double bpm     { 0.0 };   // effective master bpm
-        double beatPos { -1.0 };  // continuous beat position
-        int    bar     { 0 };
-        double phase   { 0.0 };   // position inside current beat 0..1
-    };
+    /// Musical master-clock snapshot (non-RT view) — Phase 15 type.
+    using ClockSample = sync::ClockSample;
 
     PerformanceEngine() = default;
 
@@ -58,8 +56,10 @@ public:
     // ---- deck context ----
     /// Attach a beatgrid to a deck (handed off to the RT thread).
     /// `trackId` links cues/loops persistence; -1 = session only.
+    /// `confidence` (0..1) feeds syncConfidence — pass the analysis
+    /// SyncReference confidence when known.
     void attachGrid(int deck, std::shared_ptr<const BeatGrid> grid,
-                    int64_t trackId = -1);
+                    int64_t trackId = -1, float confidence = 0.7f);
     void detachDeck(int deck);
     const BeatGrid* grid(int deck) const;
     bool hasGrid(int deck) const { return grid(deck) != nullptr; }
@@ -67,6 +67,7 @@ public:
     // ---- sync ----
     void setMasterDeck(int deck);          // -1 releases the role
     int  masterDeck() const { return master_; }
+    bool isMaster(int deck) const { return deck >= 0 && deck == master_; }
     void setSyncMode(int deck, SyncMode mode);
     void enableSync(int deck, SyncMode mode = SyncMode::Beat);
     void disableSync(int deck);
@@ -74,10 +75,50 @@ public:
     SyncMode   syncMode(int deck) const;
     SyncStatus syncStatus(int deck) const;
     ClockSample masterClock() const;
+    /// Clock + provenance + stopped flag (§2-3, §22).
+    sync::MasterClockView masterClockView() const;
+
+    // ---- tempo master (§4-5, §22-23) ----
+    /// Who feeds the clock: Auto (documented rules), pinned deck,
+    /// External (clock via setExternalClock), None (sync refused).
+    void setMasterSource(sync::MasterSource s);
+    sync::MasterSource masterSource() const { return masterSel_.source; }
+    /// What happens when the master deck pauses — ClockHolds default.
+    void setMasterPausePolicy(sync::MasterPausePolicy p);
+    sync::MasterPausePolicy masterPausePolicy() const { return masterSel_.pause; }
+    /// Cycle Auto → A → B → C → D → Auto (hardware-friendly step).
+    void cycleMaster();
+    /// Future external clock feed (Link-style); only consulted when
+    /// masterSource == External.
+    void setExternalClock(sync::ClockSource src);
+    void clearExternalClock() { externalClock_ = nullptr; }
+
+    // ---- per-deck sync state, confidence, diagnostics (§6,§30,§39) ----
+    sync::DeckSyncState   deckSyncState(int deck) const;
+    float                 syncConfidence(int deck) const;
+    sync::SyncDiagnostics syncDiagnostics(int deck) const;
+    std::string           syncDiagText(int deck) const;
+
+    // ---- sync lock (§24) ----
+    /// ON (default): sync mode survives a track change — the new grid
+    /// re-locks to the session clock. OFF: attaching a different
+    /// track's grid drops sync to Off.
+    void setSyncLock(int deck, bool on);
+    bool syncLockOn(int deck) const;
+
+    // ---- pitch interaction while synced (§26) ----
+    void setPitchPolicy(sync::PitchPolicy p) { pitchPolicy_ = p; }
+    sync::PitchPolicy pitchPolicy() const { return pitchPolicy_; }
+    /// Unified entry for user pitch-fader moves. Routes through the
+    /// configured policy — ALWAYS use this instead of sending
+    /// rt::SetPitch directly from UI/HID paths.
+    void onUserPitch(int deck, float pct);
 
     // ---- quantize ----
     void setQuantize(int deck, bool on);
     void setQuantizeResolution(int deck, Quantize q);
+    void cycleQuantize(int deck);              // step through resolutions
+    int  quantizeResolution(int deck) const;
     bool   quantizeOn(int deck) const;
     double quantizeBeatsFor(int deck) const;
 
@@ -145,6 +186,8 @@ private:
         /// Last rejected sync request — surfaced by syncStatus so a
         /// missing/unreliable grid is never silently ignored.
         SyncStatus lastError { SyncStatus::Off };
+        bool   syncLock   { true };    // sync survives track change
+        float  gridConf   { 0.7f };    // analysis confidence at attach
         int64_t pendingLoopIn { -1 };
         int64_t lastLoopIn { -1 }, lastLoopOut { -1 };
         bool   rolling { false };
@@ -169,6 +212,10 @@ private:
     std::array<DeckCtx, kMaxDecks> decks_;
     std::vector<Listener> listeners_;
     int master_ { -1 };
+    sync::TempoMaster masterSel_;                 // source + pause policy
+    sync::PitchPolicy pitchPolicy_ { sync::PitchPolicy::Override };
+    sync::ClockSource externalClock_;             // §5 future feed
+    bool rtMasterActive_ { false };               // ClockStops bookkeeping
 };
 
 } // namespace onda

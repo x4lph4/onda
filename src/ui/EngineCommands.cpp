@@ -230,6 +230,43 @@ void registerEngineCommands(CommandManager& cm,
         ana(cmd::AnaReanalyze, "ana.reanalyze",
             (int)AnalysisEdit::Reanalyze, 0.0);
 
+        // ---- sync control (Phase 15): lock / quantum / tempo-only ----
+        cm.add(mk(cmd::forDeck(cmd::SyncLockTgl, d),
+            "deck" + dn + ".syncLock", cat,
+            [p, d](float, CommandSource) {
+                if (p.perf)
+                    p.perf->setSyncLock(d, !p.perf->syncLockOn(d));
+            },
+            [p, d]() {
+                return p.perf && p.perf->syncLockOn(d) ? 1 : 0;
+            }));
+
+        cm.add(mk(cmd::forDeck(cmd::SyncQuantRes, d),
+            "deck" + dn + ".syncQuantRes", cat,
+            [p, d](float, CommandSource) {
+                if (p.perf) p.perf->cycleQuantize(d);
+            },
+            [p, d]() {
+                return p.perf ? p.perf->quantizeResolution(d) : 0;
+            }));
+
+        cm.add(mk(cmd::forDeck(cmd::SyncBpmMode, d),
+            "deck" + dn + ".syncBpmMode", cat,
+            [p, d](float, CommandSource) {
+                // tempo-only: toggles SyncMode::Bpm on the deck
+                if (p.perf) p.perf->syncDeck(d, SyncMode::Bpm);
+            },
+            [p, d]() {
+                return p.perf && p.perf->syncMode(d) == SyncMode::Bpm
+                     ? 1 : 0;
+            }));
+
+        cm.add(mk(cmd::forDeck(cmd::SyncDiagCopy, d),
+            "deck" + dn + ".syncDiagCopy", cat,
+            [p, d](float, CommandSource) {
+                if (p.copySyncDiag) p.copySyncDiag(d);
+            }));
+
         // hot cues: trigger/set/delete per slot
         for (int s = 0; s < 8; ++s) {
             const std::string base =
@@ -317,6 +354,16 @@ void registerEngineCommands(CommandManager& cm,
     app(cmd::AppLayoutNext,      "app.layoutNext",      "App");
     app(cmd::AppFullscreen,      "app.fullscreen",      "App");
     app(cmd::AppToggleFx,        "app.toggleFx",        "App");
+
+    // tempo master: AUTO → deck A..D → AUTO (Phase 15)
+    cm.add(mk(cmd::SyncMasterCycle, "sync.masterCycle", "Sync",
+        [p](float, CommandSource) {
+            if (p.perf) p.perf->cycleMaster();
+        },
+        [p]() {
+            // state = resolved master deck (-1 none)
+            return p.perf ? p.perf->masterDeck() : -1;
+        }));
 
     // panic: stop all decks + center crossfader
     cm.add(mk(cmd::AppPanic, "app.panic", "App",

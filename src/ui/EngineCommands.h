@@ -41,6 +41,8 @@ struct EnginePorts {
     /// (deck, AnalysisEdit action, value) → analysis edit surface;
     /// value < 0 lets the handler derive it (e.g. playhead frame)
     std::function<void(int, int, double)>     analysisEdit;
+    /// (deck) → copyable sync-diagnostics text (SyncDiagCopy)
+    std::function<void(int)>                  copySyncDiag;
 };
 
 /// Register the whole command surface. All commands are POD-safe:

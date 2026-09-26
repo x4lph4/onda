@@ -1,6 +1,7 @@
 #include "EngineBridge.h"
 
 #include <juce_events/juce_events.h>
+#include <juce_gui_basics/juce_gui_basics.h>
 
 #include "core/analysis/AnalysisTypes.h"
 #include "core/analysis/KeyAnalyzer.h"
@@ -38,7 +39,8 @@ EngineBridge::EngineBridge(audio::AudioEngine& engine,
             if (auto b = analysis_.getAnalysis(path); b && !b->grid.empty()) {
                 auto g = std::make_shared<BeatGrid>(
                     b->effectiveGrid().rescaled(engine_.sampleRate()));
-                perf_.attachGrid(d, g, analysis_.trackIdFor(path));
+                perf_.attachGrid(d, g, analysis_.trackIdFor(path),
+                                 b->result.bpm.confidence);
             }
         }
         // queue analysis so the deck gets its grid/waveform ASAP
@@ -74,10 +76,20 @@ EngineBridge::EngineBridge(audio::AudioEngine& engine,
                     b->effectiveGrid().frameToBeat((int64_t)anaPos) + 0.5);
         }
         BeatGrid g = analysis_.applyEdit(path, a, value);
-        if (!g.empty())   // republish effective grid to the deck
+        if (!g.empty()) {  // republish effective grid to the deck
+            float conf = 0.7f;
+            if (auto b = analysis_.getAnalysis(path))
+                conf = b->result.bpm.confidence;
             perf_.attachGrid(d,
                 std::make_shared<BeatGrid>(g.rescaled(dev)),
-                analysis_.trackIdFor(path));
+                analysis_.trackIdFor(path), conf);
+        }
+    };
+
+    // Phase 15: copyable sync diagnostics → clipboard
+    ports_.copySyncDiag = [this](int d) {
+        juce::SystemClipboard::copyTextToClipboard(
+            juce::String(perf_.syncDiagText(d)));
     };
 
     // Completed analysis → attach the effective grid (rescaled to the
@@ -92,10 +104,13 @@ EngineBridge::EngineBridge(audio::AudioEngine& engine,
                 if (deckPath_[d] != path) continue;
                 BeatGrid g = analysis_.getBeatGrid(path);
                 if (g.empty()) continue;
+                float conf = 0.7f;
+                if (auto b = analysis_.getAnalysis(path))
+                    conf = b->result.bpm.confidence;
                 perf_.attachGrid(d,
                     std::make_shared<BeatGrid>(
                         g.rescaled(engine_.sampleRate())),
-                    analysis_.trackIdFor(path));
+                    analysis_.trackIdFor(path), conf);
             }
             notifyAnalysis(path, true);
         });
@@ -191,6 +206,16 @@ void EngineBridge::snapshotDeck(int deck, DeckSnapshot& o) {
     o.streamEnded  = s.streamEnded.load();
     o.pfl          = pfl_[deck];
     o.path         = deckPath_[deck];
+    // Phase 15 — sync control plane (control-thread reads; cheap)
+    const auto ss = perf_.deckSyncState(deck);
+    o.syncStatus   = (int)ss.status;
+    o.syncConf     = ss.confidence;
+    o.isMaster     = ss.isMaster;
+    o.syncLock     = ss.syncLock;
+    o.targetBpm    = ss.targetBpm;
+    o.phase        = ss.phase;
+    if (const auto* g = perf_.grid(deck))
+        o.beatsPerBar = g->beatsPerBar;
     refreshDeckMeta(deck, o);
 }
 

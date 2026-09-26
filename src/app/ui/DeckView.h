@@ -164,6 +164,13 @@ public:
             badge(badges, snap_.keyText, p.deckColor(deck_));
         std::snprintf(num, sizeof num, "%+.2f%%", snap_.pitchPct);
         badge(badges, num, p.textDim);
+        // Phase 15 §28/§30: master role + uncertain-sync surface —
+        // state comes from PerformanceEngine, never recomputed here.
+        if (snap_.isMaster)
+            badge(badges, "MASTER", p.accent);
+        else if (snap_.syncMode != 0 && snap_.syncConf > 0.0f &&
+                 snap_.syncConf < 0.45f)
+            badge(badges, "SYNC UNCERTAIN", p.warn);
         // state/error badge
         const auto st = (DeckState)snap_.state;
         if (st == DeckState::Loading)
@@ -177,6 +184,27 @@ public:
         if (!snap_.path.empty() && !snap_.analyzed &&
             st != DeckState::Loading && st != DeckState::Error)
             badge(badges, "ANALYSIS PENDING", p.warn);
+        // Phase 15 §29: beat indicator — bpb dots, active beat lit
+        // (brightness falls with phase), master dot ringed.
+        if (snap_.beatPos >= 0.0 && snap_.beatsPerBar > 0 &&
+            badges.getWidth() > snap_.beatsPerBar * 10) {
+            const int bpb = snap_.beatsPerBar;
+            const int cur =
+                ((int)std::floor(snap_.beatPos)) % bpb;
+            auto dots = badges.removeFromRight(bpb * 10 + 4);
+            for (int i = 0; i < bpb; ++i) {
+                auto dr = dots.removeFromLeft(10).reduced(2).toFloat();
+                const bool lit = i == cur;
+                const float ph = lit ? (float)(1.0 - snap_.phase)
+                                     : 0.0f;
+                g.setColour(col(lit ? p.accent : p.textDim)
+                    .withAlpha(lit ? 0.35f + 0.65f * ph : 0.35f));
+                if (lit && !snap_.isMaster)
+                    g.fillEllipse(dr);
+                else
+                    g.drawEllipse(dr, 1.0f);
+            }
+        }
 
         // ---- time readout (elapsed / remaining) ----
         auto tr = b.removeFromTop(m.fontXl + m.gap4);

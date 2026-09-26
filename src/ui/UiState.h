@@ -27,6 +27,14 @@ struct DeckSnapshot {
     int    syncMode = 0;                 // SyncMode
     float  syncErrMs = 0.0f;
     bool   syncLimited = false;
+    // Phase 15 — sync control-plane state (from PerformanceEngine)
+    int    syncStatus = 0;               // SyncStatus
+    float  syncConf = 0.0f;              // 0..1 — grid + phase stability
+    bool   isMaster = false;
+    bool   syncLock = true;              // sync survives track swap
+    double targetBpm = 0.0;
+    double phase = 0.0;                  // frac beat 0..1 (BeatIndicator)
+    int    beatsPerBar = 4;
     bool   pfl = false;
     bool   streamEnded = false;
     // meta (filled by bridge from track/library, not atomics)

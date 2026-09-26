@@ -37,15 +37,24 @@ int64_t PerformanceEngine::curFrame(int deck) const {
 
 void PerformanceEngine::attachGrid(int deck,
                                    std::shared_ptr<const BeatGrid> g,
-                                   int64_t trackId) {
+                                   int64_t trackId, float confidence) {
     if (deck < 0 || deck >= kMaxDecks || !g) return;
     auto& d = ctx(deck);
+    // §24/§32: a different track's grid arriving while synced —
+    // sync lock keeps the mode (new grid re-locks to the session
+    // clock); without it the deck drops to manual.
+    const bool trackChanged = trackId >= 0 && d.trackId != trackId;
+    if (trackChanged && d.mode != SyncMode::Off && !d.syncLock)
+        setSyncMode(deck, SyncMode::Off);
     if (d.grid && d.grid != g)
         d.retiring.push_back(d.grid);   // freed once RT retires it
     d.grid = std::move(g);
     d.trackId = trackId;
+    d.gridConf = std::clamp(confidence, 0.0f, 1.0f);
     if (d.pending)
         d.pending->store(d.grid.get(), std::memory_order_release);
+    if (d.mode != SyncMode::Off)
+        emit(PerfEventType::SyncStateChanged, deck); // re-anchored
 
     // Restore persisted performance data for this track.
     if (store_ && trackId >= 0) {
@@ -77,6 +86,7 @@ const BeatGrid* PerformanceEngine::grid(int deck) const {
 void PerformanceEngine::setMasterDeck(int deck) {
     if (master_ == deck) return;
     master_ = std::clamp(deck, -1, kMaxDecks - 1);
+    rtMasterActive_ = master_ >= 0;
     send(rt::SyncSetMaster{ (uint8_t)(master_ < 0 ? 255 : master_) });
     emit(PerfEventType::MasterDeckChanged, master_);
     for (int i = 0; i < kMaxDecks; ++i)
@@ -103,14 +113,38 @@ void PerformanceEngine::setSyncMode(int deck, SyncMode mode) {
 
 void PerformanceEngine::enableSync(int deck, SyncMode mode) {
     if (deck < 0 || deck >= kMaxDecks) return;
-    if (master_ < 0) {
-        setMasterDeck(deck);       // first sync-enabled deck becomes master
-        ctx(deck).mode = mode;     // master still reports its mode
-        emit(PerfEventType::SyncStateChanged, deck, -1, (double)mode);
+    auto& d = ctx(deck);
+    if (masterSel_.isNone()) {
+        // structurally no master — sync cannot engage, deterministically
+        d.mode = SyncMode::Off;
+        d.lastError = SyncStatus::NoMaster;
+        emit(PerfEventType::SyncStateChanged, deck, -1,
+             (double)SyncStatus::NoMaster);
         return;
     }
-    if (deck == master_) { setSyncMode(deck, mode); return; }
-    setSyncMode(deck, mode);
+    if (mode != SyncMode::Off && !hasGrid(deck)) {
+        // never arm a master/follower without a grid (§30)
+        d.mode = SyncMode::Off;
+        d.lastError = SyncStatus::NoGrid;
+        emit(PerfEventType::SyncStateChanged, deck, -1,
+             (double)SyncStatus::NoGrid);
+        return;
+    }
+    if (master_ < 0) {
+        if (masterSel_.pinnedDeck() >= 0) {
+            setMasterDeck(masterSel_.pinnedDeck());
+            // fall through: this deck is a FOLLOWER — needs the RT
+            // sync-mode command, not just the control-side field.
+        } else {
+            // first synced deck = AUTO master: keep the mode field
+            // (RT master needs no correction mode) and report.
+            d.mode = mode;
+            setMasterDeck(deck);
+            emit(PerfEventType::SyncStateChanged, deck, -1, (double)mode);
+            return;
+        }
+    }
+    setSyncMode(deck, mode); // validates grid + sends SyncSetMode
 }
 
 void PerformanceEngine::disableSync(int deck) { setSyncMode(deck, SyncMode::Off); }
@@ -145,17 +179,66 @@ SyncStatus PerformanceEngine::syncStatus(int deck) const {
 }
 
 PerformanceEngine::ClockSample PerformanceEngine::masterClock() const {
-    ClockSample c;
-    if (master_ < 0) return c;
+    return masterClockView().sample;
+}
+
+sync::MasterClockView PerformanceEngine::masterClockView() const {
+    sync::MasterClockView v;
+    // External feed (§5): consulted only when the source is External.
+    if (masterSel_.isExternal()) {
+        if (externalClock_) {
+            v.sample = externalClock_();
+            v.sample.external = true;
+        }
+        return v;
+    }
+    if (master_ < 0) return v;
     const auto* s = ctx(master_).stats;
     const auto* g = grid(master_);
-    if (!s || !g) return c;
+    v.deck = master_;
+    if (!s || !g) return v;
+    auto& c = v.sample;
     c.valid   = true;
     c.bpm     = s->effBpm.load(std::memory_order_relaxed);
     c.beatPos = s->beatPos.load(std::memory_order_relaxed);
     c.bar     = (int)s->barPos.load(std::memory_order_relaxed);
     c.phase   = c.beatPos >= 0.0 ? c.beatPos - std::floor(c.beatPos) : 0.0;
-    return c;
+    c.beatsPerBar = g->beatsPerBar;
+    c.beatDurSec  = c.bpm > 0.0 ? 60.0 / c.bpm : 0.0;
+    c.barDurSec   = c.beatDurSec * c.beatsPerBar;
+    c.timestampSec = s->positionSec.load(std::memory_order_relaxed);
+    v.stopped = s->state.load(std::memory_order_relaxed)
+                != (int)DeckState::Playing;
+    return v;
+}
+
+void PerformanceEngine::setMasterSource(sync::MasterSource s) {
+    if (masterSel_.source == s) return;
+    masterSel_.source = s;
+    if (s == sync::MasterSource::None ||
+        s == sync::MasterSource::External) {
+        setMasterDeck(-1);
+        return;
+    }
+    if (const int p = masterSel_.pinnedDeck(); p >= 0)
+        setMasterDeck(p);
+    // AUTO resolves lazily at the next enableSync/poll.
+}
+
+void PerformanceEngine::setMasterPausePolicy(sync::MasterPausePolicy p) {
+    masterSel_.pause = p;
+}
+
+void PerformanceEngine::cycleMaster() {
+    using S = sync::MasterSource;
+    const int cur = (int)masterSel_.source;
+    // Auto(-1) → A → B → C → D → Auto
+    const int next = cur < 0 ? 0 : (cur + 1 > 3 ? -1 : cur + 1);
+    setMasterSource((S)next);
+}
+
+void PerformanceEngine::setExternalClock(sync::ClockSource src) {
+    externalClock_ = std::move(src);
 }
 
 // ============================== quantize ==============================
@@ -179,8 +262,21 @@ bool PerformanceEngine::quantizeOn(int deck) const {
 }
 
 double PerformanceEngine::quantizeBeatsFor(int deck) const {
-    return deck >= 0 && deck < kMaxDecks
-        ? quantizeBeats(ctx(deck).quantum) : 1.0;
+    if (deck < 0 || deck >= kMaxDecks) return 1.0;
+    const auto& d = ctx(deck);
+    const int bpb = d.grid ? d.grid->beatsPerBar : 4;
+    return quantizeBeats(d.quantum, bpb);
+}
+
+void PerformanceEngine::cycleQuantize(int deck) {
+    if (deck < 0 || deck >= kMaxDecks) return;
+    auto& d = ctx(deck);
+    d.quantum = (Quantize)(((int)d.quantum + 1) % ((int)Quantize::Bar + 1));
+    emit(PerfEventType::QuantizeChanged, deck, -1, (double)d.quantum);
+}
+
+int PerformanceEngine::quantizeResolution(int deck) const {
+    return deck >= 0 && deck < kMaxDecks ? (int)ctx(deck).quantum : 0;
 }
 
 // ================================ cues ================================
@@ -440,9 +536,150 @@ void PerformanceEngine::setReverse(int deck, bool on) {
     send(rt::SetReverse{ (uint8_t)deck, on });
 }
 
+// ==================== sync state / confidence / lock ====================
+
+sync::DeckSyncState PerformanceEngine::deckSyncState(int deck) const {
+    sync::DeckSyncState s;
+    if (deck < 0 || deck >= kMaxDecks) return s;
+    const auto& d = ctx(deck);
+    s.enabled   = d.mode != SyncMode::Off;
+    s.mode      = d.mode;
+    s.isMaster  = master_ == deck;
+    s.status    = syncStatus(deck);
+    s.tempoLock = s.status == SyncStatus::OutOfRange;
+    s.syncLock  = d.syncLock;
+    s.confidence = syncConfidence(deck);
+    if (const auto* st = d.stats) {
+        s.bpm     = st->effBpm.load(std::memory_order_relaxed);
+        s.beatPos = st->beatPos.load(std::memory_order_relaxed);
+        s.phase   = s.beatPos >= 0.0
+                    ? s.beatPos - std::floor(s.beatPos) : 0.0;
+    }
+    const auto clk = masterClock();
+    s.targetBpm = s.isMaster ? s.bpm : (clk.valid ? clk.bpm : 0.0);
+    return s;
+}
+
+float PerformanceEngine::syncConfidence(int deck) const {
+    if (deck < 0 || deck >= kMaxDecks) return 0.0f;
+    const auto& d = ctx(deck);
+    if (d.mode == SyncMode::Off || !d.grid) return 0.0f;
+    float c = d.gridConf;                    // analysis-side quality
+    if (deck == master_) return c;           // master doesn't chase
+    const auto* s = d.stats;
+    if (!s) return c * 0.5f;
+    if (s->state.load(std::memory_order_relaxed)
+            != (int)DeckState::Playing)
+        return c * 0.5f;                     // paused: data stale
+    // phase stability: error-free convergence → full confidence
+    const float err = std::fabs(s->syncErrMs.load(std::memory_order_relaxed));
+    const float stab = 1.0f - std::min(err / 40.0f, 1.0f);
+    if (s->syncLimited.load(std::memory_order_relaxed))
+        return c * 0.2f;                     // can't reach target
+    return c * stab;
+}
+
+sync::SyncDiagnostics PerformanceEngine::syncDiagnostics(int deck) const {
+    sync::SyncDiagnostics d;
+    if (deck < 0 || deck >= kMaxDecks) return d;
+    const auto clk = masterClock();
+    d.masterDeck = master_;
+    d.masterBpm  = clk.valid ? clk.bpm : 0.0;
+    d.deck       = deck;
+    d.status     = syncStatus(deck);
+    d.confidence = syncConfidence(deck);
+    d.targetBpm  = d.masterBpm;
+    if (const auto* s = ctx(deck).stats) {
+        d.deckBpm    = s->effBpm.load(std::memory_order_relaxed);
+        d.beat       = s->beatPos.load(std::memory_order_relaxed);
+        d.phase      = d.beat >= 0.0 ? d.beat - std::floor(d.beat) : 0.0;
+        d.phaseErrMs = s->syncErrMs.load(std::memory_order_relaxed);
+        d.limited    = s->syncLimited.load(std::memory_order_relaxed);
+        if (clk.valid && d.beat >= 0.0 && clk.beatPos >= 0.0) {
+            double off = d.beat - clk.beatPos;
+            d.gridOffsetBeats =
+                off - std::floor(off + 0.5); // wrap ±0.5 beat
+        }
+    }
+    if (d.targetBpm > 0.0)
+        d.tempoErrPct = std::fabs(d.deckBpm - d.targetBpm) / d.targetBpm;
+    return d;
+}
+
+std::string PerformanceEngine::syncDiagText(int deck) const {
+    return syncDiagnostics(deck).toText();
+}
+
+void PerformanceEngine::setSyncLock(int deck, bool on) {
+    if (deck >= 0 && deck < kMaxDecks) ctx(deck).syncLock = on;
+}
+
+bool PerformanceEngine::syncLockOn(int deck) const {
+    return deck < 0 || deck >= kMaxDecks || ctx(deck).syncLock;
+}
+
+void PerformanceEngine::onUserPitch(int deck, float pct) {
+    if (deck < 0 || deck >= kMaxDecks) return;
+    const auto& d = ctx(deck);
+    const bool synced = d.mode != SyncMode::Off && deck != master_;
+    if (!synced) {
+        send(rt::SetPitch{ (uint8_t)deck, pct });
+        return;
+    }
+    switch (pitchPolicy_) {
+        case sync::PitchPolicy::Disable:
+            setSyncMode(deck, SyncMode::Off);   // user takes manual control
+            send(rt::SetPitch{ (uint8_t)deck, pct });
+            break;
+        case sync::PitchPolicy::ManualAsBend:
+            send(rt::SetPitchBend{ (uint8_t)deck, pct });
+            break;
+        case sync::PitchPolicy::Override:
+        default:
+            break;   // fader ignored while synced
+    }
+}
+
 // ================================ poll ================================
 
 void PerformanceEngine::poll() {
+    // ---- tempo-master maintenance (§4, §22-23) ----
+    if (!masterSel_.isNone() && !masterSel_.isExternal() &&
+        masterSel_.pinnedDeck() < 0) {
+        std::array<bool, 4> synced{}, playing{};
+        for (int d = 0; d < 4; ++d) {
+            synced[(size_t)d] = ctx(d).mode != SyncMode::Off;
+            const auto* s = ctx(d).stats;
+            playing[(size_t)d] = s &&
+                s->state.load(std::memory_order_relaxed)
+                    == (int)DeckState::Playing;
+        }
+        const int want =
+            masterSel_.resolveAuto(synced, playing, master_);
+        const bool switchOk = want >= 0 && want != master_ &&
+            (master_ < 0 || !synced[(size_t)master_] ||
+             (!playing[(size_t)master_] &&
+              masterSel_.pause == sync::MasterPausePolicy::FollowOtherDeck));
+        if (switchOk) setMasterDeck(want);
+    }
+    // ClockStops: while the master transport is down the session clock
+    // is invalid — followers free-run (RT master = none).
+    if (master_ >= 0) {
+        const auto* s = ctx(master_).stats;
+        const bool mPlaying = s &&
+            s->state.load(std::memory_order_relaxed)
+                == (int)DeckState::Playing;
+        const bool wantRt =
+            masterSel_.pause != sync::MasterPausePolicy::ClockStops ||
+            mPlaying;
+        if (wantRt != rtMasterActive_) {
+            rtMasterActive_ = wantRt;
+            send(rt::SyncSetMaster{ (uint8_t)(wantRt ? master_ : 255) });
+        }
+    } else if (rtMasterActive_) {
+        rtMasterActive_ = false;
+    }
+
     for (int i = 0; i < kMaxDecks; ++i) {
         auto& d = ctx(i);
         // Release grids the RT thread has retired.

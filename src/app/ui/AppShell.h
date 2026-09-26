@@ -66,8 +66,11 @@ public:
             waves_[(size_t)d]->onSeek = [q, d](double sec) {
                 q->tryPush(rt::DeckSeek{(uint8_t)d, sec});
             };
-            decks_[(size_t)d]->onPitch = [q, d](float v) {
-                q->tryPush(rt::SetPitch{(uint8_t)d, v});
+            // Phase 15 §26: user fader moves go through the sync
+            // pitch policy (Override/Disable/ManualAsBend), never
+            // raw rt::SetPitch — hardware and software can't fight.
+            decks_[(size_t)d]->onPitch = [this, d](float v) {
+                perf_->onUserPitch(d, v);
             };
             decks_[(size_t)d]->onPitchRange = [q, d](float v) {
                 q->tryPush(rt::SetPitchRange{(uint8_t)d, v});

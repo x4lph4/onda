@@ -93,6 +93,13 @@ enum Id : uint32_t {
     AnaGridReset    = 0x9006,  // drop user override → detected grid
     AnaReanalyze    = 0x9007,  // requeue analysis at high priority
 
+    // ---- sync control: 0x9100 (Phase 15) ----
+    SyncMasterCycle = 0x9100,  // app-level: AUTO → A → B → C → D → AUTO
+    SyncLockTgl     = 0x9101,  // +deck*0x400 — sync survives track swap
+    SyncQuantRes    = 0x9102,  // +deck*0x400 — cycle quantize resolution
+    SyncBpmMode     = 0x9103,  // +deck*0x400 — tempo-only sync toggle
+    SyncDiagCopy    = 0x9104,  // +deck*0x400 — copy sync diagnostics
+
     // ---- app: 0x3F00 ----
     AppToggleSettings  = 0x3F00,
     AppLayoutNext      = 0x3F01,

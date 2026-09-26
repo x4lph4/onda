@@ -45,17 +45,20 @@ struct SavedLoop {
     std::string label;
 };
 
-/// Quantize resolution in beats.
+/// Quantize resolution in beats (§17). `Bar` resolves against the
+/// grid's beatsPerBar — pass a real bpb when available.
 enum class Quantize : int {
-    Beat1 = 0, Half, Quarter, Eighth, Sixteenth
+    Beat1 = 0, Half, Quarter, Eighth, Sixteenth, ThirtySecond, Bar
 };
-inline double quantizeBeats(Quantize q) noexcept {
+inline double quantizeBeats(Quantize q, int beatsPerBar = 4) noexcept {
     switch (q) {
-        case Quantize::Half:      return 0.5;
-        case Quantize::Quarter:   return 0.25;
-        case Quantize::Eighth:    return 0.125;
-        case Quantize::Sixteenth: return 0.0625;
-        default:                  return 1.0;
+        case Quantize::Half:         return 0.5;
+        case Quantize::Quarter:      return 0.25;
+        case Quantize::Eighth:       return 0.125;
+        case Quantize::Sixteenth:    return 0.0625;
+        case Quantize::ThirtySecond: return 0.03125;
+        case Quantize::Bar:          return beatsPerBar > 0 ? beatsPerBar : 4.0;
+        default:                     return 1.0;
     }
 }
 

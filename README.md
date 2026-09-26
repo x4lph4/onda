@@ -2,6 +2,39 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 15 (professional sync engine)
+
+Deepened the Phase-4 sync foundation into a full professional
+architecture (`docs/sync/sync-engine.md`,
+`docs/adr/0015-sync-engine.md`).
+
+- New `core/sync` policy module: `TempoMaster` (Auto/pinned/External/
+  None sources + documented AUTO rules — never surprise-switches a
+  valid master), `MasterPausePolicy` (ClockHolds default / ClockStops /
+  FollowOtherDeck), `TempoFollower`, `BeatPhaseTracker`,
+  `SyncCorrection`, `MasterClock` + `ClockSource` seam,
+  `DeckSyncState`, `SyncDiagnostics`.
+- Sync lock (§24): default ON — track swaps re-anchor to the session
+  clock; OFF drops to manual on a different track's grid.
+- `onUserPitch` single entry for UI+hardware faders — policies
+  Override / Disable / ManualAsBend (§26); physical pitch and
+  effective tempo stay separate.
+- Quantize extended: 1/32 + Bar resolved against the grid's
+  beatsPerBar; `cycleQuantize` hardware stepping.
+- `syncConfidence` = grid confidence × phase stability →
+  `SYNC UNCERTAIN` badge; `MASTER` badge + beatsPerBar beat indicator
+  on DeckView; copyable `SyncDiagnostics` behind `SyncDiagCopy`.
+- `0x9100` command range: `sync.masterCycle`, per-deck `syncLock`,
+  `syncQuantRes`, `syncBpmMode`, `syncDiagCopy` — same CommandManager
+  path MIDI/HID use.
+- Beatgrid/tempo-map following verified: a 128→130 BPM master
+  re-targets followers through grid segments automatically.
+- 28 new tests (**277 cases / 1.6M assertions green**): AUTO rules,
+  pause policies, pinned/None/External sources, sync lock, pitch
+  policies, confidence, diagnostics, bar/1-32 quantize, tempo-map
+  follower, command surface, and a 4-deck sync stress run
+  (~250× realtime headroom in Debug).
+
 ## Status — Phase 14 (professional music analysis engine)
 
 Deepened the Phase-3 analysis foundation into a professional engine
