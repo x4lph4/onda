@@ -3,6 +3,8 @@
 #include <ctime>
 #include <filesystem>
 
+#include "TextFold.h"
+
 namespace onda::library {
 
 static int64_t now() { return (int64_t)std::time(nullptr); }
@@ -14,7 +16,11 @@ static const char* kCols =
     "t.sample_rate,t.format,t.artwork_hash,t.rating,t.color,t.energy,"
     "t.comments,t.play_count,t.last_played,t.date_added,"
     "t.analysis_state,t.analysis_version,"
-    "a.bpm,a.bpm_confidence,a.key_index,a.key_confidence";
+    "a.bpm,a.bpm_confidence,a.key_index,a.key_confidence,"
+    "t.label,t.composer,t.play_state,t.edited_fields,t.updated_at,"
+    "a.needs_review,"
+    "EXISTS(SELECT 1 FROM beatgrids bg WHERE bg.track_id=t.id),"
+    "EXISTS(SELECT 1 FROM waveforms wf WHERE wf.track_id=t.id)";
 
 static const char* kFrom =
     " FROM tracks t LEFT JOIN analysis a ON a.track_id = t.id ";
@@ -30,7 +36,8 @@ int64_t TrackRepository::upsert(Track& t) {
             "mtime=?,status=?,filename=?,title=?,artist=?,album=?,"
             "album_artist=?,genre=?,year=?,track_num=?,disc_num=?,"
             "duration_sec=?,bitrate=?,channels=?,sample_rate=?,format=?,"
-            "artwork_hash=?,updated_at=? WHERE id=?");
+            "artwork_hash=?,label=?,composer=?,play_state=?,updated_at=?"
+            " WHERE id=?");
         int i = 1;
         u.bind(i++, (int64_t)t.fingerprint); u.bind(i++, (int64_t)t.contentHash);
         u.bind(i++, t.fileSize); u.bind(i++, t.mtime);
@@ -42,6 +49,8 @@ int64_t TrackRepository::upsert(Track& t) {
         u.bind(i++, t.durationSec); u.bind(i++, (int64_t)t.bitrate);
         u.bind(i++, (int64_t)t.channels); u.bind(i++, t.sampleRate);
         u.bind(i++, t.format);     u.bind(i++, (int64_t)t.artworkHash);
+        u.bind(i++, t.label);      u.bind(i++, t.composer);
+        u.bind(i++, (int64_t)t.playState);
         u.bind(i++, now());        u.bind(i++, existing);
         u.step();
         t.id = existing;
@@ -52,9 +61,9 @@ int64_t TrackRepository::upsert(Track& t) {
             "year,track_num,disc_num,duration_sec,bitrate,channels,"
             "sample_rate,format,artwork_hash,rating,color,energy,comments,"
             "play_count,last_played,date_added,analysis_state,"
-            "analysis_version,updated_at) "
+            "analysis_version,label,composer,play_state,updated_at) "
             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
-            "?,?,?,?,?)");
+            "?,?,?,?,?,?,?,?)");
         int i = 1;
         ins.bind(i++, t.path);
         ins.bind(i++, (int64_t)t.fingerprint);
@@ -74,6 +83,8 @@ int64_t TrackRepository::upsert(Track& t) {
         ins.bind(i++, t.dateAdded > 0 ? t.dateAdded : now());
         ins.bind(i++, (int64_t)t.analysisState);
         ins.bind(i++, (int64_t)t.analysisVersion);
+        ins.bind(i++, t.label);     ins.bind(i++, t.composer);
+        ins.bind(i++, (int64_t)t.playState);
         ins.bind(i++, now());
         if (!ins.step()) { /* DONE */ }
         t.id = db_.lastInsertId();
@@ -146,6 +157,33 @@ bool TrackRepository::setUserFields(int64_t id, int rating, int color,
     return true;
 }
 
+/// §8 — user metadata edit of file-metadata fields. The edited mask
+/// is OR-ed into edited_fields so future rescans preserve these
+/// columns (TrackImporter honours the mask). Passing mask bits only
+/// for the fields actually being set keeps the bookkeeping honest.
+bool TrackRepository::setMetadataFields(int64_t id, const Track& t,
+                                        uint32_t editedMask) {
+    std::lock_guard lk(db_.mutex());
+    Database::Tx tx(db_);
+    auto st = db_.prepare(
+        "UPDATE tracks SET title=?,artist=?,album=?,album_artist=?,"
+        "genre=?,year=?,track_num=?,disc_num=?,label=?,composer=?,"
+        "comments=?,edited_fields=edited_fields|?,updated_at=? WHERE id=?");
+    int i = 1;
+    st.bind(i++, t.title);      st.bind(i++, t.artist);
+    st.bind(i++, t.album);      st.bind(i++, t.albumArtist);
+    st.bind(i++, t.genre);      st.bind(i++, (int64_t)t.year);
+    st.bind(i++, (int64_t)t.trackNum); st.bind(i++, (int64_t)t.discNum);
+    st.bind(i++, t.label);      st.bind(i++, t.composer);
+    st.bind(i++, t.comments);
+    st.bind(i++, (int64_t)editedMask);
+    st.bind(i++, now());        st.bind(i++, id);
+    st.step();
+    ftsUpdate(id);
+    tx.commit();
+    return true;
+}
+
 bool TrackRepository::bumpPlayStats(int64_t id, double playedSec,
                                     int64_t when, bool counted) {
     std::lock_guard lk(db_.mutex());
@@ -195,6 +233,14 @@ Track TrackRepository::rowToTrack(Database::Stmt& s) {
     t.bpmConfidence = (float)s.colDouble(32);
     t.keyIndex     = (int)s.colInt(33);
     t.keyConfidence = (float)s.colDouble(34);
+    t.label        = s.colText(35);
+    t.composer     = s.colText(36);
+    t.playState    = (int)s.colInt(37);
+    t.editedFields = (uint32_t)s.colInt(38);
+    t.updatedAt    = s.colInt(39);
+    t.needsReview  = (int)s.colInt(40);
+    t.hasBeatgrid  = (int)s.colInt(41);
+    t.hasWaveform  = (int)s.colInt(42);
     return t;
 }
 
@@ -283,6 +329,14 @@ int TrackRepository::countWhere(const std::string& where,
 TrackPage TrackRepository::query(const QuerySpec& q) {
     std::vector<std::string> binds;
     const std::string w = fullWhere(q, binds);
+    return queryWhere(w, binds, q);
+}
+
+/// Query with a pre-built WHERE (SmartPlaylistEngine composes nested
+/// AND/OR/NOT via FilterEngine::clause — still whitelist-safe).
+TrackPage TrackRepository::queryWhere(const std::string& w,
+                                      const std::vector<std::string>& binds,
+                                      const QuerySpec& q) {
     TrackPage page;
     page.total = countWhere(w, binds);
     std::lock_guard lk(db_.mutex());
@@ -403,15 +457,62 @@ void TrackRepository::ftsUpdate(int64_t id) {
     ftsRemove(id);
     Track t;
     if (!getById(id, t)) return;
+    // §11 — the index stores folded text (lowercase, accents stripped)
+    // and matchExpr folds query tokens the same way → accent- and
+    // case-insensitive search.
     auto s = db_.prepare(
-        "INSERT INTO tracks_fts(rowid,title,artist,album,genre,filename,"
-        "tags,comments) VALUES(?,?,?,?,?,?,?,?)");
+        "INSERT INTO tracks_fts(rowid,title,artist,album,genre,label,"
+        "composer,filename,tags,comments) VALUES(?,?,?,?,?,?,?,?,?,?)");
     s.bind(1, id);
-    s.bind(2, t.title);   s.bind(3, t.artist);
-    s.bind(4, t.album);   s.bind(5, t.genre);
-    s.bind(6, t.filename); s.bind(7, tagsText(id));
-    s.bind(8, t.comments);
+    s.bind(2, TextFold::fold(t.title));
+    s.bind(3, TextFold::fold(t.artist));
+    s.bind(4, TextFold::fold(t.album));
+    s.bind(5, TextFold::fold(t.genre));
+    s.bind(6, TextFold::fold(t.label));
+    s.bind(7, TextFold::fold(t.composer));
+    s.bind(8, TextFold::fold(t.filename));
+    s.bind(9, TextFold::fold(tagsText(id)));
+    s.bind(10, TextFold::fold(t.comments));
     s.step();
+}
+
+/// One-time reindex: rewrite every FTS row with folded text. Runs once
+/// per DB (kv flag fts_folded) — bulk pass in a single transaction so
+/// existing 100k libraries upgrade in seconds, not minutes.
+int TrackRepository::reindexFts() {
+    std::lock_guard lk(db_.mutex());
+    int n = 0;
+    Database::Tx tx(db_);
+    db_.exec("DELETE FROM tracks_fts");
+    auto rd = db_.prepare(
+        "SELECT t.id, t.title, t.artist, t.album, t.genre, t.label,"
+        " t.composer, t.filename, t.comments,"
+        " COALESCE((SELECT GROUP_CONCAT(g.name,' ') FROM"
+        " track_tags tt JOIN tags g ON g.id=tt.tag_id"
+        " WHERE tt.track_id=t.id),'') FROM tracks t");
+    auto wr = db_.prepare(
+        "INSERT INTO tracks_fts(rowid,title,artist,album,genre,label,"
+        "composer,filename,tags,comments) VALUES(?,?,?,?,?,?,?,?,?,?)");
+    while (rd.step()) {
+        wr.reset();
+        wr.bind(1, rd.colInt(0));
+        // col order: id,title,artist,album,genre,label,composer,
+        //            filename,comments,tags → fts order swaps tags last-1
+        wr.bind(2, TextFold::fold(rd.colText(1)));   // title
+        wr.bind(3, TextFold::fold(rd.colText(2)));   // artist
+        wr.bind(4, TextFold::fold(rd.colText(3)));   // album
+        wr.bind(5, TextFold::fold(rd.colText(4)));   // genre
+        wr.bind(6, TextFold::fold(rd.colText(5)));   // label
+        wr.bind(7, TextFold::fold(rd.colText(6)));   // composer
+        wr.bind(8, TextFold::fold(rd.colText(7)));   // filename
+        wr.bind(9, TextFold::fold(rd.colText(9)));   // tags
+        wr.bind(10, TextFold::fold(rd.colText(8)));  // comments
+        wr.step();
+        ++n;
+    }
+    rd.finalize();
+    tx.commit();
+    return n;
 }
 
 // ------------------------------------------------------------------ integrity

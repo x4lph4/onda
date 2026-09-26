@@ -528,7 +528,9 @@ TEST_CASE("Large library: 50k tracks — query/filter/sort/playlist perf",
             ",?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
         auto fts = lib.engine.db().prepare(
             "INSERT INTO tracks_fts(rowid,title,artist,album,genre,"
-            "filename,tags,comments) VALUES(?,?,?,?,?,?,?,'')");
+            "filename,tags,comments) VALUES(?,?,?,?,?,?,?,'')"
+            /* v5 schema has label+composer before filename — this
+               statement names its columns so it stays valid */);
         auto ana = lib.engine.db().prepare(
             "INSERT INTO analysis(track_id,bpm,key_index) VALUES(?,?,?)");
         for (int start = 0; start < N; start += 5000) {

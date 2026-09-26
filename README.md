@@ -2,6 +2,44 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 18 (professional music library)
+
+Completed the Phase-7 library into the full professional surface
+(`docs/library/music-library-engine.md`,
+`docs/adr/0018-music-library.md`) — no audio-path coupling.
+
+- `SearchQuery` field tokens wired into the browser search box:
+  `artist:x bpm:120-128 rating:4+ key:Am|8A|1d tag:t year:a-b
+  missing:1` — unknown text still goes to FTS.
+- Accent/case-insensitive FTS: `TextFold` applied at index and query
+  time; v5 migration rebuilds `tracks_fts` (label/composer columns),
+  one-time bulk reindex via `kv.fts_folded`.
+- `SmartPlaylistEngine`: rules JSON (eq/neq/lt/lte/gt/gte/contains/
+  starts_with/between/in/not_in/isnull + NOT per leaf + AND/OR
+  groups) evaluated live through `queryWhere` — no materialized rows.
+- `CrateManager` (nested crate folders, depth cap), `TagManager`
+  (counts/rename-merge/delete with FTS refresh), `RatingManager`
+  (0–5 stars, ARGB colors, comments, energy + bulk).
+- `KeyNotationConverter`: Standard/Camelot/OpenKey display + `parse`
+  for `key:` tokens.
+- `edited_fields` mask: user-edited file metadata survives rescans
+  (`setMetadataFields` + importer mask honor); `play_state` surfaces
+  UNSUPPORTED FORMAT vs METADATA ONLY; Track exposes
+  hasBeatgrid/hasWaveform/needsReview status + text helpers.
+- `LibraryBackup`: `onda-library` JSON export/import with
+  Skip/Merge/Replace policies (hash-then-path matching, 64-bit ids as
+  decimal strings) + CSV export; `LibraryDiagnostics` counts/size/
+  integrity report.
+- FilterEngine: `whereJoin` OR groups, `negate`, StartsWith/NotIn
+  ops, label/composer/waveform/beatgrid/needs_review/analysis_state/
+  play_state fields.
+- 15 new tests (**338 cases / 1.64M assertions green**): tokens,
+  accents, key notations, smart codec/eval/OR/NOT, crates/nesting,
+  tags merge/delete, ratings persistence, edited-fields, play states,
+  status filters, diagnostics, backup merge/replace/skip, CSV, and a
+  100k synthetic benchmark (FTS ~24 ms, filter+sort ~30 ms, smart
+  eval ~55 ms at 100k rows).
+
 ## Status — Phase 17 (professional mixer engine)
 
 Deepened the Phase-5 mixer into the full professional architecture

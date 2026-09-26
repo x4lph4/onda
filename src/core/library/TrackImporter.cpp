@@ -74,7 +74,16 @@ TrackImporter::Outcome TrackImporter::importOne(const std::string& path,
         t.energy = old.energy; t.comments = old.comments;
         t.playCount = old.playCount; t.lastPlayed = old.lastPlayed;
         t.dateAdded = old.dateAdded;
+        t.editedFields = old.editedFields;
         t.analysisState = 0;   // content changed -> re-analyze
+        // seed file-metadata fields with the previous values — fields
+        // masked in editedFields keep them; unedited fields get
+        // refreshed from the file below (§8)
+        t.title = old.title;     t.artist = old.artist;
+        t.album = old.album;     t.albumArtist = old.albumArtist;
+        t.genre = old.genre;     t.year = old.year;
+        t.trackNum = old.trackNum; t.discNum = old.discNum;
+        t.label = old.label;     t.composer = old.composer;
     }
     t.dateAdded = t.dateAdded ? t.dateAdded
                             : (int64_t)std::time(nullptr);
@@ -82,13 +91,33 @@ TrackImporter::Outcome TrackImporter::importOne(const std::string& path,
 
     TrackMeta meta;
     if (meta_ && meta_(abs, meta)) {
-        t.title = meta.title;       t.artist = meta.artist;
-        t.album = meta.album;       t.albumArtist = meta.albumArtist;
-        t.genre = meta.genre;       t.year = meta.year;
-        t.trackNum = meta.trackNum; t.discNum = meta.discNum;
+        // §8 — fields the user edited survive rescans; only unedited
+        // fields take file metadata.
+        const uint32_t ed = t.editedFields;
+        if (!(ed & EditedField::Title))       t.title = meta.title;
+        if (!(ed & EditedField::Artist))      t.artist = meta.artist;
+        if (!(ed & EditedField::Album))       t.album = meta.album;
+        if (!(ed & EditedField::AlbumArtist)) t.albumArtist = meta.albumArtist;
+        if (!(ed & EditedField::Genre))       t.genre = meta.genre;
+        if (!(ed & EditedField::Year))        t.year = meta.year;
+        if (!(ed & EditedField::TrackNum))    t.trackNum = meta.trackNum;
+        if (!(ed & EditedField::DiscNum))     t.discNum = meta.discNum;
+        if (!(ed & EditedField::Label))       t.label = meta.label;
+        if (!(ed & EditedField::Composer))    t.composer = meta.composer;
+        // file comment fills empty user comments only — §26
+        if (!(ed & EditedField::Comments) && t.comments.empty())
+            t.comments = meta.comment;
         t.durationSec = meta.durationSec; t.bitrate = meta.bitrate;
         t.channels = meta.channels; t.sampleRate = meta.sampleRate;
         t.format = meta.format;     t.artworkHash = meta.artworkHash;
+        t.playState = meta.playState;
+    } else if (meta_) {
+        // §6 — file exists & fingerprints, but the reader failed.
+        // Unsupported extension → UNSUPPORTED FORMAT; supported
+        // extension but unreadable stream → METADATA ONLY.
+        t.playState = isAudioFile(abs)
+            ? (int)PlayState::MetadataOnly
+            : (int)PlayState::UnsupportedFormat;
     }
     if (t.title.empty())
         t.title = std::filesystem::path(abs).stem().string();

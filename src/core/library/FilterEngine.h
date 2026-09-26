@@ -39,14 +39,31 @@ public:
     /// they're parsed doubles, never raw user text).
     static std::string where(const std::vector<FilterCond>& conds,
                              std::vector<std::string>& binds) {
+        return whereJoin(conds, binds, false);
+    }
+
+    /// §22 — same as where() but OR-joins the conditions (smart
+    /// playlist "match any"). negate is honoured per-condition.
+    static std::string whereJoin(const std::vector<FilterCond>& conds,
+                                 std::vector<std::string>& binds,
+                                 bool anyOf) {
         std::string w;
         for (const auto& c : conds) {
-            std::string clause = one(c, binds);
-            if (clause.empty()) continue;
-            if (!w.empty()) w += " AND ";
-            w += "(" + clause + ")";
+            std::string cl = clause(c, binds);
+            if (cl.empty()) continue;
+            if (!w.empty()) w += anyOf ? " OR " : " AND ";
+            w += "(" + cl + ")";
         }
         return w;
+    }
+
+    /// One condition → SQL fragment (public for SmartPlaylistEngine's
+    /// nested groups). Unknown fields → "" (skipped).
+    static std::string clause(const FilterCond& c,
+                              std::vector<std::string>& binds) {
+        std::string cl = one(c, binds);
+        if (cl.empty()) return cl;
+        return c.negate ? "NOT (" + cl + ")" : cl;
     }
 
     static bool hasFilters(const QuerySpec& q) {
@@ -60,7 +77,10 @@ private:
             { "album", "t.album" }, { "album_artist", "t.album_artist" },
             { "genre", "t.genre" }, { "filename", "t.filename" },
             { "comments", "t.comments" }, { "format", "t.format" },
+            { "label", "t.label" }, { "composer", "t.composer" },
             { "path", "t.path" },   { "bpm", "a.bpm" },
+            { "analysis_state", "t.analysis_state" },
+            { "play_state", "t.play_state" },
             { "key", "a.key_index" }, { "key_index", "a.key_index" },
             { "rating", "t.rating" }, { "color", "t.color" },
             { "energy", "t.energy" }, { "duration", "t.duration_sec" },
@@ -88,6 +108,16 @@ private:
             return c.a != 0.0 ? "a.track_id IS NOT NULL" : "a.track_id IS NULL";
         if (c.field == "missing")
             return "t.status " + std::string(c.a != 0.0 ? "= 1" : "!= 1");
+        // §36/§37 — presence pseudo-fields over related tables
+        if (c.field == "waveform")
+            return std::string(c.a != 0.0 ? "" : "NOT ")
+                + "EXISTS(SELECT 1 FROM waveforms wf WHERE wf.track_id=t.id)";
+        if (c.field == "beatgrid")
+            return std::string(c.a != 0.0 ? "" : "NOT ")
+                + "EXISTS(SELECT 1 FROM beatgrids bg WHERE bg.track_id=t.id)";
+        if (c.field == "needs_review")
+            return "COALESCE(a.needs_review,0) "
+                + std::string(c.a != 0.0 ? "!= 0" : "= 0");
         if (c.field == "tags") {
             binds.push_back("%" + c.text + "%");
             return "t.id IN (SELECT track_id FROM track_tags tt "
@@ -109,6 +139,16 @@ private:
             case CmpOp::Contains:
                 binds.push_back("%" + c.text + "%");
                 return out + " LIKE ?";
+            case CmpOp::StartsWith:
+                binds.push_back(c.text + "%");
+                return out + " LIKE ?";
+            case CmpOp::NotIn: {
+                if (c.ints.empty()) return "1 = 1";
+                out += " NOT IN (";
+                for (size_t i = 0; i < c.ints.size(); ++i)
+                    out += (i ? "," : "") + std::to_string(c.ints[i]);
+                return out + ")";
+            }
             case CmpOp::IsNull:
                 return out + " IS NULL";
             case CmpOp::Between:

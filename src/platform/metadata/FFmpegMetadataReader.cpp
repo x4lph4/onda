@@ -93,6 +93,12 @@ bool FFmpegMetadataReader::read(const std::string& path,
     out.year        = firstInt(tagAny(m, { "date", "year", "TDRC" }));
     out.trackNum    = tagInt(m, "track");
     out.discNum     = tagInt(m, "disc");
+    // §7 — label (TPUB/publisher/organization), composer (TCOM),
+    // comment (COMM/description/comment)
+    out.label       = tagAny(m, { "publisher", "TPUB", "organization",
+                                  "label" });
+    out.composer    = tagAny(m, { "composer", "TCOM" });
+    out.comment     = tagAny(m, { "comment", "COMM", "description" });
 
     for (unsigned i = 0; i < g.p->nb_streams; ++i)
         if (g.p->streams[i]->disposition & AV_DISPOSITION_ATTACHED_PIC) {

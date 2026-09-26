@@ -100,8 +100,10 @@ public:
     }
 
     void applySpec() {
-        library::QuerySpec q;
-        q.search = search_.getText().toStdString();
+        // §13 — the search box accepts field tokens (artist:x bpm:120-128
+        // key:Am rating:4+ tag:warmup …); the rest goes to FTS.
+        library::QuerySpec q = library::SearchQuery::toSpec(
+            search_.getText().toStdString());
         if (historyMode_) {
             // history view: recent plays as a page source
             model_.setPageSource(

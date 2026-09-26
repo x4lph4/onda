@@ -23,12 +23,15 @@ struct Track {
     int         status    { 0 };     // TrackStatus
 
     std::string title, artist, album, albumArtist, genre;
+    std::string label, composer;     // v5 — TPUB / TCOM
     int year { 0 }, trackNum { 0 }, discNum { 0 };
     double durationSec { 0.0 };
     int bitrate { 0 }, channels { 0 };
     double sampleRate { 0.0 };
     std::string format;              // wav/aiff/flac/mp3/m4a/…
     uint64_t artworkHash { 0 };
+    int  playState { 0 };            // PlayState — decode-ability, §6
+    uint32_t editedFields { 0 };     // EditedField mask, §8
 
     double bpm { 0.0 };
     float  bpmConfidence { 0.0f };
@@ -36,6 +39,9 @@ struct Track {
     float  keyConfidence { 0.0f };
     int    analysisState { 0 };      // AnalysisState
     int    analysisVersion { 0 };
+    int    needsReview  { 0 };       // analysis.needs_review — §36
+    int    hasBeatgrid  { 0 };       // beatgrids row exists — §36
+    int    hasWaveform  { 0 };       // waveforms row exists — §37
 
     int  rating { 0 };               // 0..5
     int  color { 0 };                // argb
@@ -45,21 +51,73 @@ struct Track {
     int     playCount { 0 };
     int64_t lastPlayed { 0 };
     int64_t dateAdded { 0 };
+    int64_t updatedAt { 0 };         // library-row modified (not file mtime)
 };
 
 enum class TrackStatus : int {
     Available = 0, Missing = 1, Relocated = 2, Invalid = 3
 };
 
+/// §6 — decode-ability, orthogonal to file presence (TrackStatus).
+/// Playable          — decoder can open it
+/// UnsupportedFormat — extension/container not supported by the decoder
+/// MetadataOnly      — tags read, but audio stream won't decode
+enum class PlayState : int {
+    Playable = 0, UnsupportedFormat = 1, MetadataOnly = 2
+};
+
+/// §8 — bitmask of file-metadata fields the user edited; rescans
+/// never overwrite marked fields.
+namespace EditedField {
+    inline constexpr uint32_t Title       = 1u << 0;
+    inline constexpr uint32_t Artist      = 1u << 1;
+    inline constexpr uint32_t Album       = 1u << 2;
+    inline constexpr uint32_t AlbumArtist = 1u << 3;
+    inline constexpr uint32_t Genre       = 1u << 4;
+    inline constexpr uint32_t Year        = 1u << 5;
+    inline constexpr uint32_t TrackNum    = 1u << 6;
+    inline constexpr uint32_t DiscNum     = 1u << 7;
+    inline constexpr uint32_t Label       = 1u << 8;
+    inline constexpr uint32_t Composer    = 1u << 9;
+    inline constexpr uint32_t Comments    = 1u << 10;
+}
+
+/// §35-37/§6 — presentation helpers (UI shows these verbatim).
+inline const char* playStateText(int ps) {
+    switch ((PlayState)ps) {
+        case PlayState::UnsupportedFormat: return "UNSUPPORTED FORMAT";
+        case PlayState::MetadataOnly:      return "METADATA ONLY";
+        default:                           return "";
+    }
+}
+inline const char* analysisStateText(int state) {
+    // MusicAnalysisEngine AnalysisState: 0 none,1 queued,2 running,
+    // 3 done,4 failed; version bump => "outdated" handled by callers.
+    switch (state) {
+        case 1: return "ANALYZING"; case 2: return "ANALYZING";
+        case 3: return "ANALYZED";  case 4: return "FAILED";
+        default: return "NOT_ANALYZED";
+    }
+}
+inline const char* beatgridStatusText(const Track& t) {
+    if (!t.hasBeatgrid) return "";
+    return t.needsReview ? "BEATGRID NEEDS REVIEW" : "BEATGRID READY";
+}
+inline const char* waveformStatusText(const Track& t) {
+    return t.hasWaveform ? "WAVEFORM READY" : "";
+}
+
 /// What MetadataReader fills — file-side data only.
 struct TrackMeta {
     std::string title, artist, album, albumArtist, genre;
+    std::string label, composer, comment;
     int year { 0 }, trackNum { 0 }, discNum { 0 };
     double durationSec { 0.0 };
     int bitrate { 0 }, channels { 0 };
     double sampleRate { 0.0 };
     std::string format;
     uint64_t artworkHash { 0 };      // non-zero if embedded picture seen
+    int  playState { 0 };            // PlayState — §6
 };
 
 // ------------------------------------------------------------------ query
@@ -70,7 +128,8 @@ enum class SortKey : int {
 };
 
 enum class CmpOp : int {
-    Eq = 0, Neq, Lt, Lte, Gt, Gte, Contains, Between, IsNull, In
+    Eq = 0, Neq, Lt, Lte, Gt, Gte, Contains, Between, IsNull, In,
+    StartsWith, NotIn               // §21 — smart-playlist operators
 };
 
 /// One filter condition. Field names are fixed strings resolved by
@@ -83,6 +142,7 @@ struct FilterCond {
     std::string text;                // text operands / single value as string
     double      a { 0.0 }, b { 0.0 };// numeric operands / Between range
     std::vector<int> ints;           // In-list (e.g. key indexes)
+    bool        negate { false };    // NOT (clause) — smart playlists §22
 };
 
 /// Composable query: AND of conditions + sort + page.

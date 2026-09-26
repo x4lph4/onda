@@ -37,6 +37,10 @@ public:
                             int64_t size, int64_t mtime);
     bool setUserFields(int64_t id, int rating, int color, int energy,
                        const std::string& comments);
+    /// §8 — user edit of file-metadata fields; editedMask bits
+    /// (EditedField::*) are recorded so rescans preserve them.
+    bool setMetadataFields(int64_t id, const Track& t,
+                           uint32_t editedMask);
     bool bumpPlayStats(int64_t id, double playedSec, int64_t when,
                        bool counted);
 
@@ -47,6 +51,10 @@ public:
     std::vector<int64_t> idsByContentHash(uint64_t ch);
     std::vector<Track> byIds(const std::vector<int64_t>& ids);
     TrackPage query(const QuerySpec& q);
+    /// Query with a pre-built (whitelisted) WHERE — smart playlists.
+    TrackPage queryWhere(const std::string& where,
+                         const std::vector<std::string>& binds,
+                         const QuerySpec& q);
     int  countWhere(const std::string& where,
                     const std::vector<std::string>& binds = {});
 
@@ -61,6 +69,14 @@ public:
     // ---- integrity ----
     bool integrityCheck(std::string& detail);
     int  purgeOrphanTags();   // tags no track references
+    /// Rewrite every FTS row with folded (accent-insensitive) text.
+    /// One-time migration aid — see kv flag "fts_folded".
+    int  reindexFts();
+    /// Rebuild one track's FTS row (tag renames/deletes).
+    void refreshIndex(int64_t id) {
+        std::lock_guard lk(db_.mutex());
+        ftsUpdate(id);
+    }
 
     Database& db() { return db_; }
 

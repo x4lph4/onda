@@ -200,6 +200,24 @@ ALTER TABLE waveforms ADD COLUMN mid BLOB;         -- 1024-frame pyramid level
 ALTER TABLE user_overrides ADD COLUMN grid_json TEXT;    -- edited grid (detected kept)
 ALTER TABLE user_overrides ADD COLUMN downbeat_offset INTEGER;
 )SQL",
+
+    // v5 — Phase 18 professional library: label/composer file metadata,
+    // decode-ability state separate from file presence, user-edited
+    // field mask (rescans must not overwrite user edits), FTS gains
+    // label+composer columns (rebuilt folded — see kv.fts_folded)
+    R"SQL(
+ALTER TABLE tracks ADD COLUMN label TEXT;
+ALTER TABLE tracks ADD COLUMN composer TEXT;
+ALTER TABLE tracks ADD COLUMN play_state INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN edited_fields INTEGER NOT NULL DEFAULT 0;
+
+DROP TABLE IF EXISTS tracks_fts;
+CREATE VIRTUAL TABLE tracks_fts USING fts5(
+    title, artist, album, genre, label, composer, filename, tags, comments,
+    content='');
+
+CREATE INDEX IF NOT EXISTS idx_tracks_label ON tracks(label);
+)SQL",
 };
 
 bool Database::open(const std::string& path) {

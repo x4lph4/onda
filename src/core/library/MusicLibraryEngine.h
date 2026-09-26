@@ -11,13 +11,20 @@
 #include <vector>
 
 #include "../data/Database.h"
+#include "CrateManager.h"
 #include "DuplicateDetector.h"
 #include "FileWatcher.h"
 #include "HistoryManager.h"
+#include "LibraryBackup.h"
+#include "LibraryDiagnostics.h"
 #include "LibraryScanner.h"
 #include "LibraryTypes.h"
 #include "MissingFileManager.h"
 #include "PlaylistManager.h"
+#include "RatingManager.h"
+#include "SearchQuery.h"
+#include "SmartPlaylistEngine.h"
+#include "TagManager.h"
 #include "TrackImporter.h"
 #include "TrackRepository.h"
 
@@ -66,10 +73,36 @@ public:
     MissingFileManager& missing()   { return missing_; }
     FileWatcher&        watcher()   { return watcher_; }
     Database&           db()        { return db_; }
+    // Phase 18 surfaces (all share the guarded connection)
+    CrateManager&       crates()    { return crates_; }
+    TagManager&         tagManager(){ return tags_; }
+    RatingManager&      ratings()   { return ratings_; }
+    LibraryBackup&      backup()    { return backup_; }
+
+    /// Diagnostics rollup (track/missing/analysis counts, db size).
+    /// Constructed on demand — reads are cheap indexed counts.
+    LibraryDiagnostics diagnostics() {
+        return LibraryDiagnostics(repo_, playlists_, dbPath_);
+    }
 
     // ---- convenience queries (sync, cheap) ----
     TrackPage query(const QuerySpec& q) { return repo_.query(q); }
     int  trackCount() { QuerySpec q; q.limit = 1; return repo_.query(q).total; }
+
+    /// §13 — search-box entry point: parses `field:value` tokens into
+    /// filters + FTS text, then runs the normal indexed query.
+    TrackPage search(const std::string& text, int offset = 0,
+                     int limit = 200) {
+        QuerySpec q = SearchQuery::toSpec(text);
+        q.offset = offset; q.limit = limit;
+        return repo_.query(q);
+    }
+
+    /// §20 — live smart-playlist page (rules stored on the playlist).
+    TrackPage smartTracks(int64_t playlistId, int offset = 0,
+                          int limit = 200) {
+        return playlists_.tracks(playlistId, offset, limit);
+    }
 
     // ---- worker ----
     /// Queue a callable on the library worker. All heavy ops use this.
@@ -117,6 +150,10 @@ private:
     DuplicateDetector dup_;
     MissingFileManager missing_;
     FileWatcher       watcher_;
+    CrateManager      crates_;
+    TagManager        tags_;
+    RatingManager     ratings_;
+    LibraryBackup     backup_;
     AnalysisService*  analysis_ { nullptr };
     std::function<std::string(const std::string&, const std::string&)>
         artworkProvider_;

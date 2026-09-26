@@ -15,7 +15,9 @@ MusicLibraryEngine::MusicLibraryEngine()
           post([this, changed] {
               for (const auto& p : changed) importer_.importFile(p);
           });
-      }) {}
+      }),
+      crates_(playlists_), tags_(repo_), ratings_(repo_),
+      backup_(repo_, playlists_) {}
 
 MusicLibraryEngine::~MusicLibraryEngine() {
     watcher_.stop();
@@ -26,6 +28,12 @@ MusicLibraryEngine::~MusicLibraryEngine() {
 bool MusicLibraryEngine::open(const std::string& dbPath) {
     dbPath_ = dbPath;
     if (!db_.open(dbPath)) return false;
+    // §11 — one-time rebuild of the FTS index with folded (accent-
+    // insensitive) text for databases created before Phase 18.
+    if (setting("fts_folded") != "1") {
+        repo_.reindexFts();
+        saveSetting("fts_folded", "1");
+    }
     return true;
 }
 

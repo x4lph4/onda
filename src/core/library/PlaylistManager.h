@@ -53,6 +53,10 @@ public:
     std::vector<int64_t> trackIds(int64_t playlistId);
     TrackPage tracks(int64_t playlistId, int offset = 0, int limit = 200);
 
+    /// Shared DB handle for sibling managers (CrateManager depth
+    /// walk). Still guarded by the same recursive mutex.
+    Database& db() { return repo_.db(); }
+
 private:
     TrackRepository& repo_;
 };

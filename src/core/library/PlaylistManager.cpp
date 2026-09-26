@@ -2,6 +2,8 @@
 
 #include <ctime>
 
+#include "SmartPlaylistEngine.h"
+
 namespace onda::library {
 
 static int64_t now() { return (int64_t)std::time(nullptr); }
@@ -309,6 +311,19 @@ bool PlaylistManager::setOrder(int64_t playlistId,
 }
 
 std::vector<int64_t> PlaylistManager::trackIds(int64_t playlistId) {
+    const PlaylistInfo pi = info(playlistId);
+    if (pi.id > 0 && pi.kind == PlaylistKind::Smart) {
+        // §20 — smart playlists store the query, never rows: evaluate
+        // live and return matching ids in stored-sort order.
+        QuerySpec q;
+        q.sort = SortKey::Artist; q.limit = 100000; q.offset = 0;
+        const auto page = SmartPlaylistEngine::evaluate(
+            repo_, pi.rulesJson, q);
+        std::vector<int64_t> out;
+        out.reserve(page.items.size());
+        for (const auto& t : page.items) out.push_back(t.id);
+        return out;
+    }
     std::lock_guard lk(repo_.db().mutex());
     auto s = repo_.db().prepare(
         "SELECT track_id FROM playlist_items WHERE playlist_id=? "
@@ -320,6 +335,12 @@ std::vector<int64_t> PlaylistManager::trackIds(int64_t playlistId) {
 }
 
 TrackPage PlaylistManager::tracks(int64_t playlistId, int offset, int limit) {
+    const PlaylistInfo pi = info(playlistId);
+    if (pi.id > 0 && pi.kind == PlaylistKind::Smart) {
+        QuerySpec q;
+        q.offset = offset; q.limit = limit;
+        return SmartPlaylistEngine::evaluate(repo_, pi.rulesJson, q);
+    }
     const auto ids = trackIds(playlistId);
     TrackPage p;
     p.total = (int)ids.size();
