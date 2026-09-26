@@ -2,12 +2,19 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
-## Status — Phase F2 (skeleton)
+## Status — Phase F3 (mini-player)
 
-- JUCE app shell: header bar with device name / sample rate / buffer size / DSP load / xrun counter
-- `AudioEngine`: device HAL (ASIO/WASAPI/CoreAudio via JUCE), RT callback emitting silence, underrun detection, persisted device setup
-- `core/rt`: lock-free SPSC ring buffer, typed command queue UI→RT, atomic stats
-- Catch2 test suite for RT primitives
+Real audio playback end to end: ffmpeg decode on streamer threads → lock-free
+AudioFifo → RT deck (gain + level) → mixer (sum, master gain, clip count) → out.
+
+- `core/audio/AudioFifo`: SPSC bulk ring of interleaved float frames
+- `core/decode/IDecoder` + `platform/decode/FFmpegDecoder` (ffmpeg 9 shared build, `third_party/ffmpeg`, gitignored)
+- `core/engine/AudioFileStreamer`: per-deck decode thread, ~8 s prebuffer
+- `core/engine/DeckEngine` ×4 (2 exposed), `MixerEngine` (sum, master, clip detect)
+- UI: per-deck LOAD/PLAY/gain strip + live state/position; header shows DSP %, XRUN, CLIP
+- Tests: 15 Catch2 cases incl. full non-UI playback chain against a generated WAV
+
+Requires `third_party/ffmpeg` = gyan.dev `ffmpeg-release-full-shared.7z` (dev headers + import libs + DLLs).
 
 ## Build (Windows)
 
