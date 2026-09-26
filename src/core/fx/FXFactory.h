@@ -2,7 +2,13 @@
 
 #include <memory>
 
+#include "BeatRepeatFX.h"
+#include "BeatRollFX.h"
+#include "BitCrusherFX.h"
+#include "ChorusFX.h"
+#include "CompressorFX.h"
 #include "DelayFX.h"
+#include "DistortionFX.h"
 #include "EchoFX.h"
 #include "FilterFX.h"
 #include "FlangerFX.h"
@@ -24,6 +30,12 @@ inline std::unique_ptr<FXProcessor> createFX(FXKind kind) noexcept {
         case FXKind::Flanger: return std::make_unique<FlangerFX>();
         case FXKind::Phaser:  return std::make_unique<PhaserFX>();
         case FXKind::Gate:    return std::make_unique<GateFX>();
+        case FXKind::Chorus:    return std::make_unique<ChorusFX>();
+        case FXKind::Distortion:return std::make_unique<DistortionFX>();
+        case FXKind::BitCrusher:return std::make_unique<BitCrusherFX>();
+        case FXKind::Compressor:return std::make_unique<CompressorFX>();
+        case FXKind::BeatRepeat:return std::make_unique<BeatRepeatFX>();
+        case FXKind::BeatRoll:  return std::make_unique<BeatRollFX>();
         default:              return nullptr;
     }
 }
@@ -37,6 +49,12 @@ inline const char* fxKindName(FXKind k) noexcept {
         case FXKind::Flanger: return "Flanger";
         case FXKind::Phaser:  return "Phaser";
         case FXKind::Gate:    return "Gate";
+        case FXKind::Chorus:    return "Chorus";
+        case FXKind::Distortion:return "Distortion";
+        case FXKind::BitCrusher:return "Bit Crusher";
+        case FXKind::Compressor:return "Compressor";
+        case FXKind::BeatRepeat:return "Beat Repeat";
+        case FXKind::BeatRoll:  return "Beat Roll";
         default:              return "None";
     }
 }

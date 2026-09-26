@@ -28,8 +28,13 @@ public:
           p2_(te, "P2", 0.0, 1.0, 0.0),
           p3_(te, "P3", 0.0, 1.0, 0.0) {
         using R = mixer::ParameterRegistry;
-        type_.addItemList({ "—", "DELAY", "ECHO", "REVERB", "FILTER",
-                            "FLANGER", "PHASER", "GATE" }, 1);
+        // list generated from the engine's kind table — new FXKinds
+        // appear here automatically
+        for (int k = 0; k < (int)fx::FXKind::kCount; ++k) {
+            juce::String nm = k == 0 ? "—"
+                : juce::String(fx::fxKindName((fx::FXKind)k)).toUpperCase();
+            type_.addItem(nm, k + 1);
+        }
         type_.onChange = [this, &mc] {
             mc.setFxType(t_, s_, type_.getSelectedId() - 1);
         };
@@ -41,8 +46,8 @@ public:
             mc.fxSyncMode(t_, s_,
                 mc.value(R::fxSyncMode(t_, s_)) < 0.5f);
         };
-        div_.addItemList({ "1/32", "1/16", "1/8", "1/4",
-                           "1/2", "1", "2", "4" }, 1);
+        for (int d = 0; d < fx::beatDivCount(); ++d)
+            div_.addItem(fx::beatDivName(d), d + 1);
         div_.setSelectedId(4, juce::dontSendNotification);
         div_.onChange = [this, &mc] {
             mc.fxDivision(t_, s_, div_.getSelectedId() - 1);
@@ -72,7 +77,8 @@ public:
             type_.setSelectedId(wantId, juce::dontSendNotification);
         on_.setState(f.enabled ? ControlState::On : ControlState::Off);
         sync_.setState(f.synced ? ControlState::On : ControlState::Off);
-        const int wantDiv = juce::jlimit(1, 8, f.division + 1);
+        const int wantDiv = juce::jlimit(1, fx::beatDivCount(),
+                                         f.division + 1);
         if (div_.getSelectedId() != wantDiv)
             div_.setSelectedId(wantDiv, juce::dontSendNotification);
         auto pull = [](juce::Slider& sl, double v) {

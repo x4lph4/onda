@@ -100,6 +100,30 @@ enum Id : uint32_t {
     SyncBpmMode     = 0x9103,  // +deck*0x400 — tempo-only sync toggle
     SyncDiagCopy    = 0x9104,  // +deck*0x400 — copy sync diagnostics
 
+    // ---- FX surface: 0xA000 (Phase 16) — all act on the focused
+    //      (target, slot) held by FXSurface ----
+    FxFocusTarget  = 0xA000,  // value = FXTarget
+    FxFocusSlot    = 0xA001,  // value = chain position 0..3
+    FxEnable       = 0xA002,  // toggle
+    FxTypeNext     = 0xA003,
+    FxTypePrev     = 0xA004,
+    FxTypeSet      = 0xA005,  // value = FXKind
+    FxMix          = 0xA006,  // value = 0..1
+    FxSyncToggle   = 0xA007,
+    FxDivNext      = 0xA008,
+    FxDivPrev      = 0xA009,
+    FxDivSet       = 0xA00A,  // value = BeatDiv
+    FxParamSetBase = 0xA010,  // + param 0..7, value = normalized
+    FxParamUpBase  = 0xA018,  // + param 0..7 — nudge +0.02
+    FxParamDnBase  = 0xA020,  // + param 0..7 — nudge -0.02
+    FxPresetNext   = 0xA028,
+    FxPresetPrev   = 0xA029,
+    FxPresetApply  = 0xA02A,  // apply current selection
+    FxMacroBase    = 0xA030,  // + macro 0..7, value = 0..1
+    FxSlotMoveL    = 0xA038,  // move focus slot left in chain
+    FxSlotMoveR    = 0xA039,
+    FxDiagCopy     = 0xA03A,  // copy FX diagnostics text
+
     // ---- app: 0x3F00 ----
     AppToggleSettings  = 0x3F00,
     AppLayoutNext      = 0x3F01,

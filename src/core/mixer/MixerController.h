@@ -4,6 +4,9 @@
 #include <cstdint>
 #include <functional>
 
+#include "../fx/FXFactory.h"
+#include "../fx/FXMacro.h"
+#include "../fx/FXPreset.h"
 #include "MixerTypes.h"
 #include "ParameterRegistry.h"
 
@@ -32,6 +35,12 @@ public:
     /// housekeeping (collectTrash).
     using FxLoader = std::function<void(int target, int slot, int kind)>;
     void setFxLoader(FxLoader f) noexcept { fxLoader_ = std::move(f); }
+
+    /// Mover for chain reorders — wired to FXEngine::moveSlot()
+    /// (rewrites the rack's packed order table; takes effect next
+    /// audio block).
+    using FxMover = std::function<void(int target, int from, int to)>;
+    void setFxMover(FxMover f) noexcept { fxMover_ = std::move(f); }
 
     /// Set a parameter (sanitized per registry). Returns the applied value.
     float setParam(uint16_t id, float v) noexcept {
@@ -100,6 +109,45 @@ public:
         setParam(ParameterRegistry::fxType(t, s), (float)kind);
         if (fxLoader_) fxLoader_(t, s, kind);
     }
+
+    /// Move the effect at chain position `from` to `to` (§7).
+    void moveFxSlot(int target, int from, int to) {
+        if (fxMover_) fxMover_(target, from, to);
+    }
+
+    /// Apply a full preset to (target, slot) — non-RT only.
+    /// Loads the effect, then pushes slot params and native effect
+    /// params converted to normalized values through a scratch
+    /// processor's paramInfo (control-thread allocation, never RT).
+    void applyFxPreset(int t, int s, const fx::FXPreset& p) {
+        setFxType(t, s, p.effectKind);
+        fxSyncMode(t, s, p.syncMode != 0);
+        fxDivision(t, s, p.division);
+        fxMix(t, s, p.mix);
+        setParam(ParameterRegistry::fxInGain(t, s), p.inGain);
+        setParam(ParameterRegistry::fxOutGain(t, s), p.outGain);
+        auto scratch = fx::createFX((fx::FXKind)p.effectKind);
+        if (scratch == nullptr) return;
+        for (int i = 0; i < fx::kMaxFxParams && i < scratch->paramCount();
+             ++i) {
+            const auto d = scratch->paramInfo(i);
+            const float rng = d.maxV - d.minV;
+            float nv = rng > 0.0f ? (p.params[i] - d.minV) / rng : 0.0f;
+            nv = nv < 0.0f ? 0.0f : (nv > 1.0f ? 1.0f : nv);
+            fxParam(t, s, i, nv);
+        }
+    }
+
+    /// Push every write a macro resolves to through setParam —
+    /// indistinguishable from individual knob moves downstream.
+    /// `focusTarget` resolves kFocusTarget mappings.
+    int applyFxMacro(const fx::FXMacro& m, int focusTarget = -1) {
+        fx::FXMacro::Write w[fx::FXMacro::kMaxMappings];
+        const int n = m.evaluate(w, fx::FXMacro::kMaxMappings,
+                                 focusTarget);
+        for (int i = 0; i < n; ++i) setParam(w[i].paramId, w[i].value);
+        return n;
+    }
     // -----------------------------------------------------------------------
 
 private:
@@ -115,6 +163,7 @@ private:
 
     Sink sink_;
     FxLoader fxLoader_;
+    FxMover fxMover_;
     std::array<Entry, 256> values_ {};
 };
 

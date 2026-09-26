@@ -7,7 +7,9 @@
 
 #include "../audio/AudioFormat.h"
 #include "../rt/SpscRingBuffer.h"
+#include "FXDiagnostics.h"
 #include "FXRack.h"
+#include "FXRouting.h"
 #include "FXTypes.h"
 
 namespace onda::fx {
@@ -57,6 +59,61 @@ public:
 
     FXRack&       rack(int t) noexcept       { return racks_[(size_t)(t & 0xF)]; }
     const FXRack& rack(int t) const noexcept { return racks_[(size_t)(t & 0xF)]; }
+
+    /// Reorder chain positions (§7). Non-RT; takes effect next block.
+    void moveSlot(int target, int from, int to) noexcept {
+        if (target < 0 || target >= kNumTargets) return;
+        racks_[(size_t)target].moveSlot(from, to);
+    }
+
+    /// Routing descriptor for a target (declarative table, §9).
+    FXRouting routing(int t) const noexcept {
+        return routingFor((FXTarget)(t < 0 || t >= kNumTargets
+                                     ? (int)FXTarget::Master : t));
+    }
+
+    /// Snapshot one target's diagnostics — control thread only.
+    void fillDiagnostics(int t, FXRackDiag& d) const noexcept {
+        if (t < 0 || t >= kNumTargets) return;
+        const auto& rk = racks_[(size_t)t];
+        const auto rt = routingFor((FXTarget)t);
+        d.target = t; d.route = (int)rt.route; d.node = rt.node;
+        d.orderPacked = rk.orderPacked();
+        d.totalLatency = rk.latencySamples();
+        d.totalCpuUs = 0.0f; d.totalFaults = 0; d.totalSanitized = 0;
+        for (int s = 0; s < FXRack::kSlotsPerRack; ++s) {
+            const auto& sl = rk.slot(s);
+            auto& out = d.slots[(size_t)s];
+            out.kind = (int)sl.activeKind();
+            out.enabled = sl.enabled();
+            out.busy = sl.busy();
+            out.pending = sl.hasPending();
+            out.mix = sl.mix();
+            out.syncMode = sl.syncMode();
+            out.division = sl.division();
+            out.inPeak  = sl.inPeak.load(std::memory_order_relaxed);
+            out.outPeak = sl.outPeak.load(std::memory_order_relaxed);
+            out.cpuUs   = sl.cpuUs.load(std::memory_order_relaxed);
+            out.sanitized = sl.sanitized.load(std::memory_order_relaxed);
+            out.faults = sl.faults.load(std::memory_order_relaxed);
+            out.latency = sl.latencySamples();
+            d.totalCpuUs += out.cpuUs;
+            d.totalFaults += out.faults;
+            d.totalSanitized += out.sanitized;
+        }
+    }
+
+    /// Full report across every target (allocates — control thread).
+    std::string diagnosticReport() const {
+        std::string s;
+        for (int t = 0; t < kNumTargets; ++t) {
+            FXRackDiag d;
+            fillDiagnostics(t, d);
+            s += formatRackDiag(d);
+            s += '\n';
+        }
+        return s;
+    }
 
     // ---------------- RT ----------------
     void setParam(uint16_t id, float v) noexcept {

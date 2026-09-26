@@ -13,6 +13,7 @@
 #include "core/sampler/SamplerEngine.h"
 #include "platform/audio/AudioEngine.h"
 #include "ui/EngineCommands.h"
+#include "ui/FXSurface.h"
 #include "ui/NotificationCenter.h"
 #include "ui/UiState.h"
 #include "ui/pads/PadLayer.h"
@@ -65,6 +66,9 @@ public:
     pads::PadLayer&          pads()    noexcept { return pads_; }
     /// Phase 12: session recorder — may be null in minimal builds.
     rec::RecordingEngine*    recorder() noexcept { return recorder_; }
+    /// Phase 16: FX focus surface + preset manager (control thread).
+    FXSurface&               fx()      noexcept { return fxSurface_; }
+    fx::FXPresetManager&     fxPresets() noexcept { return fxPresets_; }
 
 private:
     audio::AudioEngine&          engine_;
@@ -74,6 +78,8 @@ private:
     NotificationCenter&          notes_;
 
     pads::PadLayer  pads_;
+    FXSurface       fxSurface_;
+    fx::FXPresetManager fxPresets_;
     rec::RecordingEngine*       recorder_ = nullptr;
     adevice::AudioDeviceEngine* adevice_ = nullptr; // borrowed, may be null
     EnginePorts ports_;

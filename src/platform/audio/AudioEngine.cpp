@@ -20,6 +20,9 @@ AudioEngine::AudioEngine(Config& config, DecoderFactory decoderFactory)
         mixer_.fx().loadEffect(t, s, (fx::FXKind)k);
         mixer_.fx().collectTrash();
     });
+    mixerCtl_.setFxMover([this](int t, int from, int to) {
+        mixer_.fx().moveSlot(t, from, to);
+    });
     for (int i = 0; i < kNumDecks; ++i) {
         auto& d = decks_[(size_t)i];
         d.bind(&deckStats_[(size_t)i]);

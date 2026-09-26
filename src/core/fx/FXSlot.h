@@ -97,6 +97,8 @@ public:
     std::atomic<float> outPeak { 0.0f };
     std::atomic<float> cpuUs   { 0.0f };
     std::atomic<uint64_t> sanitized { 0 };
+    /// Times the processor was auto-reset for sustained bad output.
+    std::atomic<uint64_t> faults { 0 };
 
     // ---------------- RT ----------------
     void setParam(FXSlotKind k, float v) noexcept {
@@ -200,7 +202,12 @@ public:
         }
         if (bad > 0 || badIn > 0) {
             sanitized.fetch_add((uint64_t)(bad + badIn), std::memory_order_relaxed);
-            if (++badBlocks_ >= 4) { fx_->reset(); badBlocks_ = 0; }
+            if (++badBlocks_ >= 4) {
+                fx_->reset(); badBlocks_ = 0;
+                faults.fetch_add(1, std::memory_order_relaxed);
+                push(FXEventType::Fault, (float)faults.load(
+                    std::memory_order_relaxed));
+            }
         } else {
             badBlocks_ = 0;
         }

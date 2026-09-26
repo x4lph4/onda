@@ -121,6 +121,31 @@ private:
             { 0.40f, 0.70f, 0.35f, 6.0f, 900.0f });
         add("Trance Gate",   FXKind::Gate,  1, (int)BeatDiv::D_1_16,0.9f,
             { 1.0f, 4.0f, 0.5f, 0.0f });
+        // Phase 16 — spec-named collection (§27)
+        add("Echo Out",      FXKind::Echo,  1, (int)BeatDiv::D_1_2, 0.60f,
+            { 0.70f, 4000.0f, 1.0f, 0.0f });
+        add("Filter Sweep",  FXKind::Filter,1, (int)BeatDiv::D_1_1, 1.0f,
+            { 1000.0f, 0.40f, 0.0f, 0.8f, 0.5f });
+        add("Reverb Wash",   FXKind::Reverb,0, (int)BeatDiv::D_1_4, 0.50f,
+            { 0.90f, 0.80f, 0.30f, 20.0f, 1.0f });
+        add("Deep Filter",   FXKind::Filter,0, (int)BeatDiv::D_1_4, 1.0f,
+            { 350.0f, 0.60f, 0.0f, 0.0f, 0.5f });
+        add("Tape Echo",     FXKind::Echo,  1, (int)BeatDiv::D_1_4T,0.45f,
+            { 0.55f, 2500.0f, 0.8f, 0.0f });
+        add("Build Up",      FXKind::Filter,1, (int)BeatDiv::D_2Bar,1.0f,
+            { 500.0f, 0.35f, 2.0f, 1.0f, 0.5f });
+        add("Down Sweep",    FXKind::Filter,1, (int)BeatDiv::D_2Bar,1.0f,
+            { 12000.0f,0.35f, 0.0f, 1.0f, 0.5f });
+        add("Space Delay",   FXKind::Delay, 1, (int)BeatDiv::D_1_4T,0.40f,
+            { 375.0f, 0.45f, 6000.0f, 1.0f });
+        add("Crush",         FXKind::BitCrusher,0,(int)BeatDiv::D_1_4,0.8f,
+            { 4.0f, 8.0f, 8000.0f, 0.0f });
+        add("Pump",          FXKind::Compressor,0,(int)BeatDiv::D_1_4,1.0f,
+            { -24.0f, 8.0f, 1.0f, 80.0f, 0.0f, 6.0f });
+        add("Roll 16",       FXKind::BeatRoll,1,(int)BeatDiv::D_1_16,1.0f,
+            { 1.0f, 1.0f, 0.0f, 12000.0f });
+        add("Stutter",       FXKind::BeatRepeat,1,(int)BeatDiv::D_1_8,1.0f,
+            { 0.0f, 1.0f, 0.0f, 1.0f });
     }
 
     std::vector<FXPreset> presets_;

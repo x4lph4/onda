@@ -13,6 +13,7 @@
 
 namespace onda::sampler { class SamplerEngine; }
 namespace onda::rec     { class RecordingEngine; }
+namespace onda::ui      { class FXSurface; }
 
 namespace onda::ui {
 
@@ -43,6 +44,10 @@ struct EnginePorts {
     std::function<void(int, int, double)>     analysisEdit;
     /// (deck) → copyable sync-diagnostics text (SyncDiagCopy)
     std::function<void(int)>                  copySyncDiag;
+    /// Phase 16 — FX focus surface (macros/presets/slot ops)
+    FXSurface*                                fx = nullptr;
+    /// () → copyable FX diagnostics text (FxDiagCopy)
+    std::function<void()>                     copyFxDiag;
 };
 
 /// Register the whole command surface. All commands are POD-safe:

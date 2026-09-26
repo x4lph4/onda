@@ -37,6 +37,13 @@ enum class FXKind : int {
     Flanger,
     Phaser,
     Gate,
+    // Phase 16 additions — appended so persisted kind values stay valid
+    Chorus,
+    Distortion,
+    BitCrusher,
+    Compressor,
+    BeatRepeat,
+    BeatRoll,
     kCount
 };
 
@@ -49,6 +56,8 @@ enum class FXTarget : int {
 };
 
 /// Beat-synced divisions expressed in beats (4 beats = 1 bar).
+/// Triplet values (§12) are appended — persisted division indices
+/// remain stable.
 enum class BeatDiv : int {
     D_1_32 = 0,  // 1/8 beat
     D_1_16,      // 1/4 beat
@@ -58,6 +67,9 @@ enum class BeatDiv : int {
     D_1_1,       // 4 beats (1 bar)
     D_2Bar,      // 8 beats
     D_4Bar,      // 16 beats
+    D_1_16T,     // 1/6 beat  (16th-note triplet)
+    D_1_8T,      // 1/3 beat  (8th-note triplet)
+    D_1_4T,      // 2/3 beat  (quarter-note triplet)
     kCount
 };
 
@@ -71,9 +83,23 @@ constexpr float beatsOf(BeatDiv d) noexcept {
         case BeatDiv::D_1_1:  return 4.0f;
         case BeatDiv::D_2Bar: return 8.0f;
         case BeatDiv::D_4Bar: return 16.0f;
-        case BeatDiv::kCount: break;
+        case BeatDiv::D_1_16T: return 1.0f / 6.0f;
+        case BeatDiv::D_1_8T:  return 1.0f / 3.0f;
+        case BeatDiv::D_1_4T:  return 2.0f / 3.0f;
+        case BeatDiv::kCount:  break;
     }
     return 1.0f;
+}
+
+/// Valid division index count for UI/mapping (excludes sentinel).
+constexpr int beatDivCount() noexcept { return (int)BeatDiv::kCount; }
+/// Short label for UI/mapping.
+inline const char* beatDivName(int d) noexcept {
+    static const char* k[] = {
+        "1/32", "1/16", "1/8", "1/4", "1/2", "1", "2", "4",
+        "1/16T", "1/8T", "1/4T"
+    };
+    return d >= 0 && d < (int)(sizeof(k) / sizeof(k[0])) ? k[d] : "?";
 }
 
 /// Musical context handed to every processor before each block.
@@ -85,18 +111,22 @@ struct SyncContext {
     int     division  { (int)BeatDiv::D_1_4 };
 
     /// Effective beat length of the selected division, in samples.
+    /// Mirrors FXClock::framesFor exactly (FXClock can't be included
+    /// here — it depends on this header).
     double divisionFrames(double sampleRate) const noexcept {
         const float b = bpm > 1.0f ? bpm : 120.0f;
-        return (double)beatsOf((BeatDiv)(division < 0 ? 0
-                : division >= (int)BeatDiv::kCount ? (int)BeatDiv::D_1_4
-                : division)) * 60.0 / b * sampleRate;
+        const int d = division < 0 ? 0
+                    : division >= (int)BeatDiv::kCount ? (int)BeatDiv::D_1_4
+                    : division;
+        return (double)beatsOf((BeatDiv)d) * 60.0 / b * sampleRate;
     }
     /// Same, in milliseconds.
     double divisionMs() const noexcept {
         const float b = bpm > 1.0f ? bpm : 120.0f;
-        return (double)beatsOf((BeatDiv)(division < 0 ? 0
-                : division >= (int)BeatDiv::kCount ? (int)BeatDiv::D_1_4
-                : division)) * 60000.0 / b;
+        const int d = division < 0 ? 0
+                    : division >= (int)BeatDiv::kCount ? (int)BeatDiv::D_1_4
+                    : division;
+        return (double)beatsOf((BeatDiv)d) * 60000.0 / b;
     }
 };
 
@@ -119,7 +149,7 @@ constexpr FXSlotKind fxKindOf(uint16_t id) noexcept {
 /// RT -> control events (POD; pushed from the audio thread, polled by UI).
 enum class FXEventType : uint8_t {
     Enabled = 0, Disabled, ParamChanged, TypeChanged, TypeRequested,
-    SyncChanged, DivisionChanged, SlotChanged
+    SyncChanged, DivisionChanged, SlotChanged, Fault
 };
 
 struct FXEvent {

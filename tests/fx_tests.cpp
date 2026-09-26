@@ -602,7 +602,8 @@ TEST_CASE("ParameterRegistry: FX ids, defs, sanitize", "[fx][registry]") {
     REQUIRE(d->minV == 0.0f);
     REQUIRE(d->maxV == 1.0f);
     REQUIRE(R::sanitize(R::fxMix(0, 0), 3.0f) == 1.0f);
-    REQUIRE(R::sanitize(R::fxDivision(0, 0), 99.0f) == 7.0f);
+    REQUIRE(R::sanitize(R::fxDivision(0, 0), 99.0f)
+            == (float)(fx::beatDivCount() - 1));
     // channel send + return ids exist
     REQUIRE(R::find(R::channelSendA(0)) != nullptr);
     REQUIRE(R::find(R::channelSendB(3)) != nullptr);

@@ -1,5 +1,6 @@
 #include "EngineCommands.h"
 
+#include "FXSurface.h"
 #include "core/analysis/AnalysisTypes.h"
 #include "core/mixer/MixerTypes.h"
 #include "core/rec/RecordingEngine.h"
@@ -482,6 +483,111 @@ void registerEngineCommands(CommandManager& cm,
             const auto st = p.recorder->state();
             return (st == rec::State::Recording
                  || st == rec::State::Paused) ? 1 : 0;
+        }));
+
+    // ---- FX surface (Phase 16): focus + slot ops + presets/macros ----
+    cm.add(mk(cmd::FxFocusTarget, "fx.focusTarget", "FX",
+        [p](float v, CommandSource) {
+            if (p.fx) p.fx->setFocus((int)v, p.fx->focusSlot());
+        },
+        [p]() { return p.fx ? p.fx->focusTarget() : -1; }));
+    cm.add(mk(cmd::FxFocusSlot, "fx.focusSlot", "FX",
+        [p](float v, CommandSource) {
+            if (p.fx) p.fx->setFocus(p.fx->focusTarget(), (int)v);
+        },
+        [p]() { return p.fx ? p.fx->focusSlot() : -1; }));
+    cm.add(mk(cmd::FxEnable, "fx.enable", "FX",
+        [p](float, CommandSource) {
+            if (p.fx) p.fx->toggleEnabled();
+        },
+        [p]() {
+            if (!p.fx || !p.mixer) return 0;
+            using R = mixer::ParameterRegistry;
+            return p.mixer->value(
+                R::fxEnabled(p.fx->focusTarget(),
+                             p.fx->focusSlot())) >= 0.5f ? 1 : 0;
+        }));
+    cm.add(mk(cmd::FxTypeNext, "fx.typeNext", "FX",
+        [p](float, CommandSource) { if (p.fx) p.fx->typeStep(1); }));
+    cm.add(mk(cmd::FxTypePrev, "fx.typePrev", "FX",
+        [p](float, CommandSource) { if (p.fx) p.fx->typeStep(-1); }));
+    cm.add(mk(cmd::FxTypeSet, "fx.typeSet", "FX",
+        [p](float v, CommandSource) {
+            if (p.fx) p.fx->setType((int)v);
+        },
+        [p]() {
+            if (!p.fx || !p.mixer) return 0;
+            using R = mixer::ParameterRegistry;
+            return (int)p.mixer->value(
+                R::fxType(p.fx->focusTarget(), p.fx->focusSlot()));
+        }));
+    cm.add(mk(cmd::FxMix, "fx.mix", "FX",
+        [p](float v, CommandSource) {
+            if (p.fx) p.fx->setMix(v);
+        },
+        [p]() {
+            if (!p.fx || !p.mixer) return 0;
+            using R = mixer::ParameterRegistry;
+            return (int)(p.mixer->value(
+                R::fxMix(p.fx->focusTarget(), p.fx->focusSlot()))
+                * 100.0f);
+        }));
+    cm.add(mk(cmd::FxSyncToggle, "fx.syncToggle", "FX",
+        [p](float, CommandSource) {
+            if (p.fx) p.fx->toggleSync();
+        }));
+    cm.add(mk(cmd::FxDivNext, "fx.divNext", "FX",
+        [p](float, CommandSource) { if (p.fx) p.fx->divisionStep(1); }));
+    cm.add(mk(cmd::FxDivPrev, "fx.divPrev", "FX",
+        [p](float, CommandSource) { if (p.fx) p.fx->divisionStep(-1); }));
+    cm.add(mk(cmd::FxDivSet, "fx.divSet", "FX",
+        [p](float v, CommandSource) {
+            if (p.fx) p.fx->setDivision((int)v);
+        },
+        [p]() {
+            if (!p.fx || !p.mixer) return 0;
+            using R = mixer::ParameterRegistry;
+            return (int)p.mixer->value(
+                R::fxDivision(p.fx->focusTarget(), p.fx->focusSlot()));
+        }));
+    for (int i = 0; i < 8; ++i) {
+        const std::string pn = "fx.p" + std::to_string(i + 1);
+        cm.add(mk(cmd::FxParamSetBase + (uint32_t)i, pn + "Set", "FX",
+            [p, i](float v, CommandSource) {
+                if (p.fx) p.fx->setParam(i, v);
+            }));
+        cm.add(mk(cmd::FxParamUpBase + (uint32_t)i, pn + "Up", "FX",
+            [p, i](float, CommandSource) {
+                if (p.fx) p.fx->nudgeParam(i, 0.02f);
+            }));
+        cm.add(mk(cmd::FxParamDnBase + (uint32_t)i, pn + "Dn", "FX",
+            [p, i](float, CommandSource) {
+                if (p.fx) p.fx->nudgeParam(i, -0.02f);
+            }));
+    }
+    cm.add(mk(cmd::FxPresetNext, "fx.presetNext", "FX",
+        [p](float, CommandSource) { if (p.fx) p.fx->presetStep(1); },
+        [p]() { return p.fx ? p.fx->presetSel() : -1; }));
+    cm.add(mk(cmd::FxPresetPrev, "fx.presetPrev", "FX",
+        [p](float, CommandSource) { if (p.fx) p.fx->presetStep(-1); }));
+    cm.add(mk(cmd::FxPresetApply, "fx.presetApply", "FX",
+        [p](float v, CommandSource) {
+            if (p.fx) p.fx->applyPreset(v < 0.0f ? -1 : (int)v);
+        }));
+    for (int i = 0; i < 8; ++i) {
+        cm.add(mk(cmd::FxMacroBase + (uint32_t)i,
+            "fx.macro" + std::to_string(i), "FX",
+            [p, i](float v, CommandSource) {
+                if (p.fx) p.fx->macroSet(i, v);
+            }));
+    }
+    cm.add(mk(cmd::FxSlotMoveL, "fx.slotMoveL", "FX",
+        [p](float, CommandSource) { if (p.fx) p.fx->moveSlot(-1); }));
+    cm.add(mk(cmd::FxSlotMoveR, "fx.slotMoveR", "FX",
+        [p](float, CommandSource) { if (p.fx) p.fx->moveSlot(1); }));
+    cm.add(mk(cmd::FxDiagCopy, "fx.diagCopy", "FX",
+        [p](float, CommandSource) {
+            if (p.copyFxDiag) p.copyFxDiag();
         }));
 }
 

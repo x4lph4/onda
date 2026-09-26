@@ -92,6 +92,16 @@ EngineBridge::EngineBridge(audio::AudioEngine& engine,
             juce::String(perf_.syncDiagText(d)));
     };
 
+    // Phase 16: FX focus surface — bound to MixerController + the
+    // preset manager; macros seeded against the focus rack.
+    fxSurface_.bind(&engine_.mixerCtl(), &fxPresets_);
+    fxSurface_.seedDefaultMacros();
+    ports_.fx = &fxSurface_;
+    ports_.copyFxDiag = [this] {
+        juce::SystemClipboard::copyTextToClipboard(
+            juce::String(engine_.fxEngine().diagnosticReport()));
+    };
+
     // Completed analysis → attach the effective grid (rescaled to the
     // device rate) to every deck holding that track. The queue fires
     // on a worker thread; attachGrid is control-thread only.

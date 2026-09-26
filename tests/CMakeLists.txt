@@ -12,6 +12,7 @@ add_executable(onda_tests
     performance_tests.cpp
     mixer_tests.cpp
     fx_tests.cpp
+    fx_phase16_tests.cpp
     library_tests.cpp
     ui_tests.cpp
     controller_tests.cpp

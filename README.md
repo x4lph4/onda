@@ -2,6 +2,45 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 16 (professional FX engine)
+
+Deepened the Phase-6 FX foundation into a full professional
+architecture (`docs/fx/fx-engine.md`, `docs/adr/0016-fx-engine.md`).
+
+- Six new processors: **Chorus** (stereo modulated delay pair),
+  **Distortion** (bounded tanh/foldback blend + tone), **BitCrusher**
+  (1–16 bit quantize + 60× decimation + dither), **Compressor**
+  (stereo-linked soft-knee, attack/release, makeup), **BeatRepeat**
+  (latched slice loop w/ backstep + pitch) and **BeatRoll** (moving
+  roll that re-locks the freshest slice each cycle + gate).
+- `FXClock` canonical division→time converter + triplet divisions
+  (`1/16T, 1/8T, 1/4T`) — verified at 120/128/140 BPM; no effect
+  contains BPM math.
+- Reorderable chains: `FXRack::moveSlot` rewrites a packed order
+  table atomically — new order adopted next block with zero
+  allocation; chain-position addressing throughout.
+- Declarative `FXRouting` (deck inserts, post-fader send/returns,
+  master insert, sampler future; cue bus never routed).
+- `FXMacro` bank (8 mappings, curves, `kFocusTarget` resolution) +
+  `FXAutomation` breakpoint-lane seam — both resolve to plain
+  SetParams, indistinguishable from hardware input.
+- `FXDiagnostics`: per-slot faults counter (auto-reset on sustained
+  bad output), sanitized totals, cpu µs, `FXRackDiag` snapshots +
+  `fx.diagCopy` clipboard report.
+- `0xA000` command surface via `FXSurface` facade: focus target/slot,
+  enable/type/mix/P1–P8/division/sync, preset navigation + apply,
+  macros, slot reorder — same path UI/MIDI/HID/FLX4 share.
+- 20 factory presets incl. the spec collection (Echo Out, Build Up,
+  Space Delay…); `applyFxPreset` normalizes native params through
+  the processor's own paramInfo.
+- Real fix: `ParameterRegistry` was clamping FX types/divisions to
+  the Phase-6 maxima — bounds now derive from the enums.
+- 29 new tests (**306 cases / 1.63M assertions green**): new
+  processors (silence/extremes/reset/stereo-link), crusher grid,
+  compressor attenuation, repeat/roll period vs division, triplets,
+  macros, routing, moveSlot, diagnostics+faults, presets, command
+  surface, chain tests and a 4-deck × 4-slot mixed-FX stress run.
+
 ## Status — Phase 15 (professional sync engine)
 
 Deepened the Phase-4 sync foundation into a full professional
