@@ -1,0 +1,10 @@
+build/
+out/
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+CMakeUserPresets.json
+.cache/
+compile_commands.json
