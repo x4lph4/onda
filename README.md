@@ -2,6 +2,44 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 34 (professional sampler)
+
+Closed the remaining sampler gaps on top of the Phase-11 engine
+(`docs/sampler/sampler-engine.md`,
+`docs/adr/0034-professional-sampler.md`).
+
+- **Retrigger mode** (§9): `PlaybackMode::Retrigger` — every pad
+  press spawns a new voice, no same-slot choke; the 32-voice pool
+  and steal policies bound the pile-up.
+- **Extended quantize** (§20): `Q_1_2`, `Q_2Bar`, `Q_4Bar` join the
+  existing divisions through the shared `quantizeBeats`/`BeatClock`
+  math — no parallel clock.
+- **Quantized stop** (§23): `voice.releaseAfter` holds the release
+  until the next grid boundary for quantized slots.
+- **Per-slot envelope** (§28): `attackMs`/`releaseMs` → per-voice
+  env steps computed once per trigger; `0` keeps the Phase-11
+  defaults (~0.2 ms in, ~21 ms out).
+- **Working tilt filter** (§32): `SP_Filter` now drives a per-voice
+  one-pole — `f<0` LP 20 kHz→80 Hz cubic sweep, `f>0` HP 40 Hz→9 kHz
+  tilt; coefficient computed once per trigger, bypassed near zero.
+- **Non-destructive trim/loop** (§59-61): `SP_TrimStart/End` +
+  `SP_LoopIn/Out` metadata in decoded frames; a valid region wraps
+  at `loopOut`→`loopIn`; file and decoded data never touched.
+- **Missing samples** (§65): `slot.missing` + `checkMissing()` (at
+  `loadAll` + on demand), `relinkSample` keeps all metadata and
+  reloads; removal stays explicit via `unloadSample`.
+- **Undo/redo** (§62): gesture-scoped snapshots —
+  `beginSlotEdit`/`commitSlotEdit`/`undoSlotEdit`/`redoSlotEdit`
+  (64-deep) restore editable fields only and re-mirror to RT.
+- **Persistence**: seven new `sample_slots` columns via guarded
+  `ALTER TABLE` in `init()` — old DBs migrate in place; enum
+  additions are append-only so stored indices stay valid.
+- **13 new `[smp34]` tests** (92 assertions): retrigger polyphony +
+  cap, quantize start at 1/2·2Bar·4Bar, quantized stop, envelope
+  reshape, trim/loop windows, tilt filter both directions,
+  missing/relink/remove, undo/redo, repository round-trip,
+  engine→queue→RT plumbing.
+
 ## Status — Phase 33 (professional FX engine)
 
 Closed the remaining FX gaps on top of the Phase-6/16/25 engine

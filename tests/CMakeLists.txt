@@ -24,6 +24,7 @@ add_executable(onda_tests
     controller_tests.cpp
     flx4_tests.cpp
     sampler_tests.cpp
+    sampler_phase34_tests.cpp
     recording_tests.cpp
     adevice_tests.cpp
     sync_tests.cpp

@@ -78,6 +78,23 @@ public:
     float slotParam(int pad, uint8_t kind) const;
     void setBankGain(float v);
 
+    // ---- missing samples (task §65) — control thread ----
+    /// Re-validate every assigned path; sets slot.missing. The
+    /// assignment is never removed automatically. Returns count.
+    int     checkMissing();
+    int     missingCount() const;
+    /// Point a slot at a different file and reload; all slot
+    /// metadata (name, color, params, window) is preserved.
+    int64_t relinkSample(int pad, const std::string& newPath);
+
+    // ---- metadata undo/redo (task §62) — control thread ----
+    /// Snapshot the slot before an edit gesture (trim/loop/params).
+    void beginSlotEdit(int pad);
+    /// Push the edit onto the undo stack if anything changed.
+    void commitSlotEdit(int pad);
+    bool undoSlotEdit();
+    bool redoSlotEdit();
+
     // ---- housekeeping (control thread, ~30 Hz) ----
     void tick();
     /// pending decode count (diagnostics)
@@ -98,6 +115,9 @@ private:
     void applyResult(SampleLoader::Result&& r);
     void publishBank();          // push active bank params+data to RT
     void mirrorSlot(int pad);    // push all of one slot's params
+    /// copy only the user-editable metadata (never path/sampleId)
+    static void copyEditable(SampleSlot& dst, const SampleSlot& src);
+    static bool sameEditable(const SampleSlot& a, const SampleSlot& b);
     static void pullSlotRt(SamplerEngine& e, int pad,
                            SampleSlot& s);  // domain → rt param cmds
 
@@ -117,6 +137,16 @@ private:
     std::mutex                      resMu_;
     std::deque<SampleLoader::Result> results_;
     bool                            dirty_ = false;
+
+    // §62 — metadata edit history (control thread only)
+    struct SlotEdit {
+        int bank = -1, pad = -1;
+        SampleSlot before, after;
+    };
+    static constexpr size_t kMaxUndo = 64;
+    std::vector<SlotEdit> undoStack_, redoStack_;
+    SampleSlot editSnap_;
+    int        editSnapBank_ = -1, editSnapPad_ = -1;
 };
 
 } // namespace onda::sampler

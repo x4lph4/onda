@@ -1,5 +1,15 @@
 # Sampler + Performance Pads (Phase 11)
 
+> **Phase 34 update** — canonical doc moved to
+> [`sampler/sampler-engine.md`](sampler/sampler-engine.md)
+> (ADR `0034`). Deltas: `Retrigger` playback mode, quantize
+> `1/2`/`2Bar`/`4Bar` + quantized stop, per-slot attack/release
+> envelope, working per-slot tilt filter (`SP_Filter`),
+> non-destructive trim/loop window (`SP_TrimStart/End`,
+> `SP_LoopIn/Out`), `slot.missing` + `checkMissing`/`relinkSample`,
+> gesture-scoped undo/redo, and seven new persisted slot columns
+> (guarded `ALTER TABLE` migration).
+
 Signal path:
 
 ```

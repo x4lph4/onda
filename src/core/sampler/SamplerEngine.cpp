@@ -94,6 +94,10 @@ void SamplerEngine::unloadSample(int pad) {
     s.path.clear(); s.name.clear();
     s.durationFrames.store(0); s.bpm.store(0.0);
     s.state.store((int)SlotState::Empty);
+    s.missing.store(0);
+    s.startF = s.endF = s.loopIn = s.loopOut = -1.0;
+    s.attackMs = s.releaseMs = 0.0f;
+    s.filterPos = 0.0f;
     dirty_ = true;
 }
 
@@ -135,6 +139,12 @@ void SamplerEngine::setSlotParam(int pad, uint8_t kind, float v) {
         case SP_Mute:     s.mute = v > 0.5f; break;
         case SP_Solo:     s.solo = v > 0.5f; break;
         case SP_Filter:   s.filterPos = std::clamp(v, -1.f, 1.f); break;
+        case SP_Attack:   s.attackMs = std::clamp(v, 0.f, 500.f); break;
+        case SP_Release:  s.releaseMs = std::clamp(v, 0.f, 2000.f); break;
+        case SP_TrimStart: s.startF = v < 0.0f ? -1.0 : (double)v; break;
+        case SP_TrimEnd:  s.endF = v <= 0.0f ? -1.0 : (double)v; break;
+        case SP_LoopIn:   s.loopIn = v < 0.0f ? -1.0 : (double)v; break;
+        case SP_LoopOut:  s.loopOut = v < 0.0f ? -1.0 : (double)v; break;
         default: break;
     }
     pushq(ports_.queue, rt::SampleSlotParam{(uint8_t)pad, kind, v});
@@ -155,12 +165,117 @@ float SamplerEngine::slotParam(int pad, uint8_t kind) const {
         case SP_Mute:     return s.mute ? 1.f : 0.f;
         case SP_Solo:     return s.solo ? 1.f : 0.f;
         case SP_Filter:   return s.filterPos;
+        case SP_Attack:   return s.attackMs;
+        case SP_Release:  return s.releaseMs;
+        case SP_TrimStart: return (float)s.startF;
+        case SP_TrimEnd:  return (float)s.endF;
+        case SP_LoopIn:   return (float)s.loopIn;
+        case SP_LoopOut:  return (float)s.loopOut;
         default:          return 0.f;
     }
 }
 
 void SamplerEngine::setBankGain(float v) {
     pushq(ports_.queue, rt::SamplerParam{0, std::clamp(v, 0.f, 2.f)});
+}
+
+// ---------------- missing samples (§65) ----------------
+
+int SamplerEngine::checkMissing() {
+    int n = 0;
+    for (auto& b : banks_)
+        for (auto& s : b.slots) {
+            if (s.path.empty()) { s.missing.store(0); continue; }
+            std::error_code ec;
+            const bool gone = !fs::exists(s.path, ec);
+            s.missing.store(gone ? 1 : 0);
+            n += gone ? 1 : 0;
+        }
+    return n;
+}
+
+int SamplerEngine::missingCount() const {
+    int n = 0;
+    for (const auto& b : banks_)
+        for (const auto& s : b.slots) n += s.missing.load();
+    return n;
+}
+
+int64_t SamplerEngine::relinkSample(int pad,
+                                    const std::string& newPath) {
+    if (newPath.empty()) return -1;
+    SampleSlot& s = slot(pad);
+    s.missing.store(0);      // keep name/params — only the file moves
+    return loadSample(pad, newPath, s.bpm.load());
+}
+
+// ---------------- metadata undo/redo (§62) ----------------
+
+void SamplerEngine::copyEditable(SampleSlot& d, const SampleSlot& s) {
+    d.name = s.name; d.colorArgb = s.colorArgb;
+    d.volume = s.volume; d.pan = s.pan; d.gain = s.gain;
+    d.pitch = s.pitch; d.mode = s.mode; d.quant = s.quant;
+    d.syncOn = s.syncOn; d.loopOn = s.loopOn;
+    d.mute = s.mute; d.solo = s.solo; d.filterPos = s.filterPos;
+    d.attackMs = s.attackMs; d.releaseMs = s.releaseMs;
+    d.startF = s.startF; d.endF = s.endF;
+    d.loopIn = s.loopIn; d.loopOut = s.loopOut;
+}
+
+bool SamplerEngine::sameEditable(const SampleSlot& a,
+                                 const SampleSlot& b) {
+    return a.name == b.name && a.colorArgb == b.colorArgb &&
+        a.volume == b.volume && a.pan == b.pan && a.gain == b.gain &&
+        a.pitch == b.pitch && a.mode == b.mode && a.quant == b.quant &&
+        a.syncOn == b.syncOn && a.loopOn == b.loopOn &&
+        a.mute == b.mute && a.solo == b.solo &&
+        a.filterPos == b.filterPos && a.attackMs == b.attackMs &&
+        a.releaseMs == b.releaseMs && a.startF == b.startF &&
+        a.endF == b.endF && a.loopIn == b.loopIn &&
+        a.loopOut == b.loopOut;
+}
+
+void SamplerEngine::beginSlotEdit(int pad) {
+    editSnap_ = slot(pad);
+    editSnapBank_ = activeBank_;
+    editSnapPad_ = pad;
+}
+
+void SamplerEngine::commitSlotEdit(int pad) {
+    const int bank = editSnapBank_, p = editSnapPad_;
+    editSnapBank_ = editSnapPad_ = -1;
+    if (bank < 0 || bank != activeBank_ || p != pad) return;
+    if (sameEditable(editSnap_, slot(pad))) return;   // no-op gesture
+    undoStack_.push_back({bank, pad, editSnap_, slot(pad)});
+    if (undoStack_.size() > kMaxUndo)
+        undoStack_.erase(undoStack_.begin());
+    redoStack_.clear();
+}
+
+bool SamplerEngine::undoSlotEdit() {
+    if (undoStack_.empty()) return false;
+    SlotEdit e = std::move(undoStack_.back());
+    undoStack_.pop_back();
+    redoStack_.push_back(e);
+    if (e.bank >= 0 && e.bank < (int)banks_.size()) {
+        copyEditable(banks_[(size_t)e.bank].slot(e.pad), e.before);
+        if (e.bank == activeBank_) mirrorSlot(e.pad);
+    }
+    dirty_ = true;
+    return true;
+}
+
+bool SamplerEngine::redoSlotEdit() {
+    if (redoStack_.empty()) return false;
+    SlotEdit e = std::move(redoStack_.back());
+    redoStack_.pop_back();
+    undoStack_.push_back(e);
+    if (e.bank >= 0 && e.bank < (int)banks_.size()) {
+        copyEditable(banks_[(size_t)e.bank].slot(e.pad), e.after);
+        if (e.bank == activeBank_) mirrorSlot(e.pad);
+    }
+    dirty_ = true;
+    return true;
 }
 
 // ---------------- housekeeping ----------------
@@ -230,7 +345,9 @@ void SamplerEngine::publishBank() {
 void SamplerEngine::mirrorSlot(int pad) {
     static const uint8_t kinds[] = {
         SP_Volume, SP_Pan, SP_Gain, SP_Pitch, SP_Mode,
-        SP_LoopOn, SP_SyncOn, SP_Quantize, SP_Mute, SP_Solo };
+        SP_LoopOn, SP_SyncOn, SP_Quantize, SP_Mute, SP_Solo,
+        SP_Filter, SP_Attack, SP_Release,
+        SP_TrimStart, SP_TrimEnd, SP_LoopIn, SP_LoopOut };
     for (uint8_t k : kinds)
         pushq(ports_.queue,
               rt::SampleSlotParam{(uint8_t)pad, k,
@@ -260,6 +377,7 @@ bool SamplerEngine::loadAll() {
     banks_ = std::move(loaded);
     activeBank_ = 0;
     publishBank();
+    checkMissing();           // §65 — flag files that went away
     dirty_ = false;
     return true;
 }

@@ -60,7 +60,7 @@ public:
             );
             CREATE INDEX IF NOT EXISTS idx_slots_bank
                 ON sample_slots(bank_id);
-        )SQL");
+        )SQL") && ensureColumns();
     }
 
     // ---- samples ----
@@ -125,15 +125,23 @@ public:
         std::lock_guard lk(db_.mutex());
         auto q = db_.prepare(
             "INSERT INTO sample_slots(bank_id,slot,sample_id,name,color,"
-            "volume,pan,gain,pitch,mode,quantize,sync_on,loop_on,mute,solo)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "volume,pan,gain,pitch,mode,quantize,sync_on,loop_on,mute,solo,"
+            "attack_ms,release_ms,trim_start,trim_end,loop_in,loop_out,"
+            "filter_pos)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(bank_id,slot) DO UPDATE SET"
             " sample_id=excluded.sample_id,name=excluded.name,"
             "color=excluded.color,volume=excluded.volume,"
             "pan=excluded.pan,gain=excluded.gain,pitch=excluded.pitch,"
             "mode=excluded.mode,quantize=excluded.quantize,"
             "sync_on=excluded.sync_on,loop_on=excluded.loop_on,"
-            "mute=excluded.mute,solo=excluded.solo");
+            "mute=excluded.mute,solo=excluded.solo,"
+            "attack_ms=excluded.attack_ms,"
+            "release_ms=excluded.release_ms,"
+            "trim_start=excluded.trim_start,"
+            "trim_end=excluded.trim_end,loop_in=excluded.loop_in,"
+            "loop_out=excluded.loop_out,"
+            "filter_pos=excluded.filter_pos");
         q.bind(1, bankId); q.bind(2, (int64_t)s.slot);
         q.bind(3, s.sampleId); q.bind(4, s.name);
         q.bind(5, (int64_t)s.colorArgb); q.bind(6, (double)s.volume);
@@ -144,6 +152,10 @@ public:
         q.bind(13, (int64_t)(s.loopOn ? 1 : 0));
         q.bind(14, (int64_t)(s.mute ? 1 : 0));
         q.bind(15, (int64_t)(s.solo ? 1 : 0));
+        q.bind(16, (double)s.attackMs); q.bind(17, (double)s.releaseMs);
+        q.bind(18, s.startF); q.bind(19, s.endF);
+        q.bind(20, s.loopIn); q.bind(21, s.loopOut);
+        q.bind(22, (double)s.filterPos);
         q.step();              // INSERT/UPDATE → SQLITE_DONE (no row)
         return true;
     }
@@ -168,7 +180,9 @@ public:
             auto s = db_.prepare(
                 "SELECT sl.slot,sl.sample_id,sl.name,sl.color,sl.volume,"
                 "sl.pan,sl.gain,sl.pitch,sl.mode,sl.quantize,sl.sync_on,"
-                "sl.loop_on,sl.mute,sl.solo,sm.path,sm.bpm,sm.duration"
+                "sl.loop_on,sl.mute,sl.solo,sm.path,sm.bpm,sm.duration,"
+                "sl.attack_ms,sl.release_ms,sl.trim_start,sl.trim_end,"
+                "sl.loop_in,sl.loop_out,sl.filter_pos"
                 " FROM sample_slots sl LEFT JOIN samples sm"
                 " ON sm.id=sl.sample_id"
                 " WHERE sl.bank_id=? ORDER BY sl.slot");
@@ -191,6 +205,13 @@ public:
                 sl.loopOn = s.colInt(11) != 0;
                 sl.mute = s.colInt(12) != 0;
                 sl.solo = s.colInt(13) != 0;
+                sl.attackMs = (float)s.colDouble(17);
+                sl.releaseMs = (float)s.colDouble(18);
+                sl.startF = s.colDouble(19);
+                sl.endF = s.colDouble(20);
+                sl.loopIn = s.colDouble(21);
+                sl.loopOut = s.colDouble(22);
+                sl.filterPos = (float)s.colDouble(23);
                 if (sl.sampleId > 0) {
                     sl.path = s.colText(14);
                     sl.bpm.store(s.colDouble(15));
@@ -202,6 +223,41 @@ public:
     }
 
 private:
+    /// Phase 34 — add metadata columns to DBs created before they
+    /// existed. Each ALTER is guarded by PRAGMA table_info so init()
+    /// stays idempotent on both old and new databases.
+    bool ensureColumns() {
+        struct Add { const char* name; const char* sql; };
+        static const Add adds[] = {
+            {"attack_ms",  "ALTER TABLE sample_slots ADD COLUMN"
+             " attack_ms REAL NOT NULL DEFAULT 0"},
+            {"release_ms", "ALTER TABLE sample_slots ADD COLUMN"
+             " release_ms REAL NOT NULL DEFAULT 0"},
+            {"trim_start", "ALTER TABLE sample_slots ADD COLUMN"
+             " trim_start REAL NOT NULL DEFAULT -1"},
+            {"trim_end",   "ALTER TABLE sample_slots ADD COLUMN"
+             " trim_end REAL NOT NULL DEFAULT -1"},
+            {"loop_in",    "ALTER TABLE sample_slots ADD COLUMN"
+             " loop_in REAL NOT NULL DEFAULT -1"},
+            {"loop_out",   "ALTER TABLE sample_slots ADD COLUMN"
+             " loop_out REAL NOT NULL DEFAULT -1"},
+            {"filter_pos", "ALTER TABLE sample_slots ADD COLUMN"
+             " filter_pos REAL NOT NULL DEFAULT 0"},
+        };
+        std::vector<std::string> have;
+        {
+            auto q = db_.prepare("PRAGMA table_info(sample_slots)");
+            while (q.step()) have.push_back(q.colText(1));
+        }
+        for (const Add& a : adds) {
+            bool found = false;
+            for (const auto& h : have)
+                if (h == a.name) { found = true; break; }
+            if (!found && !db_.exec(a.sql)) return false;
+        }
+        return true;
+    }
+
     Database& db_;
 };
 

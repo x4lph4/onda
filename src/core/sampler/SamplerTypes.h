@@ -13,6 +13,9 @@ enum class PlaybackMode : int {
     Loop,          // repeat while active
     Hold,          // play while pad held (release stops)
     Gate,          // pad press toggles play/stop
+    // Phase 34 §9 — appended so persisted mode values stay valid.
+    Retrigger,     // every press starts a NEW voice — no same-slot
+                   // choke (true polyphonic retrigger)
 };
 
 // ---- trigger quantization (task §12) ----
@@ -23,6 +26,10 @@ enum class QuantizeMode : int {
     Q_1_16 = 3,    // next 1/16
     Q_1_32 = 4,    // next 1/32
     Bar    = 5,    // next bar
+    // Phase 34 §20 — appended so persisted mode values stay valid.
+    Q_1_2  = 6,    // next 1/2 note (2 beats)
+    Q_2Bar = 7,    // next 2-bar boundary
+    Q_4Bar = 8,    // next 4-bar boundary
 };
 inline double quantizeBeats(QuantizeMode m) {
     switch (m) {
@@ -31,6 +38,9 @@ inline double quantizeBeats(QuantizeMode m) {
         case QuantizeMode::Q_1_16: return 0.25;
         case QuantizeMode::Q_1_32: return 0.125;
         case QuantizeMode::Bar:    return 4.0;
+        case QuantizeMode::Q_1_2:  return 2.0;
+        case QuantizeMode::Q_2Bar: return 8.0;
+        case QuantizeMode::Q_4Bar: return 16.0;
         default:                   return 0.0;
     }
 }
@@ -61,7 +71,13 @@ enum SlotParamKind : uint8_t {
     SP_Quantize,     // QuantizeMode
     SP_Mute,         // 0/1
     SP_Solo,         // 0/1
-    SP_Filter,       // -1..+1 (DjFilter position, per bank)
+    SP_Filter,       // -1..+1 (per-slot tilt filter, Phase 34 §32)
+    SP_Attack,       // ms 0..500   (§28 envelope; 0 = default)
+    SP_Release,      // ms 0..2000  (§28 envelope; 0 = default)
+    SP_TrimStart,    // frames >= 0 (§59-61 non-destructive trim)
+    SP_TrimEnd,      // frames >= 0; 0/-1 = sample end
+    SP_LoopIn,       // frames >= 0; -1 = trim start
+    SP_LoopOut,      // frames >= 0; -1 = trim end
 };
 
 // ---- decoded sample (immutable, produced by SampleLoader) ----
@@ -100,7 +116,19 @@ struct SampleSlot {
     bool        loopOn   = false;
     bool        mute     = false;
     bool        solo     = false;
-    float       filterPos = 0.0f;  // reserved: per-bank filter
+    float       filterPos = 0.0f;  // per-slot tilt filter -1..+1
+    // Phase 34 §28 — per-slot envelope overrides; 0 = engine default
+    // (~0.2 ms attack / ~21 ms release anti-click ramps).
+    float       attackMs  = 0.0f;  // 0..500
+    float       releaseMs = 0.0f;  // 0..2000
+    // Phase 34 §59-61 — non-destructive playback window, in decoded
+    // frames. -1 = unset (startF→0, endF→sample end, loopIn→startF,
+    // loopOut→endF). Metadata only — the file/data is never touched.
+    double      startF  = -1.0;
+    double      endF    = -1.0;
+    double      loopIn  = -1.0;
+    double      loopOut = -1.0;
+    std::atomic<int> missing{ 0 };  // §65 — file gone, keep assignment
     std::atomic<int> state{ (int)SlotState::Empty };  // SlotState
     std::atomic<int64_t> durationFrames{ 0 };
     std::atomic<double>  bpm{ 0.0 };
@@ -112,7 +140,11 @@ struct SampleSlot {
           name(o.name), colorArgb(o.colorArgb), volume(o.volume),
           pan(o.pan), gain(o.gain), pitch(o.pitch), mode(o.mode),
           quant(o.quant), syncOn(o.syncOn), loopOn(o.loopOn),
-          mute(o.mute), solo(o.solo), filterPos(o.filterPos) {
+          mute(o.mute), solo(o.solo), filterPos(o.filterPos),
+          attackMs(o.attackMs), releaseMs(o.releaseMs),
+          startF(o.startF), endF(o.endF),
+          loopIn(o.loopIn), loopOut(o.loopOut) {
+        missing.store(o.missing.load());
         state.store(o.state.load());
         durationFrames.store(o.durationFrames.load());
         bpm.store(o.bpm.load());
@@ -124,6 +156,10 @@ struct SampleSlot {
         pan = o.pan; gain = o.gain; pitch = o.pitch; mode = o.mode;
         quant = o.quant; syncOn = o.syncOn; loopOn = o.loopOn;
         mute = o.mute; solo = o.solo; filterPos = o.filterPos;
+        attackMs = o.attackMs; releaseMs = o.releaseMs;
+        startF = o.startF; endF = o.endF;
+        loopIn = o.loopIn; loopOut = o.loopOut;
+        missing.store(o.missing.load());
         state.store(o.state.load());
         durationFrames.store(o.durationFrames.load());
         bpm.store(o.bpm.load());

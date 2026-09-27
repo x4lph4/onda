@@ -125,6 +125,12 @@ private:
         QuantizeMode quant = QuantizeMode::Off;
         bool  syncOn = false, loopOn = false;
         bool  mute = false, solo = false;
+        float filter = 0.0f;      // §32 tilt filter -1..+1
+        float attackMs  = 0.0f;   // §28 0 = engine default
+        float releaseMs = 0.0f;
+        // §59-61 non-destructive window (decoded frames, -1 = unset)
+        double startF = -1.0, endF = -1.0;
+        double loopIn = -1.0, loopOut = -1.0;
         const SampleData* data = nullptr;
         SlotBox* box = nullptr;    // keeps SampleData alive (RT-owned)
         uint64_t lastUse = 0;
@@ -145,22 +151,32 @@ private:
         const int64_t delay = quantDelay(s);
         startVoice(slot, s, vel, delay);
     }
+    /// §23 — quantized stop: when the slot quantizes, the release
+    /// waits for the next boundary instead of cutting immediately.
+    void scheduleRelease(SampleVoice& v, int slot) noexcept {
+        const int64_t d = quantDelay(slots_[slot]);
+        if (d > 0) v.releaseAfter = d;
+        else       v.releasing = true;
+    }
     void onRelease(int slot) noexcept {
         slot &= (kMaxSlots - 1);
         for (auto& v : voices_)
             if (v.active && v.slot == slot &&
                 v.mode == PlaybackMode::Hold) {
                 v.held = false;
-                v.releasing = true;
+                scheduleRelease(v, slot);
             }
     }
     void onStop(int slot) noexcept {
         if (slot >= kMaxSlots) {          // 255+ → stop everything
-            for (auto& v : voices_) v.releasing = true;
+            for (auto& v : voices_)
+                if (v.active && !v.releasing)
+                    scheduleRelease(v, v.slot);
             return;
         }
         for (auto& v : voices_)
-            if (v.active && v.slot == slot) v.releasing = true;
+            if (v.active && v.slot == slot && !v.releasing)
+                scheduleRelease(v, slot);
     }
     void onSlotParam(int slot, uint8_t kind, float v) noexcept {
         slot &= (kMaxSlots - 1);
@@ -177,6 +193,20 @@ private:
             case SP_Mute:     s.mute = v > 0.5f;
                               if (s.mute) onStop(slot); break;
             case SP_Solo:     s.solo = v > 0.5f; break;
+            case SP_Filter:   s.filter = std::clamp(v, -1.f, 1.f);
+                              break;
+            case SP_Attack:   s.attackMs = std::clamp(v, 0.f, 500.f);
+                              break;
+            case SP_Release:  s.releaseMs = std::clamp(v, 0.f, 2000.f);
+                              break;
+            case SP_TrimStart: s.startF = v < 0.0f ? -1.0 : (double)v;
+                              break;
+            case SP_TrimEnd:  s.endF   = v <= 0.0f ? -1.0 : (double)v;
+                              break;
+            case SP_LoopIn:   s.loopIn = v < 0.0f ? -1.0 : (double)v;
+                              break;
+            case SP_LoopOut:  s.loopOut = v < 0.0f ? -1.0 : (double)v;
+                              break;
             default: break;
         }
         // live-update running voices for this slot (vol/pan/pitch)
@@ -205,6 +235,13 @@ private:
         return d < 0 ? 0 : d;
     }
 
+    /// §28 — env step for a millisecond ramp (0 ms → engine default).
+    float envStep(float ms, float def) const noexcept {
+        if (ms <= 0.0f) return def;
+        const double n = (double)ms * 0.001 * rate_;
+        return n > 1.0 ? (float)(1.0 / n) : 1.0f;
+    }
+
     void startVoice(int slot, SlotRt& s, float vel, int64_t delay) {
         SampleVoice* v = nullptr;
         // same-slot retrigger semantics by mode
@@ -215,6 +252,8 @@ private:
                 case PlaybackMode::Gate:
                     w.releasing = true;      // toggle off
                     return;                  // press toggles: off now
+                case PlaybackMode::Retrigger:
+                    break;                   // §9 poly — no choke
                 case PlaybackMode::OneShot:
                 case PlaybackMode::Loop:
                 case PlaybackMode::Hold:
@@ -226,7 +265,6 @@ private:
         if (!v) return;
         v->data  = s.data;
         v->slot  = slot;
-        v->pos   = 0.0;
         v->step  = stepFor(s);
         v->mode  = s.mode;
         v->active = true;
@@ -235,9 +273,37 @@ private:
         v->loop  = s.mode == PlaybackMode::Loop || s.loopOn;
         v->vel   = std::clamp(vel, 0.0f, 1.0f);
         v->delay = delay;
+        v->releaseAfter = -1;
         v->age   = 0;
         v->env   = 0.0f;
+        v->envInc = envStep(s.attackMs, SampleVoice::kFadeIn);
+        v->envDec = envStep(s.releaseMs, SampleVoice::kFadeOut);
         v->seq   = ++seq_;
+        // §59-61 window: clamp into the decoded data
+        const double N = (double)(s.data ? s.data->frames : 0);
+        v->startF  = s.startF >= 0.0 ? std::min(s.startF, N) : 0.0;
+        v->endF    = s.endF   >= 0.0 ? std::min(s.endF,   N) : -1.0;
+        v->loopIn  = s.loopIn  >= 0.0 ? std::min(s.loopIn,  N)
+                                    : v->startF;
+        v->loopOut = s.loopOut >= 0.0 ? std::min(s.loopOut, N)
+                                    : v->endF;
+        v->pos     = v->startF;
+        // §32 tilt filter (one-pole, coefficient set once per trigger):
+        // f<0 → LP sweep 20kHz→80Hz cubic; f>0 → HP tilt 40Hz→9kHz.
+        const float fa = std::fabs(s.filter);
+        v->fltMode = fa < 0.02f ? 0 : (s.filter < 0.0f ? -1 : 1);
+        float fc = 0.0f;
+        if (v->fltMode < 0) {
+            const float t = 1.0f - fa;
+            fc = 80.0f + 19920.0f * t * t * t;
+        } else if (v->fltMode > 0) {
+            fc = 40.0f + 8960.0f * fa * fa;
+        }
+        if (v->fltMode != 0) {
+            const float w = 6.2831853f * fc;
+            v->fltA = w / ((float)rate_ + w);   // RC pole coefficient
+        }
+        v->fltYl   = v->fltYr = 0.0f;
         retune(*v, s);
         slotState_[slot].store(
             (int)(s.loopOn || s.mode == PlaybackMode::Loop
@@ -293,14 +359,30 @@ private:
         const float* sl = d.l.get();
         const float* sr = d.r.get();
         const int64_t N = d.frames;
+        // §59-61 resolved window: end defaults to the sample end,
+        // loop-out to the window end, loop-in to the window start.
+        const int64_t endF  = v.endF   >= 0.0 ? (int64_t)v.endF   : N;
+        const int64_t loopI = v.loopIn >= 0.0 ? (int64_t)v.loopIn
+                                            : (int64_t)v.startF;
+        const int64_t loopO = v.loopOut >= 0.0 ? (int64_t)v.loopOut
+                                             : endF;
+        // §10 — a valid loop region wraps at loopOut; otherwise the
+        // window end binds (and ends) playback.
+        const bool region = v.loop && loopO > loopI;
+        const int64_t playEnd = region ? std::min(endF, loopO) : endF;
+        // §23 — quantized stop: count down, then open the release.
+        if (v.releaseAfter >= 0) {
+            v.releaseAfter -= n;
+            if (v.releaseAfter < 0) v.releasing = true;
+        }
         ++v.age;
         for (int i = 0; i < n; ++i) {
-            // envelope — click-free start/release
+            // envelope — click-free start/release (per-slot rates §28)
             if (v.releasing) {
-                v.env -= SampleVoice::kFadeOut;
+                v.env -= v.envDec;
                 if (v.env <= 0.0f) { v.active = false; break; }
             } else if (v.env < 1.0f) {
-                v.env = std::min(1.0f, v.env + SampleVoice::kFadeIn);
+                v.env = std::min(1.0f, v.env + v.envInc);
             }
             // gain smoothing per-sample-ish (cheap one-pole)
             v.gainL += (v.targetGL - v.gainL) * 0.02f;
@@ -308,12 +390,19 @@ private:
 
             const int64_t i0 = (int64_t)v.pos;
             const float frac = (float)(v.pos - (double)i0);
-            if (i0 >= N - 1) {               // end of sample
-                if (v.loop) { v.pos = 0.0; continue; }
+            if (i0 >= playEnd - 1) {         // window/loop end
+                if (region) { v.pos = (double)loopI; continue; }
                 v.active = false; break;
             }
-            const float outL = sl[i0] + (sl[i0+1] - sl[i0]) * frac;
-            const float outR = sr[i0] + (sr[i0+1] - sr[i0]) * frac;
+            float outL = sl[i0] + (sl[i0+1] - sl[i0]) * frac;
+            float outR = sr[i0] + (sr[i0+1] - sr[i0]) * frac;
+            // §32 tilt filter: LP sweeps darker, HP tilts thin
+            if (v.fltMode != 0) {
+                v.fltYl += v.fltA * (outL - v.fltYl);
+                v.fltYr += v.fltA * (outR - v.fltYr);
+                if (v.fltMode < 0) { outL = v.fltYl; outR = v.fltYr; }
+                else               { outL -= v.fltYl; outR -= v.fltYr; }
+            }
             const float e = v.env;
             l[i] += outL * v.gainL * e;
             r[i] += outR * v.gainR * e;
