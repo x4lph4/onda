@@ -32,7 +32,19 @@ public:
     AnalysisService(DecoderFactory factory, Database& db, int numWorkers = -1);
 
     // ---- jobs ----
-    int64_t analyzeTrack(const std::string& path, int priority = 0);
+    int64_t analyzeTrack(const std::string& path, int priority = 0,
+                         uint32_t mask = AnalysisMask::All);
+    /// §52-53 — deck-load path: an IMMEDIATE-priority job runs the
+    /// playback-essential components (BPM/BeatGrid/Waveform) first;
+    /// a LOW-priority follow-up completes the rest (Key/Loudness/
+    /// Energy/Spectral/Transients) — merges, never repeats (§8).
+    /// Returns the essential job id.
+    int64_t analyzeForDeck(const std::string& path,
+                           int64_t trackId = -1);
+    /// §51 — partial analysis of a specific component set.
+    int64_t analyzePartial(const std::string& path, uint32_t mask,
+                           int priority = (int)AnalysisPriority::Normal,
+                           int64_t trackId = -1);
     std::shared_ptr<AnalysisBundle> analyzeTrackSync(const std::string& path);
     void cancel(int64_t jobId)          { queue_.cancel(jobId); }
     void retry(int64_t jobId)           { queue_.retry(jobId); }
@@ -82,6 +94,11 @@ public:
 
 private:
     void onJobEvent(const AnalysisQueue::Notification& n);
+    /// §8 resume — fold already-analyzed components of a stored
+    /// result into a freshly-run (possibly partial) bundle so a
+    /// follow-up job never repeats work it doesn't need to do.
+    void mergePrior(AnalysisBundle& fresh,
+                    const AnalysisBundle& prior) const;
 
     MusicAnalysisEngine engine_;
     AnalysisStore store_;

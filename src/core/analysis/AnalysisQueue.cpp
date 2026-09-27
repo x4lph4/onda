@@ -29,9 +29,11 @@ AnalysisQueue::~AnalysisQueue() {
 }
 
 int64_t AnalysisQueue::enqueue(const std::string& path, int priority,
-                               int maxRetries) {
+                               int maxRetries, uint32_t mask,
+                               int64_t trackId) {
     auto j = std::make_shared<Job>();
     j->path = path; j->priority = priority; j->retries = maxRetries;
+    j->mask = mask; j->trackId = trackId;
     j->cancel = std::make_shared<std::atomic<bool>>(false);
     {
         std::lock_guard<std::mutex> lk(m_);
@@ -40,6 +42,7 @@ int64_t AnalysisQueue::enqueue(const std::string& path, int priority,
         std::push_heap(heap_.begin(), heap_.end(), higherPriority);
         jobs_[j->id] = j;
         states_[j->id] = { (int)AnalysisState::NotAnalyzed, 0.0f, 0 };
+        events_[j->id] = -1;                // no event fired yet
     }
     cv_.notify_one();
     return j->id;
@@ -80,6 +83,58 @@ std::unordered_map<int64_t, AnalysisQueue::JobInfo> AnalysisQueue::snapshot() co
     return states_;
 }
 
+void AnalysisQueue::markSaving(int64_t jobId) {
+    std::lock_guard<std::mutex> lk(m_);
+    events_[jobId] = (int)Event::Saving;
+}
+
+/// Map the internal event/progress ledger onto the external §4
+/// job lifecycle.
+static int toJobState(int lastEvent, float progress) {
+    switch ((AnalysisQueue::Event)lastEvent) {
+        case AnalysisQueue::Event::Completed: return (int)JobState::Completed;
+        case AnalysisQueue::Event::Failed:    return (int)JobState::Failed;
+        case AnalysisQueue::Event::Cancelled: return (int)JobState::Cancelled;
+        case AnalysisQueue::Event::Retried:   return (int)JobState::Queued;
+        case AnalysisQueue::Event::Saving:    return (int)JobState::Caching;
+        case AnalysisQueue::Event::Started:
+        case AnalysisQueue::Event::Progress:
+            return progress < 0.15f ? (int)JobState::Decoding
+                                    : (int)JobState::Analyzing;
+        default: return (int)JobState::Queued;
+    }
+}
+
+std::vector<AnalysisJob> AnalysisQueue::snapshotJobs() const {
+    std::lock_guard<std::mutex> lk(m_);
+    std::vector<AnalysisJob> out;
+    out.reserve(jobs_.size());
+    for (const auto& [id, j] : jobs_) {
+        AnalysisJob d;
+        d.jobId = id; d.trackId = j->trackId; d.path = j->path;
+        d.priority = j->priority; d.requestedAnalyses = j->mask;
+        const auto st = states_.find(id);
+        if (st != states_.end()) {
+            d.progress = st->second.progress;
+            d.attempts = st->second.attempts;
+        }
+        const auto ev = events_.find(id);
+        d.state = toJobState(ev != events_.end() ? ev->second : -1,
+                             d.progress);
+        const auto er = errors_.find(id);
+        if (er != errors_.end()) d.error = er->second;
+        out.push_back(std::move(d));
+    }
+    return out;
+}
+
+AnalysisJob AnalysisQueue::jobInfo(int64_t jobId) const {
+    const auto all = snapshotJobs();
+    for (const auto& j : all)
+        if (j.jobId == jobId) return j;
+    return {};
+}
+
 void AnalysisQueue::addListener(Listener l) {
     std::lock_guard<std::mutex> lk(m_);
     listeners_.push_back(std::move(l));
@@ -90,6 +145,9 @@ void AnalysisQueue::notify(const Notification& n) {
     {
         std::lock_guard<std::mutex> lk(m_);
         ls = listeners_;
+        events_[n.jobId] = (int)n.event;
+        if (n.event == Event::Failed || n.event == Event::Retried)
+            errors_[n.jobId] = n.error;
         if (n.event != Event::Progress) {
             states_[n.jobId].state = n.event == Event::Completed
                 ? (int)AnalysisState::Analyzed
@@ -129,7 +187,8 @@ void AnalysisQueue::workerMain() {
         auto progressCb = [this, job](float p) {
             notify({ job->id, Event::Progress, p, job->path, {}, nullptr });
         };
-        auto bundle = engine_.analyzeTrack(job->path, job->cancel, progressCb);
+        auto bundle = engine_.analyzeTrack(job->path, job->cancel,
+                                           progressCb, job->mask);
 
         if (job->cancel->load()) {
             notify({ job->id, Event::Cancelled, 0.0f, job->path, {}, nullptr });

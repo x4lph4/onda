@@ -12,6 +12,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "AnalysisTypes.h"
+
 namespace onda {
 
 class MusicAnalysisEngine;
@@ -27,7 +29,10 @@ struct AnalysisBundle;
 class AnalysisQueue {
 public:
     enum class Event : int {
-        Started, Progress, Completed, Failed, Cancelled, Retried
+        Started, Progress, Completed, Failed, Cancelled, Retried,
+        /// §4 — job entered the persistence stage (store write is
+        /// part of the job's lifecycle, not a separate state).
+        Saving
     };
     struct Notification {
         int64_t     jobId { 0 };
@@ -43,7 +48,9 @@ public:
     ~AnalysisQueue();
 
     int64_t enqueue(const std::string& path, int priority = 0,
-                    int maxRetries = 1);
+                    int maxRetries = 1,
+                    uint32_t mask = AnalysisMask::All,
+                    int64_t trackId = -1);
     void cancel(int64_t jobId);
     void retry(int64_t jobId);
     void pause();
@@ -62,11 +69,22 @@ public:
     struct JobInfo { int state; float progress; int attempts; };
     std::unordered_map<int64_t, JobInfo> snapshot() const;
 
+    /// §3-4 — public job descriptors: state mapped to the external
+    /// JobState lifecycle (Queued/Decoding/Analyzing/Caching/
+    /// Completed/Failed/Cancelled), one copy — callers poll or listen.
+    std::vector<AnalysisJob> snapshotJobs() const;
+    AnalysisJob jobInfo(int64_t jobId) const;
+
     void addListener(Listener l);
+    /// §4 — the persisting stage of a job's lifecycle: the service
+    /// marks Caching while it writes the result to the store.
+    void markSaving(int64_t jobId);
 
 private:
     struct Job {
         int64_t id; std::string path; int priority; int retries;
+        uint32_t mask;
+        int64_t trackId;
         std::shared_ptr<std::atomic<bool>> cancel;
     };
     static bool higherPriority(const std::shared_ptr<Job>& a,
@@ -88,6 +106,8 @@ private:
     std::vector<std::shared_ptr<Job>> heap_;   // max-heap by priority
     std::unordered_map<int64_t, JobInfo> states_;
     std::unordered_map<int64_t, std::shared_ptr<Job>> jobs_;
+    std::unordered_map<int64_t, std::string> errors_;
+    std::unordered_map<int64_t, int> events_;   // last Event per job
     std::vector<Listener> listeners_;
     int64_t nextId_ { 1 };
 };

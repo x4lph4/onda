@@ -56,6 +56,13 @@ struct BeatGrid {
         return (int)std::floor((double)b / beatsPerBar) + 1; // 1-based
     }
 
+    /// §31 — meter as a TimeSignature. `beatsPerBar` is the
+    /// numerator; the denominator stays 4 until a meter model needs
+    /// otherwise (bars are still counted in quarter-note beats).
+    TimeSignature timeSignature() const noexcept {
+        return { beatsPerBar, 4 };
+    }
+
     /// BPM in effect at a (fractional) beat position.
     double bpmAt(double beat) const noexcept {
         if (segments.empty()) return 0.0;

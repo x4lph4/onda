@@ -9,6 +9,7 @@ add_executable(onda_tests
     decoder_tests.cpp
     stress_tests.cpp
     analysis_tests.cpp
+    analysis_phase30_tests.cpp
     performance_tests.cpp
     mixer_tests.cpp
     mixer_phase17_tests.cpp

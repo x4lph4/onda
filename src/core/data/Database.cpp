@@ -315,6 +315,15 @@ ALTER TABLE playlists ADD COLUMN description TEXT NOT NULL DEFAULT '';
 ALTER TABLE playlists ADD COLUMN color INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE playlists ADD COLUMN sort_mode INTEGER NOT NULL DEFAULT 0;
 )SQL",
+    // v11 — Phase 30 analysis deepening: intersample true-peak,
+    // spectral centroid, per-track energy confidence, and per-bin
+    // spectral band triples for colored waveforms (§42/§43/§44/§45).
+    R"SQL(
+ALTER TABLE analysis ADD COLUMN true_peak REAL NOT NULL DEFAULT 0;
+ALTER TABLE analysis ADD COLUMN centroid_hz REAL NOT NULL DEFAULT -1;
+ALTER TABLE analysis ADD COLUMN energy_conf REAL NOT NULL DEFAULT 0;
+ALTER TABLE waveforms ADD COLUMN bands BLOB;
+)SQL",
 };
 
 bool Database::open(const std::string& path) {

@@ -90,10 +90,48 @@ public:
                 lu[(size_t)(lu.size() * 0.95) - 1] -
                 lu[(size_t)(lu.size() * 0.10)];
         }
+
+        // ---- true-peak estimate (§45) ----
+        // 4x Catmull-Rom oversampling: the reconstructed waveform can
+        // legitimately exceed the sample peak between samples
+        // (linear interpolation never overshoots, so it cannot detect
+        // intersample overs). Cubic approximates the sinc
+        // reconstruction closely enough to flag clipped-looking overs;
+        // documented approximation — not a certification meter.
+        {
+            float tp = 0.0f;
+            for (int c = 0; c < channels; ++c) {
+                for (int64_t i = 0; i < n - 1; ++i) {
+                    const float p0 = sampleAt(samples, n, channels,
+                                              i - 1, c);
+                    const float p1 = sampleAt(samples, n, channels, i, c);
+                    const float p2 = sampleAt(samples, n, channels,
+                                              i + 1, c);
+                    const float p3 = sampleAt(samples, n, channels,
+                                              i + 2, c);
+                    tp = std::max(tp, std::fabs(p1));
+                    for (float t : { 0.25f, 0.5f, 0.75f }) {
+                        const float v = 0.5f * ((2.0f * p1) +
+                            (-p0 + p2) * t +
+                            (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * t * t +
+                            (-p0 + 3.0f * p1 - 3.0f * p2 + p3) * t * t * t);
+                        tp = std::max(tp, std::fabs(v));
+                    }
+                }
+            }
+            r.truePeak = std::min(tp, 4.0f);
+        }
         return r;
     }
 
 private:
+    /// Edge-clamped channel sample access for the oversampler.
+    static float sampleAt(const float* s, int64_t n, int ch,
+                          int64_t i, int c) {
+        i = std::clamp<int64_t>(i, 0, n - 1);
+        return s[(size_t)i * (size_t)ch + (size_t)c];
+    }
+
     struct Filter { double b0, b1, b2, a1, a2; };
     // BS.1770 pre-filter stage 1 (high-shelf) & stage 2 (high-pass),
     // bilinear coefficients computed for 48 kHz.

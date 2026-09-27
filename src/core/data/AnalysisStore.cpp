@@ -133,6 +133,33 @@ BeatGrid AnalysisStore::deserializeGrid(const std::string& s, double rate) const
     return g;
 }
 
+void AnalysisStore::saveFailed(const std::string& path,
+                               const std::string& error) {
+    const int64_t id = trackIdFor(path);
+    const uint64_t fp = fingerprint(path);
+    auto s = db_.prepare(
+        "UPDATE tracks SET fingerprint=?,analysis_state=?,"
+        "analysis_version=?,error=?,updated_at=? WHERE id=?");
+    s.bind(1, (int64_t)fp);
+    s.bind(2, (int64_t)AnalysisState::Failed);
+    s.bind(3, (int64_t)kAnalysisVersion);
+    s.bind(4, error);
+    s.bind(5, (int64_t)::time(nullptr));
+    s.bind(6, id);
+    s.step(); s.finalize();
+}
+
+std::string AnalysisStore::errorFor(const std::string& path) {
+    const int64_t id = trackIdFor(path);
+    if (id <= 0) return {};
+    auto s = db_.prepare("SELECT error FROM tracks WHERE id=?");
+    s.bind(1, id);
+    std::string e;
+    if (s.step()) e = s.colText(0);
+    s.finalize();
+    return e;
+}
+
 void AnalysisStore::save(const std::string& path, const AnalysisBundle& b,
                          const std::string& title, const std::string& artist) {
     const int64_t id = trackIdFor(path);
@@ -190,13 +217,19 @@ void AnalysisStore::save(const std::string& path, const AnalysisBundle& b,
         // the analysis row so library filters/stats hit the index.
         const auto en = smart::EnergyAnalysisEngine::analyze(
             b.waveform, r.loudness, r.durationSec);
+        // §44 — when the pipeline's Energy component ran, its score
+        // is the same formula upstream; prefer it so component status
+        // and the stored value agree.
+        const float energyVal =
+            r.energy.score >= 0.0f ? r.energy.score : en.energy;
         auto s = db_.prepare(
             "INSERT INTO analysis(track_id,bpm,bpm_confidence,bpm_stability,"
             "bpm_variable,bpm_candidates,key_index,key_confidence,"
             "first_sound_frame,last_sound_frame,silences,first_onset_frame,"
-            "peak,rms,lufs_i,lra,transients,comp_status,needs_review,"
-            "energy,energy_curve,energy_transitions,structure_json)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+            "peak,rms,lufs_i,lra,true_peak,transients,comp_status,needs_review,"
+            "energy,energy_curve,energy_transitions,structure_json,"
+            "centroid_hz,energy_conf)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
             " ON CONFLICT(track_id) DO UPDATE SET bpm=excluded.bpm,"
             "bpm_confidence=excluded.bpm_confidence,"
             "bpm_stability=excluded.bpm_stability,"
@@ -209,13 +242,16 @@ void AnalysisStore::save(const std::string& path, const AnalysisBundle& b,
             "silences=excluded.silences,"
             "first_onset_frame=excluded.first_onset_frame,"
             "peak=excluded.peak,rms=excluded.rms,lufs_i=excluded.lufs_i,"
-            "lra=excluded.lra,transients=excluded.transients,"
+            "lra=excluded.lra,true_peak=excluded.true_peak,"
+            "transients=excluded.transients,"
             "comp_status=excluded.comp_status,"
             "needs_review=excluded.needs_review,"
             "energy=excluded.energy,"
             "energy_curve=excluded.energy_curve,"
             "energy_transitions=excluded.energy_transitions,"
-            "structure_json=excluded.structure_json");
+            "structure_json=excluded.structure_json,"
+            "centroid_hz=excluded.centroid_hz,"
+            "energy_conf=excluded.energy_conf");
         s.bind(1, id);
         s.bind(2, r.bpm.bpm); s.bind(3, (double)r.bpm.confidence);
         s.bind(4, (double)r.bpm.stability);
@@ -228,15 +264,18 @@ void AnalysisStore::save(const std::string& path, const AnalysisBundle& b,
         s.bind(14, (double)r.loudness.rms);
         s.bind(15, (double)r.loudness.integratedLufs);
         s.bind(16, (double)r.loudness.loudnessRange);
-        s.bind(17, trans);
-        s.bind(18, compMask);
-        s.bind(19, (int64_t)(r.needsReview ? 1 : 0));
-        s.bind(20, (double)en.energy);
-        s.bind(21, smart::EnergyAnalysisEngine::curveJson(en.curve));
-        s.bind(22, smart::EnergyAnalysisEngine::transitionsJson(
+        s.bind(17, (double)r.loudness.truePeak);
+        s.bind(18, trans);
+        s.bind(19, compMask);
+        s.bind(20, (int64_t)(r.needsReview ? 1 : 0));
+        s.bind(21, (double)energyVal);
+        s.bind(22, smart::EnergyAnalysisEngine::curveJson(en.curve));
+        s.bind(23, smart::EnergyAnalysisEngine::transitionsJson(
             en.transitions));
-        s.bind(23, smart::EnergyAnalysisEngine::structureJson(
+        s.bind(24, smart::EnergyAnalysisEngine::structureJson(
             en.structure));
+        s.bind(25, (double)r.spectral.centroidHz);
+        s.bind(26, (double)r.energy.confidence);
         s.step(); s.finalize();
     }
     saveGrid(id, b.grid, false);
@@ -262,16 +301,18 @@ void AnalysisStore::save(const std::string& path, const AnalysisBundle& b,
     const size_t dtBytes = w.detail.size() * sizeof(WaveformBin);
     {
         auto s = db_.prepare(
-            "INSERT INTO waveforms(track_id,channels,num_frames,sample_rate,overview,mid,detail)"
-            " VALUES(?,?,?,?,?,?,?)"
+            "INSERT INTO waveforms(track_id,channels,num_frames,sample_rate,overview,mid,detail,bands)"
+            " VALUES(?,?,?,?,?,?,?,?)"
             " ON CONFLICT(track_id) DO UPDATE SET channels=excluded.channels,"
             "num_frames=excluded.num_frames,sample_rate=excluded.sample_rate,"
-            "overview=excluded.overview,mid=excluded.mid,detail=excluded.detail");
+            "overview=excluded.overview,mid=excluded.mid,detail=excluded.detail,"
+            "bands=excluded.bands");
         s.bind(1, id); s.bind(2, (int64_t)w.channels);
         s.bind(3, w.numFrames); s.bind(4, w.sampleRate);
         s.bind(5, w.overview.data(), (int)ovBytes);
         s.bind(6, w.mid.data(), (int)mdBytes);
         s.bind(7, w.detail.data(), (int)dtBytes);
+        s.bind(8, w.bands.data(), (int)(w.bands.size() * sizeof(float)));
         s.step(); s.finalize();
     }
 }
@@ -343,7 +384,8 @@ std::shared_ptr<AnalysisBundle> AnalysisStore::load(const std::string& path) {
             "SELECT bpm,bpm_confidence,bpm_stability,bpm_variable,"
             "key_index,key_confidence,first_sound_frame,last_sound_frame,"
             "first_onset_frame,peak,rms,lufs_i,lra,transients,"
-            "comp_status,needs_review FROM analysis WHERE track_id=?");
+            "comp_status,needs_review,true_peak,centroid_hz,"
+            "energy,energy_conf FROM analysis WHERE track_id=?");
         s.bind(1, id);
         if (s.step()) {
             r.bpm.bpm = s.colDouble(0); r.bpm.confidence = (float)s.colDouble(1);
@@ -358,6 +400,10 @@ std::shared_ptr<AnalysisBundle> AnalysisStore::load(const std::string& path) {
             r.loudness.rms = (float)s.colDouble(10);
             r.loudness.integratedLufs = (float)s.colDouble(11);
             r.loudness.loudnessRange = (float)s.colDouble(12);
+            // valid isn't a column — a stored row with any real
+            // measurement is by definition a successful loudness pass.
+            r.loudness.valid = r.loudness.peak > 0.0f ||
+                               r.loudness.integratedLufs > -69.0f;
             // transients JSON-lite parse: [[frame,strength],…]
             const std::string t = s.colText(13);
             const char* p = t.c_str();
@@ -374,6 +420,10 @@ std::shared_ptr<AnalysisBundle> AnalysisStore::load(const std::string& path) {
                 if (mask & ((int64_t)1 << c))
                     r.components[c].state = (int)AnalysisState::Analyzed;
             r.needsReview = s.colInt(15) != 0;
+            r.loudness.truePeak = (float)s.colDouble(16);
+            r.spectral.centroidHz = (float)s.colDouble(17);
+            r.energy.score = (float)s.colDouble(18);
+            r.energy.confidence = (float)s.colDouble(19);
         }
         s.finalize();
     }
@@ -385,7 +435,7 @@ std::shared_ptr<AnalysisBundle> AnalysisStore::load(const std::string& path) {
     }
     {
         auto s = db_.prepare(
-            "SELECT channels,num_frames,sample_rate,overview,mid,detail FROM waveforms WHERE track_id=?");
+            "SELECT channels,num_frames,sample_rate,overview,mid,detail,bands FROM waveforms WHERE track_id=?");
         s.bind(1, id);
         if (s.step()) {
             auto& w = b->waveform;
@@ -398,6 +448,9 @@ std::shared_ptr<AnalysisBundle> AnalysisStore::load(const std::string& path) {
             std::memcpy(w.overview.data(), ov.data(), ov.size());
             std::memcpy(w.mid.data(), md.data(), md.size());
             std::memcpy(w.detail.data(), dt.data(), dt.size());
+            const auto bd = s.colBlob(6);
+            w.bands.resize(bd.size() / sizeof(float));
+            std::memcpy(w.bands.data(), bd.data(), bd.size());
         }
         s.finalize();
     }

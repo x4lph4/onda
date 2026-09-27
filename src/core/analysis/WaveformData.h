@@ -30,6 +30,14 @@ public:
     std::vector<WaveformBin> mid;      // frame/1024 bins × channels
     std::vector<WaveformBin> detail;   // frame/256  bins × channels
 
+    /// §42 — per-overview-bin spectral band fractions for colored
+    /// waveform rendering (Phase 30): kOverviewBins triples
+    /// {low,mid,high}, each 0..1 summing ≈1 (mono-mixed bands:
+    /// <250 Hz / 250 Hz–4 kHz / >4 kHz). Filled by SpectralAnalyzer
+    /// during analysis — empty when no spectral pass ran. Rendering
+    /// maps bands → color; the data itself is palette-agnostic.
+    std::vector<float> bands;
+
     bool empty() const noexcept { return overview.empty(); }
 
     /// Region query: fill `out` with up to `maxBins` bins covering

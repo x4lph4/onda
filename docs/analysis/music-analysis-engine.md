@@ -126,3 +126,77 @@ candidates, tempo maps, key, pyramid queries, validator verdicts,
 loudness honesty, transient caps, override separation+persistence,
 queue gate, service edits, grid rescaling, 100-track throughput
 benchmark (~187 ms/track Debug).
+
+## Phase 30 — deepening (masks, job state, downbeat, tap, true-peak, spectral bands, energy, failure persistence)
+
+### Component masks (§51–53)
+
+`AnalysisMask` selects which stages a job runs (`Essential =
+Bpm|BeatGrid|Waveform`, `All`, or any subset). Masked-out components
+stay `NotAnalyzed` — no phantom results. `analyzeForDeck` enqueues an
+IMMEDIATE-priority essentials job plus a LOW-priority follow-up for
+the rest; `analyzePartial` runs an arbitrary subset. On save,
+`mergePrior` folds prior analyzed components into the fresh result so
+a partial run completes the record instead of replacing it.
+
+### Job lifecycle (§3–4)
+
+`AnalysisJob` is the public descriptor: `trackId`, `path`, `priority`,
+`requestedAnalyses`, `state` (`Queued/Decoding/Analyzing/Caching/
+Completed/Failed/Cancelled`), `progress`, `attempts`, `error`.
+`AnalysisQueue::snapshotJobs()` exposes it; `Event::Saving` marks the
+persistence stage. `setMinActivePriority` is the CPU gate — during
+playback only ≥HIGH jobs run.
+
+### New analyzers
+
+- `DownbeatDetector::phase` — every onset votes for the beat-of-bar
+  position it lands on; winner = bar start + vote-share confidence.
+- `TapBpmTracker` — median inter-tap interval (outlier-robust), gap
+  > `resetGapMs` re-anchors without recording the gap as an interval.
+  `AnalysisEdit::TapBpm` feeds it; ≥2 taps become a BPM override.
+- `EnergyAnalyzer::score` — normalized 0..1 energy from loudness +
+  waveform (falls back to waveform-RMS when loudness is invalid) +
+  coverage-based confidence.
+- `SpectralAnalyzer` — Butterworth LP(250)/HP(4k) split gives
+  low/mid/high fractions per overview bin (`WaveformData::bands`,
+  palette-agnostic §42 color data) plus a Hann-windowed radix-2 FFT
+  spectral centroid.
+
+### Measurements
+
+- `LoudnessResult.truePeak` — 4× Catmull-Rom intersample estimate.
+  Documented as an approximation, not a polyphase true-peak meter.
+- `BeatGrid::timeSignature()` — `{beatsPerBar, 4}`; `beatsPerBar` is
+  a field, 4/4 is the default not the only possibility.
+
+### Failure persistence (§60)
+
+`AnalysisStore::saveFailed` writes `analysis_state=Failed` +
+technical error; `errorFor(path)` reads it (the UI side channel —
+`load()` only serves Analyzed bundles). The track row is never
+deleted; a definitively-failed job stops re-queueing forever.
+
+### Schema v11
+
+`analysis.true_peak`, `analysis.centroid_hz`, `analysis.energy_conf`,
+`waveforms.bands` (per-bin {low,mid,high} floats). `load()` restores
+all of them plus `loudness.valid` derived from stored measurements.
+
+### UI (§55)
+
+`TrackAnalysisPanel` (`src/app/ui/`) — read-only snapshot view:
+BPM+confidence, grid status + review flag, key (standard+Camelot),
+waveform/loudness/energy status, spectral centroid, analysis version,
+per-component states. Pulls from `AnalysisService`; never decodes on
+the message thread.
+
+### Validation
+
+`tests/analysis_phase30_tests.cpp` — 22 cases `[an30]`: mask
+semantics, configurable analysis rate (§11), downbeat vote, tap
+tracker (median + reset-gap), true-peak ≥ sample-peak, spectral band
+dominance, energy ordering, full-pipeline population, job snapshot/
+gating/pause, `analyzeForDeck` split, `saveFailed` + `errorFor`,
+partial-merge preservation, v11 persistence round-trip, tap→override,
+24-job queue throughput (~4.6 jobs/s), pause isolation.

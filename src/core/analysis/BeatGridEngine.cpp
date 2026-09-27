@@ -1,5 +1,7 @@
 #include "BeatGridEngine.h"
 
+#include "DownbeatDetector.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -45,21 +47,9 @@ BeatGrid BeatGridEngine::build(double rate, const BpmResult& bpm,
     g.firstBeatFrame = 0;
     for (auto& s : g.segments) s.startFrame += anchor;
 
-    // ---- downbeat phase: strongest beat position wins ----
-    if (!onsets.onsets.empty()) {
-        const int bpb = g.beatsPerBar;
-        std::vector<double> score((size_t)bpb, 0.0);
-        for (const auto& o : onsets.onsets) {
-            const double b = g.frameToBeat(o.frame);
-            if (b < 0.0) continue;
-            const int idx = (int)llround(b) % bpb;
-            score[(size_t)(idx < 0 ? idx + bpb : idx)] += o.strength;
-        }
-        int best = 0;
-        for (int i = 1; i < bpb; ++i)
-            if (score[(size_t)i] > score[(size_t)best]) best = i;
-        g.downbeatOffset = best;
-    }
+    // ---- downbeat phase (§29): strongest beat-of-bar wins ----
+    g.downbeatOffset =
+        DownbeatDetector::phase(onsets, g, g.beatsPerBar).offset;
     return g;
 }
 

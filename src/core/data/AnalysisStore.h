@@ -38,6 +38,15 @@ public:
               const std::string& title, const std::string& artist);
     std::shared_ptr<AnalysisBundle> load(const std::string& path);
 
+    /// §60 — a definitively-failed job leaves a durable mark:
+    /// analysis_state=Failed + the technical error, so rescans report
+    /// the failure instead of re-queueing forever. The track row is
+    /// never deleted.
+    void saveFailed(const std::string& path, const std::string& error);
+    /// Stored failure reason ("" when none) — `load()` returns nullptr
+    /// for non-analyzed tracks, so the UI needs a side channel.
+    std::string errorFor(const std::string& path);
+
     /// Phase 22 — rich key detail for one track (alternatives,
     /// segments, algo identity); loaded on demand, not in `load()`.
     std::optional<harmonic::KeyAnalysisResult> loadKeyDetail(

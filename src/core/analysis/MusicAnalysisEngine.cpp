@@ -9,16 +9,19 @@
 #include "BeatGridEngine.h"
 #include "BeatGridValidator.h"
 #include "BpmAnalyzer.h"
+#include "EnergyAnalyzer.h"
 #include "KeyAnalyzer.h"
 #include "LoudnessAnalyzer.h"
 #include "OnsetDetector.h"
+#include "SpectralAnalyzer.h"
 #include "TransientAnalyzer.h"
 #include "WaveformGenerator.h"
 
 namespace onda {
 
 std::shared_ptr<AnalysisBundle> MusicAnalysisEngine::analyzeTrack(
-    const std::string& path, CancelToken cancel, ProgressCb progress) {
+    const std::string& path, CancelToken cancel, ProgressCb progress,
+    uint32_t mask) {
 
     if (cancelled(cancel)) return nullptr;
 
@@ -29,9 +32,9 @@ std::shared_ptr<AnalysisBundle> MusicAnalysisEngine::analyzeTrack(
         b->result.error = "no decoder available";
         return b;
     }
-    // Decode at 48 kHz reference — analysis works on any rate but
-    // normalizing keeps bin/hop tables fixed across tracks.
-    constexpr double kRate = 48000.0;
+    // §11 — configurable analysis rate (default 48 kHz): keeps the
+    // bin/hop tables independent of the device's output rate.
+    const double kRate = analysisRate_;
     if (!dec->open(path, kRate)) {
         auto b = std::make_shared<AnalysisBundle>();
         b->result.state = AnalysisState::Failed;
@@ -58,7 +61,7 @@ std::shared_ptr<AnalysisBundle> MusicAnalysisEngine::analyzeTrack(
     }
     if (progress) progress(0.15f);
     return analyzeBuffer(pcm.data(), (int64_t)pcm.size() / 2, 2, kRate,
-                         cancel);
+                         cancel, mask);
 }
 
 void MusicAnalysisEngine::silenceScan(AnalysisResult& r, const float* samples,
@@ -105,7 +108,7 @@ void MusicAnalysisEngine::silenceScan(AnalysisResult& r, const float* samples,
 
 std::shared_ptr<AnalysisBundle> MusicAnalysisEngine::analyzeBuffer(
     const float* samples, int64_t numFrames, int channels,
-    double sampleRate, CancelToken cancel) {
+    double sampleRate, CancelToken cancel, uint32_t mask) {
 
     auto b = std::make_shared<AnalysisBundle>();
     auto& r = b->result;
@@ -113,87 +116,143 @@ std::shared_ptr<AnalysisBundle> MusicAnalysisEngine::analyzeBuffer(
     r.numFrames = numFrames;
     r.sampleRate = sampleRate;
     r.durationSec = numFrames / sampleRate;
-    // component ledger (§26): Decode is implied done here; the rest
-    // start NotAnalyzed and flip as stages complete or fail.
+    const auto want = [&](AnalysisComponent c) {
+        return (mask & AnalysisMask::bit(c)) != 0;
+    };
+    // component ledger (§26): Decode is implied done here; requested
+    // stages start Analyzing/0, unrequested stay NotAnalyzed — §51
+    // partial runs never fake results they didn't produce.
     auto comp = [&](AnalysisComponent c, AnalysisState s, float p) {
         r.components[(int)c] = { (int)s, p };
     };
     comp(AnalysisComponent::Decode, AnalysisState::Analyzed, 1.0f);
     for (int c = 1; c < kNumComponents; ++c)
-        comp((AnalysisComponent)c, AnalysisState::Analyzing, 0.0f);
+        comp((AnalysisComponent)c,
+             want((AnalysisComponent)c) ? AnalysisState::Analyzing
+                                        : AnalysisState::NotAnalyzed,
+             0.0f);
 
     if (cancelled(cancel)) return nullptr;
 
-    // ---- onsets + BPM ----
-    OnsetDetector od;
-    const auto onsets = od.detect(samples, numFrames, channels, sampleRate);
+    // ---- onsets: needed by BPM / BeatGrid / Transients ----
+    OnsetDetector::Result onsets;
+    const bool needOnsets = want(AnalysisComponent::Bpm) ||
+                            want(AnalysisComponent::BeatGrid) ||
+                            want(AnalysisComponent::Transients);
+    if (needOnsets) {
+        OnsetDetector od;
+        onsets = od.detect(samples, numFrames, channels, sampleRate);
+    }
     if (cancelled(cancel)) return nullptr;
 
-    BpmAnalyzer bpm;
-    r.bpm = bpm.analyze(onsets);
-    comp(AnalysisComponent::Bpm,
-         r.bpm.bpm > 0.0 ? AnalysisState::Analyzed
-                         : AnalysisState::Failed, 1.0f);
+    if (want(AnalysisComponent::Bpm)) {
+        BpmAnalyzer bpm;
+        r.bpm = bpm.analyze(onsets);
+        comp(AnalysisComponent::Bpm,
+             r.bpm.bpm > 0.0 ? AnalysisState::Analyzed
+                             : AnalysisState::Failed, 1.0f);
+    }
     if (cancelled(cancel)) return nullptr;
 
     // ---- key (failure isolated: other components keep their data) ----
     // Phase 22: the K-S detector produces the rich KeyAnalysisResult;
     // the flat KeyResult on `r` is derived from it — same chromagram
     // pass, no duplicate work.
-    try {
-        harmonic::KsKeyDetector det;
-        harmonic::KeyAnalysisConfig cfg =
-            harmonic::KeyAnalysisProvider().configFor(
-                (int)harmonic::KeyQuality::Balanced);
-        b->keyDetail = det.analyze(samples, numFrames, channels,
-                                   sampleRate, cfg);
-        r.key.key        = b->keyDetail.primary.index();
-        r.key.confidence = b->keyDetail.primary.confidence;
-        r.key.standard   = KeyAnalyzer::standardName(r.key.key);
-        r.key.camelot    = KeyAnalyzer::camelotName(r.key.key);
-        comp(AnalysisComponent::Key,
-             r.key.key >= 0 ? AnalysisState::Analyzed
-                            : AnalysisState::Failed, 1.0f);
-    } catch (...) {
-        r.key = {};
-        comp(AnalysisComponent::Key, AnalysisState::Failed, 1.0f);
+    if (want(AnalysisComponent::Key)) {
+        try {
+            harmonic::KsKeyDetector det;
+            harmonic::KeyAnalysisConfig cfg =
+                harmonic::KeyAnalysisProvider().configFor(
+                    (int)harmonic::KeyQuality::Balanced);
+            b->keyDetail = det.analyze(samples, numFrames, channels,
+                                       sampleRate, cfg);
+            r.key.key        = b->keyDetail.primary.index();
+            r.key.confidence = b->keyDetail.primary.confidence;
+            r.key.standard   = KeyAnalyzer::standardName(r.key.key);
+            r.key.camelot    = KeyAnalyzer::camelotName(r.key.key);
+            comp(AnalysisComponent::Key,
+                 r.key.key >= 0 ? AnalysisState::Analyzed
+                                : AnalysisState::Failed, 1.0f);
+        } catch (...) {
+            r.key = {};
+            comp(AnalysisComponent::Key, AnalysisState::Failed, 1.0f);
+        }
     }
     if (cancelled(cancel)) return nullptr;
 
     // ---- silence + waveform ----
     silenceScan(r, samples, numFrames, channels);
-    WaveformGenerator wg;
-    b->waveform = wg.generate(samples, numFrames, channels, sampleRate);
-    comp(AnalysisComponent::Waveform,
-         !b->waveform.empty() ? AnalysisState::Analyzed
-                              : AnalysisState::Failed, 1.0f);
+    if (want(AnalysisComponent::Waveform)) {
+        WaveformGenerator wg;
+        b->waveform = wg.generate(samples, numFrames, channels,
+                                  sampleRate);
+        comp(AnalysisComponent::Waveform,
+             !b->waveform.empty() ? AnalysisState::Analyzed
+                                  : AnalysisState::Failed, 1.0f);
+    }
+    if (cancelled(cancel)) return nullptr;
+
+    // ---- spectral (§43): band fractions + centroid; also fills the
+    // overview band triples that color the waveform (§42) ----
+    if (want(AnalysisComponent::Spectral)) {
+        SpectralAnalyzer sa;
+        const auto so = sa.analyze(samples, numFrames, channels,
+                                   sampleRate,
+                                   WaveformData::kOverviewBins,
+                                   cancel.get());
+        if (cancelled(cancel)) return nullptr;
+        r.spectral = so.result;
+        if (!b->waveform.empty()) b->waveform.bands = so.bands;
+        comp(AnalysisComponent::Spectral,
+             so.result.centroidHz >= 0.0f || !so.bands.empty()
+                 ? AnalysisState::Analyzed : AnalysisState::Failed,
+             1.0f);
+    }
     if (cancelled(cancel)) return nullptr;
 
     // ---- transients (marker list reused by slicer/sampler) ----
-    TransientAnalyzer ta;
-    r.transients = ta.analyze(onsets);
-    comp(AnalysisComponent::Transients,
-         AnalysisState::Analyzed, 1.0f);
+    if (want(AnalysisComponent::Transients)) {
+        TransientAnalyzer ta;
+        r.transients = ta.analyze(onsets);
+        comp(AnalysisComponent::Transients,
+             AnalysisState::Analyzed, 1.0f);
+    }
 
     // ---- loudness (informational; never alters audio) ----
-    LoudnessAnalyzer la;
-    r.loudness = la.analyze(samples, numFrames, channels, sampleRate);
-    comp(AnalysisComponent::Loudness,
-         r.loudness.valid ? AnalysisState::Analyzed
-                          : AnalysisState::Failed, 1.0f);
+    if (want(AnalysisComponent::Loudness)) {
+        LoudnessAnalyzer la;
+        r.loudness = la.analyze(samples, numFrames, channels,
+                                sampleRate);
+        comp(AnalysisComponent::Loudness,
+             r.loudness.valid ? AnalysisState::Analyzed
+                              : AnalysisState::Failed, 1.0f);
+    }
+    if (cancelled(cancel)) return nullptr;
+
+    // ---- energy (§44): derived from loudness+waveform already
+    // measured — no extra DSP pass ----
+    if (want(AnalysisComponent::Energy)) {
+        r.energy = EnergyAnalyzer::score(r.loudness, b->waveform);
+        comp(AnalysisComponent::Energy,
+             r.energy.score >= 0.0f ? AnalysisState::Analyzed
+                                    : AnalysisState::Failed, 1.0f);
+    }
 
     // ---- beatgrid + validation ----
-    BeatGridEngine ge;
-    b->grid = ge.build(sampleRate, r.bpm, onsets, numFrames);
-    {
-        BeatGridValidator v;
-        const auto verdict = v.check(b->grid, r.bpm, onsets, numFrames);
-        r.needsReview   = verdict.needsReview;
-        r.reviewReasons = verdict.reasons;
+    if (want(AnalysisComponent::BeatGrid)) {
+        BeatGridEngine ge;
+        b->grid = ge.build(sampleRate, r.bpm, onsets, numFrames);
+        {
+            BeatGridValidator v;
+            const auto verdict =
+                v.check(b->grid, r.bpm, onsets, numFrames);
+            r.needsReview   = verdict.needsReview;
+            r.reviewReasons = verdict.reasons;
+        }
+        comp(AnalysisComponent::BeatGrid,
+             !b->grid.empty() ? AnalysisState::Analyzed
+                              : AnalysisState::Failed, 1.0f);
     }
-    comp(AnalysisComponent::BeatGrid,
-         !b->grid.empty() ? AnalysisState::Analyzed
-                          : AnalysisState::Failed, 1.0f);
 
     r.state = AnalysisState::Analyzed;
     return b;

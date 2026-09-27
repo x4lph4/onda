@@ -2,6 +2,54 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 30 (track analysis engine deepening)
+
+Deepened the Phase-3/14/19/22/23 analysis pipeline
+(`docs/analysis/music-analysis-engine.md`,
+`docs/adr/0030-track-analysis-engine-deepening.md`) — everything runs
+on the analysis worker pool, never on audio or UI threads.
+
+- **Component masks** (§51-53): `AnalysisMask` selects pipeline
+  stages (`Essential`, `All`, or any subset); masked-out components
+  stay `NotAnalyzed` — no phantom results.
+- **On-demand + partial analysis**: `analyzeForDeck` enqueues
+  IMMEDIATE essentials (BPM/grid/waveform) + LOW-priority follow-up;
+  `analyzePartial` runs arbitrary subsets. `mergePrior` folds prior
+  results into fresh runs — nothing is re-analyzed (§8).
+- **Job state** (§3-4): `AnalysisJob`/`JobState` —
+  Queued/Decoding/Analyzing/Caching/Completed/Failed/Cancelled with
+  progress + error, exposed via `AnalysisQueue::snapshotJobs()`;
+  `Event::Saving` marks the persistence stage; `setMinActivePriority`
+  is the playback CPU gate.
+- **Downbeat** (§29-31): `DownbeatDetector::phase` — onset-strength
+  vote per beat-of-bar + confidence; `BeatGrid::timeSignature()`
+  exposes `{beatsPerBar,4}` (4/4 default, not hardcoded).
+- **Tap BPM** (§24/§56): `TapBpmTracker` median-interval estimator
+  with gap re-anchor; `AnalysisEdit::TapBpm` → user BPM override.
+- **Loudness** (§45): `truePeak` — documented 4× Catmull-Rom
+  intersample estimate.
+- **Spectral** (§42-43): `SpectralAnalyzer` — Butterworth
+  low/mid/high splits per overview bin (`WaveformData::bands`,
+  palette-agnostic) + Hann-windowed radix-2 FFT centroid.
+- **Energy** (§44): `EnergyAnalyzer::score` — normalized 0..1 from
+  loudness+waveform with coverage-based confidence.
+- **Analysis rate** (§11): `setAnalysisRate` — configurable, no
+  dependency on the output device rate.
+- **Failure persistence** (§60): `saveFailed` stores `Failed` +
+  technical error (`errorFor` side channel); tracks never deleted,
+  failed jobs stop re-queueing.
+- **Schema v11**: `analysis.true_peak/centroid_hz/energy_conf` +
+  `waveforms.bands` — all restored on `load()`.
+- **UI** (§55): `TrackAnalysisPanel` — read-only per-track snapshot
+  (BPM/key confidence, grid+review, waveform/loudness/energy status,
+  version, component states); pulls, never decodes.
+- **22 new `[an30]` tests**: masks, rate, downbeat vote, tap tracker,
+  true-peak ≥ peak, spectral dominance, energy ordering, queue
+  snapshot/gating/pause, deck-load split, failure persistence,
+  partial-merge, v11 round-trip, 24-job throughput (~4.6 jobs/s),
+  pause isolation.
+- Full suite green: **589 cases / 1.66 M assertions**.
+
 ## Status — Phase 29 (music library engine completion)
 
 Closed the remaining gaps on the Phase-7/14/18/23 library foundation

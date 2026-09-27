@@ -52,17 +52,30 @@ public:
     using CancelToken = std::shared_ptr<std::atomic<bool>>;
     using ProgressCb  = std::function<void(float)>;
 
+    /// §11 — analysis sample rate. Default 48 kHz keeps the
+    /// historical bin/hop tables; configurable because it must not
+    /// depend on the device's output rate.
+    void   setAnalysisRate(double rate) {
+        if (rate >= 8000.0 && rate <= 192000.0) analysisRate_ = rate;
+    }
+    double analysisRate() const { return analysisRate_; }
+
     /// Decode + analyze `path`. Returns nullptr only on cancel;
     /// failures return a bundle with result.state == Failed + error.
+    /// `mask` (§51) selects which components run — masked-out
+    /// components stay NotAnalyzed and merge with prior results at
+    /// the store layer (§8 resume).
     std::shared_ptr<AnalysisBundle> analyzeTrack(
         const std::string& path,
         CancelToken cancel = nullptr,
-        ProgressCb progress = nullptr);
+        ProgressCb progress = nullptr,
+        uint32_t mask = AnalysisMask::All);
 
     /// Direct buffer API (tests / future streaming sources).
     std::shared_ptr<AnalysisBundle> analyzeBuffer(
         const float* samples, int64_t numFrames, int channels,
-        double sampleRate, CancelToken cancel = nullptr);
+        double sampleRate, CancelToken cancel = nullptr,
+        uint32_t mask = AnalysisMask::All);
 
 private:
     bool cancelled(const CancelToken& c) const {
@@ -72,6 +85,7 @@ private:
                      int64_t numFrames, int channels) const;
 
     DecoderFactory decoderFactory_;
+    double         analysisRate_ { 48000.0 };
 };
 
 } // namespace onda
