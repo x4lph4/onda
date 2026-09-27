@@ -43,6 +43,8 @@ struct Track {
     int    needsReview  { 0 };       // analysis.needs_review — §36
     int    hasBeatgrid  { 0 };       // beatgrids row exists — §36
     int    hasWaveform  { 0 };       // waveforms row exists — §37
+    float  energyScore  { -1.0f };   // analysis.energy 0..1 (-1 unknown)
+                                     // §23 — descriptive, not truth
 
     int  rating { 0 };               // 0..5
     int  color { 0 };                // argb
@@ -125,12 +127,14 @@ struct TrackMeta {
 
 enum class SortKey : int {
     Title = 0, Artist, Album, Bpm, Key, Duration, Rating,
-    DateAdded, PlayCount, LastPlayed, Year, Genre, Path
+    DateAdded, PlayCount, LastPlayed, Year, Genre, Path,
+    Energy                          // §23 — analysis.energy
 };
 
 enum class CmpOp : int {
     Eq = 0, Neq, Lt, Lte, Gt, Gte, Contains, Between, IsNull, In,
-    StartsWith, NotIn               // §21 — smart-playlist operators
+    StartsWith, NotIn,              // §21 — smart-playlist operators
+    NotContains, EndsWith           // §23 — full operator set
 };
 
 /// One filter condition. Field names are fixed strings resolved by

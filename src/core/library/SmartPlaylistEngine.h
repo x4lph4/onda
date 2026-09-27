@@ -24,17 +24,20 @@ namespace onda::library {
 ///       FilterEngine whitelist (bpm/key_index/genre/rating/...).
 /// op string ↔ CmpOp (shared by SmartRule::toCond and the codec).
 inline CmpOp smartOpFor(const std::string& op) {
-    if (op == "neq")         return CmpOp::Neq;
-    if (op == "lt")          return CmpOp::Lt;
-    if (op == "lte")         return CmpOp::Lte;
-    if (op == "gt")          return CmpOp::Gt;
-    if (op == "gte")         return CmpOp::Gte;
-    if (op == "contains")    return CmpOp::Contains;
-    if (op == "starts_with") return CmpOp::StartsWith;
-    if (op == "between")     return CmpOp::Between;
-    if (op == "in")          return CmpOp::In;
-    if (op == "not_in")      return CmpOp::NotIn;
-    if (op == "isnull")      return CmpOp::IsNull;
+    if (op == "neq")          return CmpOp::Neq;
+    if (op == "lt")           return CmpOp::Lt;
+    if (op == "lte")          return CmpOp::Lte;
+    if (op == "gt")           return CmpOp::Gt;
+    if (op == "gte")          return CmpOp::Gte;
+    if (op == "contains")     return CmpOp::Contains;
+    if (op == "not_contains") return CmpOp::NotContains;
+    if (op == "starts_with")  return CmpOp::StartsWith;
+    if (op == "ends_with")    return CmpOp::EndsWith;
+    if (op == "between")      return CmpOp::Between;
+    if (op == "in")           return CmpOp::In;
+    if (op == "not_in")       return CmpOp::NotIn;
+    if (op == "isnull")       return CmpOp::IsNull;
+    if (op == "isnotnull")    return CmpOp::IsNull;
     return CmpOp::Eq;
 }
 
@@ -52,7 +55,8 @@ struct SmartRule {
         c.op    = smartOpFor(op);
         c.text  = text;
         c.a = a; c.b = b; c.ints = ints;
-        c.negate = negate;
+        // "isnotnull" encodes as IsNull + negate (IS NOT EMPTY §4)
+        c.negate = negate || op == "isnotnull";
         return c;
     }
 };
@@ -79,8 +83,10 @@ public:
             case CmpOp::Lte:        return "lte";
             case CmpOp::Gt:         return "gt";
             case CmpOp::Gte:        return "gte";
-            case CmpOp::Contains:   return "contains";
-            case CmpOp::StartsWith: return "starts_with";
+            case CmpOp::Contains:    return "contains";
+            case CmpOp::NotContains: return "not_contains";
+            case CmpOp::StartsWith:  return "starts_with";
+            case CmpOp::EndsWith:    return "ends_with";
             case CmpOp::Between:    return "between";
             case CmpOp::In:         return "in";
             case CmpOp::NotIn:      return "not_in";

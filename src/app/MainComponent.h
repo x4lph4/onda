@@ -10,6 +10,7 @@
 #include "ui/SettingsView.h"
 #include "core/analysis/AnalysisService.h"
 #include "core/library/MusicLibraryEngine.h"
+#include "core/smart/SmartLibraryEngine.h"
 #include "core/performance/PerformanceEngine.h"
 #include "core/sampler/SamplerEngine.h"
 #include "core/stems/StemsEngine.h"
@@ -68,6 +69,8 @@ private:
     adevice::AudioDeviceEngine*             adevice_ = nullptr; // borrowed
     audio::AudioEngine*                     engine_ = nullptr; // borrowed
     stems::StemsEngine*                     stems_ = nullptr;  // borrowed
+    // Phase 23 — smart library facade over the shared library engine
+    std::unique_ptr<smart::SmartLibraryEngine> smartLib_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

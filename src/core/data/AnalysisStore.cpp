@@ -2,6 +2,7 @@
 
 #include "../analysis/KeyAnalyzer.h"
 #include "../harmonic/KeyAnalysisCache.h"
+#include "../smart/EnergyAnalysisEngine.h"
 
 #include <cstdio>
 #include <cstring>
@@ -184,12 +185,18 @@ void AnalysisStore::save(const std::string& path, const AnalysisBundle& b,
             compMask |= (int64_t)1 << c;
 
     {
+        // Phase 23 — energy descriptor from data already measured
+        // (loudness + waveform pyramid). Descriptive only; stored on
+        // the analysis row so library filters/stats hit the index.
+        const auto en = smart::EnergyAnalysisEngine::analyze(
+            b.waveform, r.loudness, r.durationSec);
         auto s = db_.prepare(
             "INSERT INTO analysis(track_id,bpm,bpm_confidence,bpm_stability,"
             "bpm_variable,bpm_candidates,key_index,key_confidence,"
             "first_sound_frame,last_sound_frame,silences,first_onset_frame,"
-            "peak,rms,lufs_i,lra,transients,comp_status,needs_review)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+            "peak,rms,lufs_i,lra,transients,comp_status,needs_review,"
+            "energy,energy_curve,energy_transitions,structure_json)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
             " ON CONFLICT(track_id) DO UPDATE SET bpm=excluded.bpm,"
             "bpm_confidence=excluded.bpm_confidence,"
             "bpm_stability=excluded.bpm_stability,"
@@ -204,7 +211,11 @@ void AnalysisStore::save(const std::string& path, const AnalysisBundle& b,
             "peak=excluded.peak,rms=excluded.rms,lufs_i=excluded.lufs_i,"
             "lra=excluded.lra,transients=excluded.transients,"
             "comp_status=excluded.comp_status,"
-            "needs_review=excluded.needs_review");
+            "needs_review=excluded.needs_review,"
+            "energy=excluded.energy,"
+            "energy_curve=excluded.energy_curve,"
+            "energy_transitions=excluded.energy_transitions,"
+            "structure_json=excluded.structure_json");
         s.bind(1, id);
         s.bind(2, r.bpm.bpm); s.bind(3, (double)r.bpm.confidence);
         s.bind(4, (double)r.bpm.stability);
@@ -220,6 +231,12 @@ void AnalysisStore::save(const std::string& path, const AnalysisBundle& b,
         s.bind(17, trans);
         s.bind(18, compMask);
         s.bind(19, (int64_t)(r.needsReview ? 1 : 0));
+        s.bind(20, (double)en.energy);
+        s.bind(21, smart::EnergyAnalysisEngine::curveJson(en.curve));
+        s.bind(22, smart::EnergyAnalysisEngine::transitionsJson(
+            en.transitions));
+        s.bind(23, smart::EnergyAnalysisEngine::structureJson(
+            en.structure));
         s.step(); s.finalize();
     }
     saveGrid(id, b.grid, false);
@@ -410,6 +427,27 @@ std::shared_ptr<AnalysisBundle> AnalysisStore::load(const std::string& path) {
 std::optional<harmonic::KeyAnalysisResult> AnalysisStore::loadKeyDetail(
     int64_t trackId) {
     return harmonic::KeyAnalysisCache(db_).load(trackId);
+}
+
+std::optional<smart::EnergyResult> AnalysisStore::loadEnergy(
+    int64_t trackId) {
+    auto s = db_.prepare(
+        "SELECT energy,energy_curve,energy_transitions,structure_json"
+        " FROM analysis WHERE track_id=?");
+    s.bind(1, trackId);
+    if (!s.step()) return std::nullopt;
+    const float e = (float)s.colDouble(0);
+    if (e < 0.0f) return std::nullopt;
+    smart::EnergyResult r;
+    r.energy = e;
+    r.level  = smart::EnergyLevels().levelFor(e);
+    r.curve        = smart::EnergyAnalysisEngine::parseCurve(s.colText(1));
+    r.transitions  = smart::EnergyAnalysisEngine::parseTransitions(
+        s.colText(2));
+    r.structure    = smart::EnergyAnalysisEngine::parseStructure(
+        s.colText(3));
+    r.confidence = 0.9f;   // persisted only for completed analyses
+    return r;
 }
 
 void AnalysisStore::setUserBpm(int64_t trackId, double bpm) {

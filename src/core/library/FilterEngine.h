@@ -77,6 +77,20 @@ public:
         return !q.filters.empty() || !q.search.empty();
     }
 
+    /// §8 validation: does `field` resolve to a clause at all?
+    /// (pseudo-fields + whitelisted columns — same list `one()` uses).
+    static bool isKnownField(const std::string& f) {
+        static const char* pseudo[] = {
+            "analyzed", "missing", "waveform", "beatgrid",
+            "needs_review", "tags", "autotag", "unplayed", "session",
+            "added_after", "added_before", "played_after",
+            "played_before", "key_compatible",
+            "key_camelot_compatible", "key_mode",
+        };
+        for (auto* p : pseudo) if (f == p) return true;
+        return column(f) != nullptr;
+    }
+
 private:
     static const char* column(const std::string& f) {
         static const std::pair<const char*, const char*> map[] = {
@@ -93,6 +107,9 @@ private:
             { "key_confidence", "a.key_confidence" },
             { "rating", "t.rating" }, { "color", "t.color" },
             { "energy", "t.energy" }, { "duration", "t.duration_sec" },
+            { "energy_score", "a.energy" },           // §23 analysis
+            { "energy_analysis", "a.energy" },
+            { "lufs", "a.lufs_i" }, { "rms", "a.rms" },
             { "year", "t.year" }, { "track_num", "t.track_num" },
             { "date_added", "t.date_added" }, { "play_count", "t.play_count" },
             { "last_played", "t.last_played" }, { "file_size", "t.file_size" },
@@ -132,6 +149,32 @@ private:
             return "t.id IN (SELECT track_id FROM track_tags tt "
                    "JOIN tags g ON g.id = tt.tag_id WHERE g.name LIKE ?)";
         }
+        // Phase 23 — auto tags (suggested|accepted|rejected|ignored);
+        // text = tag name, a = required status (-1 = any non-rejected).
+        if (c.field == "autotag") {
+            binds.push_back("%" + c.text + "%");
+            return "t.id IN (SELECT track_id FROM auto_tags WHERE name LIKE ?"
+                + std::string(c.a >= 0.0
+                    ? " AND status = " + std::to_string((int)c.a)
+                    : " AND status != 2")
+                + ")";
+        }
+        // Phase 23 — history presets (§28/32): played count/status.
+        if (c.field == "unplayed")
+            return c.a != 0.0
+                ? "t.play_count = 0" : "t.play_count > 0";
+        if (c.field == "session")      // tracks played in session `a`
+            return "t.id IN (SELECT track_id FROM history"
+                   " WHERE session_id = " + std::to_string((int64_t)c.a)
+                   + " AND track_id IS NOT NULL)";
+        if (c.field == "added_after")
+            return "t.date_added >= " + std::to_string((int64_t)c.a);
+        if (c.field == "added_before")
+            return "t.date_added <= " + std::to_string((int64_t)c.a);
+        if (c.field == "played_after")
+            return "t.last_played >= " + std::to_string((int64_t)c.a);
+        if (c.field == "played_before")
+            return "t.last_played <= " + std::to_string((int64_t)c.a);
         if (c.field == "key_compatible") {
             const auto keys = compatibleKeys((int)c.a);
             if (keys.empty()) return "1 = 1";
@@ -164,8 +207,14 @@ private:
             case CmpOp::Contains:
                 binds.push_back("%" + c.text + "%");
                 return out + " LIKE ?";
+            case CmpOp::NotContains:
+                binds.push_back("%" + c.text + "%");
+                return out + " NOT LIKE ?";
             case CmpOp::StartsWith:
                 binds.push_back(c.text + "%");
+                return out + " LIKE ?";
+            case CmpOp::EndsWith:
+                binds.push_back("%" + c.text);
                 return out + " LIKE ?";
             case CmpOp::NotIn: {
                 if (c.ints.empty()) return "1 = 1";

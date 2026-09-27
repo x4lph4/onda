@@ -53,6 +53,17 @@ MainComponent::MainComponent(audio::AudioEngine& engine,
         theme_, commands_, shortcuts_, engine, perf, analysis, lib,
         *bridge_, config, notes_);
 
+    // Phase 23 — smart library layer (queries stay sync/indexed;
+    // heavy work posts to the library worker thread).
+    smartLib_ = std::make_unique<smart::SmartLibraryEngine>(lib);
+    smartLib_->batch().setAnalyzeFn(
+        [&analysis, &lib](int64_t trackId, bool /*force*/) {
+            library::Track t;
+            if (lib.tracks().getById(trackId, t) && !t.path.empty())
+                analysis.analyzeTrack(t.path, (int)AnalysisPriority::High);
+        });
+    shell_->browser().setSmartLib(smartLib_.get());
+
     // app-level command actions → shell panels
     bridge_->mutablePorts().appAction = [this](uint32_t id) {
         shell_->appAction(id);

@@ -2,6 +2,57 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 23 (smart playlists + intelligent library tools)
+
+Organisation, analysis-derived descriptors and explainable discovery
+over the library (`docs/library/smart-library-engine.md`,
+`docs/adr/0023-smart-library-engine.md`) — automates organisation
+tasks, never makes mix decisions.
+
+- `SmartLibraryEngine` facade over `MusicLibraryEngine`: smart
+  playlists (stored rules JSON, live contents), `SmartCrateEngine`
+  (smart playlists in crate folders — same query engine),
+  `AutoTagEngine`, `EnergyAnalysisEngine`, `TrackDiscoveryEngine`,
+  `LibraryPresets`, `LibraryStatistics`, `LibraryBatchEngine`,
+  `LibraryResourceManager`, diagnostics.
+- Smart query surface: `not_contains`/`ends_with` operators,
+  `energy_score`/date/play/session/unplayed/autotag fields, nested
+  AND/OR/NOT groups; `SmartQueryValidator` rejects bad fields,
+  incompatible operators, impossible ranges and empty queries before
+  save; live preview without library writes.
+- Schema v9: `analysis.energy` (0..1 scalar) + `energy_curve`/
+  `energy_transitions`/`structure_json` JSON + `auto_tags` table
+  with confidence + suggested/accepted/rejected/ignored status —
+  auto tags and analysis values stay separate from user metadata
+  (user `energy` 0-10, `track_tags`, cues, loops, ratings untouched).
+- Energy: scalar from loudness/RMS, ≤96-point curve from the waveform
+  overview pyramid, transitions + conservative structure segments,
+  configurable VERY_LOW…VERY_HIGH levels — a descriptor, not a
+  quality verdict.
+- Discovery/related tracks return per-result `reasons` from real
+  row data (`bpm: +2.0`, `key: adjacent Camelot`) — explainable
+  criteria, no opaque score; tempo/key relationships described,
+  never applied.
+- Presets/history: Recently Added/Played, Most Played, Unplayed
+  (`play_count = 0`), Not Played Recently, session join, date buckets
+  (Today…This Year/Custom), play-count buckets; `LibraryStatistics`
+  totals + key/energy/tag distributions.
+- `LibraryBatchEngine`: async+cancelable bulk tag/rating/color/
+  analyze with single-transaction one-op undo (nested-`Tx` bug
+  found and fixed); `LibraryResourceManager` limits +
+  orphan-analysis cleanup that structurally cannot touch user data;
+  `SmartAnalysisQueue` named priorities over the existing
+  playback-yielding queue.
+- `SmartQueryPanel` rule editor (rows + match + live count + save
+  as playlist/crate) in the browser rail next to HarmonicPanel;
+  energy column in the track table; `energy:`/`added:`/`played:`/
+  `unplayed:`/`session:`/`autotag:` search tokens.
+- 17 new tests (**466 cases / 1,647,157 assertions green**) —
+  queries, builder, playlists, crates, auto tags, energy, discovery
+  explanations, presets/history, stats, batch+undo, resources,
+  failure modes; 100k library: preview 16,667 hits ~51 ms,
+  discovery ~61 ms; app smoke stable.
+
 ## Status — Phase 22 (key analysis + harmonic mixing engine)
 
 Professional tonal analysis and musical compatibility

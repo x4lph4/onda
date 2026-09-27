@@ -108,6 +108,12 @@ std::string TrackTableModel::cellText(const Track& t,
                       (int)(t.keyConfidence * 100.0f));
         return buf;
     }
+    // Phase 23 — analysis energy descriptor (0..1, descriptive)
+    if (col == "energyScore") {
+        if (t.energyScore < 0.0f) return "";
+        std::snprintf(buf, sizeof buf, "%.2f", (double)t.energyScore);
+        return buf;
+    }
     if (col == "year") {
         return t.year > 0 ? (std::snprintf(buf, sizeof buf, "%d", t.year),
                              std::string(buf)) : "";

@@ -9,6 +9,7 @@
 #include "../analysis/BeatGrid.h"
 #include "../analysis/MusicAnalysisEngine.h"
 #include "../analysis/WaveformData.h"
+#include "../smart/SmartLibraryTypes.h"
 #include "Database.h"
 
 namespace onda {
@@ -41,6 +42,11 @@ public:
     /// segments, algo identity); loaded on demand, not in `load()`.
     std::optional<harmonic::KeyAnalysisResult> loadKeyDetail(
         int64_t trackId);
+
+    /// Phase 23 — energy descriptor for one track (scalar + curve +
+    /// transitions + structure). Loaded on demand. nullopt when the
+    /// track has no analysis row or energy was never computed (-1).
+    std::optional<smart::EnergyResult> loadEnergy(int64_t trackId);
 
     /// Manual overrides — detected data is left untouched.
     void setUserBpm(int64_t trackId, double bpm);        // -1 clears

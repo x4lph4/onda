@@ -279,6 +279,34 @@ CREATE TABLE IF NOT EXISTS key_history(
     detail_json TEXT);
 CREATE INDEX IF NOT EXISTS idx_key_history_track ON key_history(track_id);
 )SQL",
+
+    // v9 — Phase 23 smart library: analysis-derived ENERGY descriptor
+    // (0..1 continuous + over-time curve + transitions + structure
+    // segments, all confidence-carrying, never treated as objective
+    // truth §13-18) and AUTO TAGS separated from user tags by table
+    // (§10): status tracks suggested/accepted/rejected so a manual
+    // rejection prevents immediate re-suggestion (§12). User tags,
+    // cues, ratings are untouched by design.
+    R"SQL(
+ALTER TABLE analysis ADD COLUMN energy REAL NOT NULL DEFAULT -1;
+ALTER TABLE analysis ADD COLUMN energy_curve TEXT;       -- JSON
+ALTER TABLE analysis ADD COLUMN energy_transitions TEXT; -- JSON
+ALTER TABLE analysis ADD COLUMN structure_json TEXT;     -- JSON
+CREATE INDEX IF NOT EXISTS idx_analysis_energy ON analysis(energy);
+
+CREATE TABLE IF NOT EXISTS auto_tags(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0,
+    status INTEGER NOT NULL DEFAULT 0,   -- 0 suggested 1 accepted 2 rejected 3 ignored
+    source TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(track_id, name));
+CREATE INDEX IF NOT EXISTS idx_auto_tags_track ON auto_tags(track_id);
+CREATE INDEX IF NOT EXISTS idx_auto_tags_name ON auto_tags(name);
+)SQL",
 };
 
 bool Database::open(const std::string& path) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <vector>
@@ -8,9 +9,12 @@
 
 #include "OndaTheme.h"
 #include "HarmonicPanel.h"
+#include "SmartQueryPanel.h"
 #include "core/harmonic/Compatibility.h"
 #include "core/harmonic/KeyNormalizer.h"
 #include "core/library/MusicLibraryEngine.h"
+#include "core/smart/LibraryPresets.h"
+#include "core/smart/SmartLibraryEngine.h"
 #include "ui/CommandManager.h"
 #include "ui/TrackTableModel.h"
 
@@ -69,6 +73,23 @@ public:
 
     // ---- wiring outward ----
     std::function<void(const library::Track&)> onLoadDeck; // dbl-click
+
+    /// Phase 23 — attach the smart-library facade (lazy panel).
+    void setSmartLib(smart::SmartLibraryEngine* e) {
+        smart_ = e;
+        if (e && !smartPanel_) {
+            smartPanel_ = std::make_unique<SmartQueryPanel>(
+                *theme_, *e);
+            smartPanel_->onSaved = [this] {
+                reloadRail();
+                smartPanel_->setVisible(false);
+                resized();
+            };
+            smartPanel_->setVisible(false);
+            addChildComponent(*smartPanel_);
+        }
+        reloadRail();
+    }
 
     library::Track selected() {
         const int r = table_.getSelectedRow();
@@ -144,6 +165,32 @@ public:
         // key:Am rating:4+ tag:warmup …); the rest goes to FTS.
         library::QuerySpec q = library::SearchQuery::toSpec(
             search_.getText().toStdString());
+        // Phase 23 — preset sources merge their filters/sort into
+        // the search spec; same engine, still indexed.
+        if (preset_ >= 0 && smart_) {
+            library::QuerySpec pq;
+            switch ((smart::LibraryPresets::Id)preset_) {
+                case smart::LibraryPresets::Id::RecentlyAdded:
+                    pq = smart::LibraryPresets::recentlyAdded(); break;
+                case smart::LibraryPresets::Id::RecentlyPlayed:
+                    pq = smart::LibraryPresets::recentlyPlayed(); break;
+                case smart::LibraryPresets::Id::MostPlayed:
+                    pq = smart::LibraryPresets::mostPlayed(); break;
+                case smart::LibraryPresets::Id::Unplayed:
+                    pq = smart::LibraryPresets::unplayed(); break;
+                case smart::LibraryPresets::Id::NotPlayedRecently:
+                    pq = smart::LibraryPresets::notPlayedRecently(); break;
+                case smart::LibraryPresets::Id::MissingFiles:
+                    pq = smart::LibraryPresets::missingFiles(); break;
+                case smart::LibraryPresets::Id::Unanalyzed:
+                    pq = smart::LibraryPresets::unanalyzed(); break;
+                default: break;
+            }
+            for (auto& f : pq.filters) q.filters.push_back(f);
+            if (q.search.empty()) {
+                q.sort = pq.sort; q.ascending = pq.ascending;
+            }
+        }
         if (historyMode_) {
             // history view: recent plays as a page source
             model_.setPageSource(
@@ -160,6 +207,28 @@ public:
                                : off + lim + 1; // unknown tail
                     return page;
                 });
+        } else if (duplicatesMode_ && lib_) {
+            // §37 — possible duplicates: flattened detector groups.
+            // Read-only view; deletion/merge is always user-initiated.
+            model_.setPageSource(
+                [this](const library::QuerySpec&, int off, int lim) {
+                    std::vector<int64_t> ids;
+                    for (auto& g : lib_->duplicates().findAll())
+                        for (int64_t id : g.trackIds)
+                            ids.push_back(id);
+                    std::sort(ids.begin(), ids.end());
+                    ids.erase(std::unique(ids.begin(), ids.end()),
+                              ids.end());
+                    library::TrackPage page;
+                    page.total = (int)ids.size();
+                    for (int i = off;
+                         i < off + lim && i < (int)ids.size(); ++i) {
+                        library::Track t;
+                        if (lib_->tracks().getById(ids[(size_t)i], t))
+                            page.items.push_back(std::move(t));
+                    }
+                    return page;
+                });
         } else if (playlistFilter_ >= 0) {
             applyPlaylistSource(playlistFilter_);
         } else {
@@ -174,6 +243,19 @@ public:
         railItems_.clear();
         railItems_.push_back({ "ALL TRACKS", -1 });
         railItems_.push_back({ "HISTORY", -3 });
+        if (smart_) {
+            railItems_.push_back({ "SMART", -2 });   // section header
+            // rail id = -(10 + LibraryPresets::Id ordinal)
+            railItems_.push_back({ "Recently Added", -10 });
+            railItems_.push_back({ "Recently Played", -11 });
+            railItems_.push_back({ "Most Played", -12 });
+            railItems_.push_back({ "Unplayed", -13 });
+            railItems_.push_back({ "Not Played Recently", -14 });
+            railItems_.push_back({ "Missing Files", -17 });
+            railItems_.push_back({ "Analysis Status", -18 });
+            railItems_.push_back({ "Possible Duplicates", -21 });
+            railItems_.push_back({ "+ New Smart Query", -20 });
+        }
         railItems_.push_back({ "PLAYLISTS", -2 });   // section header
         for (auto& pl : lib_->playlists().playlists(-1))
             railItems_.push_back({ pl.name, (int)pl.id });
@@ -217,6 +299,11 @@ public:
     void resized() override {
         auto b = getLocalBounds();
         search_.setBounds(b.removeFromTop(30).reduced(4));
+        // Phase 23 — smart query editor docks to the bottom edge
+        if (smartPanel_ && smartPanel_->isVisible()) {
+            const int ph = juce::jmin(300, getHeight() / 2);
+            smartPanel_->setBounds(b.removeFromBottom(ph));
+        }
         // Phase 22 — harmonic panel column (square-ish, right edge)
         const int hw = juce::jmin(220, b.getWidth() / 4);
         if (hw >= 140)
@@ -269,6 +356,35 @@ private:
             if (row < 0 || row >= (int)o_.railItems_.size()) return;
             const auto& it = o_.railItems_[(size_t)row];
             if (it.id == -2) return;
+            // Phase 23 — smart presets and the query editor entry.
+            // Preset rail ids are -(10 + enum ordinal); special
+            // entries use -20 (query panel) and -21 (duplicates).
+            if (it.id <= -10 && it.id >= -18) {
+                o_.preset_ = -it.id - 10;
+                o_.historyMode_ = false;
+                o_.duplicatesMode_ = false;
+                o_.playlistFilter_ = -1;
+                o_.applySpec();
+                return;
+            }
+            if (it.id == -20) {
+                if (o_.smartPanel_) {
+                    o_.smartPanel_->setVisible(
+                        !o_.smartPanel_->isVisible());
+                    o_.resized();
+                }
+                return;                     // keep current source
+            }
+            if (it.id == -21) {
+                o_.preset_ = -1;
+                o_.historyMode_ = false;
+                o_.duplicatesMode_ = true;
+                o_.playlistFilter_ = -1;
+                o_.applySpec();
+                return;
+            }
+            o_.preset_ = -1;
+            o_.duplicatesMode_ = false;
             o_.historyMode_ = (it.id == -3);
             o_.playlistFilter_ = it.id > 0 ? it.id : -1;
             o_.applySpec();
@@ -341,7 +457,11 @@ private:
              std::string title; } ref_;
     std::vector<RailItem> railItems_;
     int playlistFilter_ = -1;
+    int preset_         = -1;          // Phase 23 smart preset id
     bool historyMode_   = false;
+    bool duplicatesMode_ = false;      // §37 possible-duplicates view
+    smart::SmartLibraryEngine* smart_ = nullptr;
+    std::unique_ptr<SmartQueryPanel> smartPanel_;
     int railW_ = 150;
     int searchDebounce_ = 0;
 };

@@ -21,7 +21,7 @@ static const char* kCols =
     "a.needs_review,"
     "EXISTS(SELECT 1 FROM beatgrids bg WHERE bg.track_id=t.id),"
     "EXISTS(SELECT 1 FROM waveforms wf WHERE wf.track_id=t.id),"
-    "a.key_ambiguous";
+    "a.key_ambiguous,COALESCE(a.energy,-1)";
 
 static const char* kFrom =
     " FROM tracks t LEFT JOIN analysis a ON a.track_id = t.id ";
@@ -243,6 +243,7 @@ Track TrackRepository::rowToTrack(Database::Stmt& s) {
     t.hasBeatgrid  = (int)s.colInt(41);
     t.hasWaveform  = (int)s.colInt(42);
     t.keyAmbiguous = (int)s.colInt(43);
+    t.energyScore  = (float)s.colDouble(44);
     return t;
 }
 
@@ -301,6 +302,7 @@ const char* TrackRepository::orderColumn(SortKey k) {
         case SortKey::Year:       return "t.year";
         case SortKey::Genre:      return "t.genre COLLATE NOCASE";
         case SortKey::Path:       return "t.path";
+        case SortKey::Energy:     return "a.energy";
     }
     return "t.artist COLLATE NOCASE";
 }

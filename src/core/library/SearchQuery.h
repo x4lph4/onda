@@ -2,7 +2,9 @@
 
 #include <cctype>
 #include <cstdlib>
+#include <ctime>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "../harmonic/CamelotWheel.h"
@@ -172,6 +174,68 @@ private:
             c.field = f == "analysed" ? "analyzed" : f;
             c.op = CmpOp::Eq;
             c.a = num(v);
+            q.filters.push_back(c);
+            return true;
+        }
+        // Phase 23 — smart-library tokens
+        if (f == "energy") {
+            // energy:high|low|medium|veryhigh|verylow or 0.6-0.9
+            static const std::pair<const char*, double> lvl[] = {
+                { "verylow", 0.0 }, { "low", 0.2 }, { "medium", 0.4 },
+                { "high", 0.6 }, { "veryhigh", 0.8 },
+            };
+            const std::string lv = lower(v);
+            bool matched = false;
+            for (size_t i = 0; i < 5; ++i)
+                if (lv == lvl[i].first) {
+                    c.field = "energy_score";
+                    c.op = CmpOp::Between;
+                    c.a = lvl[i].second;
+                    c.b = i + 1 < 5 ? lvl[i + 1].second : 1.01;
+                    matched = true;
+                    break;
+                }
+            if (!matched) {
+                c.field = "energy_score";
+                if (!numericCond(v, c)) return false;
+            }
+            q.filters.push_back(c);
+            return true;
+        }
+        if (f == "added" || f == "played") {
+            // added:today|yesterday|7d|30d|year or epoch range
+            const std::string lv = lower(v);
+            const int64_t now = (int64_t)std::time(nullptr);
+            const int64_t day = now - (now % 86400);
+            int64_t from = -1, to = -1;
+            if (lv == "today")          { from = day; to = now; }
+            else if (lv == "yesterday") { from = day - 86400; to = day; }
+            else if (lv == "7d" || lv == "week")   { from = now - 7 * 86400; to = now; }
+            else if (lv == "30d" || lv == "month") { from = now - 30 * 86400; to = now; }
+            if (from < 0) return false;
+            c.field = f == "added" ? "added_after" : "played_after";
+            c.op = CmpOp::Eq; c.a = (double)from;
+            q.filters.push_back(c);
+            FilterCond g;
+            g.field = f == "added" ? "added_before" : "played_before";
+            g.op = CmpOp::Eq; g.a = (double)to;
+            q.filters.push_back(g);
+            return true;
+        }
+        if (f == "unplayed") {
+            c.field = "unplayed"; c.op = CmpOp::Eq;
+            c.a = v == "0" || lower(v) == "false" ? 0.0 : 1.0;
+            q.filters.push_back(c);
+            return true;
+        }
+        if (f == "session") {
+            c.field = "session"; c.op = CmpOp::Eq; c.a = num(v);
+            q.filters.push_back(c);
+            return true;
+        }
+        if (f == "autotag") {
+            c.field = "autotag"; c.op = CmpOp::Contains;
+            c.text = v; c.a = -1.0;
             q.filters.push_back(c);
             return true;
         }
