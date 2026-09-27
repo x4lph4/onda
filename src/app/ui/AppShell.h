@@ -382,6 +382,7 @@ private:
             ps.loopSizeIdx = perf_->loopSizeIndex(d);
             ps.jumpSizeIdx = perf_->jumpSizeIndex(d);
             ps.pendingLoopIn = perf_->loopInArmed(d) ? 0 : -1;
+            ps.stemFlags  = ds.stemFlags;    // Phase 21 §22 pad lights
             std::array<uint32_t, 8> mcol {};
             std::array<bool, 8>     mset {};
             for (const Cue& c : cues) {

@@ -13,6 +13,7 @@
 #include "core/adevice/AudioDeviceEngine.h"
 #include "core/rec/RecordingEngine.h"
 #include "core/sampler/SamplerEngine.h"
+#include "core/stems/StemsEngine.h"
 #include "platform/audio/AudioEngine.h"
 #include "ui/EngineCommands.h"
 #include "ui/FXSurface.h"
@@ -39,7 +40,8 @@ public:
                  NotificationCenter& notes,
                  sampler::SamplerEngine* sampler = nullptr,
                  rec::RecordingEngine*   recorder = nullptr,
-                 adevice::AudioDeviceEngine* adevice = nullptr);
+                 adevice::AudioDeviceEngine* adevice = nullptr,
+                 stems::StemsEngine*     stems = nullptr);
 
     const EnginePorts& ports() const { return ports_; }
     EnginePorts&       mutablePorts()  { return ports_; }
@@ -68,6 +70,8 @@ public:
     pads::PadLayer&          pads()    noexcept { return pads_; }
     /// Phase 12: session recorder — may be null in minimal builds.
     rec::RecordingEngine*    recorder() noexcept { return recorder_; }
+    /// Phase 21: stems coordinator — may be null in minimal builds.
+    stems::StemsEngine*      stems() noexcept { return stems_; }
     /// Phase 16: FX focus surface + preset manager (control thread).
     FXSurface&               fx()      noexcept { return fxSurface_; }
     fx::FXPresetManager&     fxPresets() noexcept { return fxPresets_; }
@@ -88,6 +92,7 @@ private:
     mixer::MixerScene         mixScenes_[8];
     rec::RecordingEngine*       recorder_ = nullptr;
     adevice::AudioDeviceEngine* adevice_ = nullptr; // borrowed, may be null
+    stems::StemsEngine*         stems_ = nullptr;   // borrowed, may be null
     EnginePorts ports_;
     std::string deckPath_[4];
     bool        pfl_[4] = { false, false, false, false };

@@ -12,6 +12,7 @@
 #include "core/library/MusicLibraryEngine.h"
 #include "core/performance/PerformanceEngine.h"
 #include "core/sampler/SamplerEngine.h"
+#include "core/stems/StemsEngine.h"
 #include "controller/ControllerEngine.h"
 #include "core/adevice/AudioDeviceEngine.h"
 #include "controller/flx4/Flx4Plugin.h"
@@ -37,7 +38,8 @@ public:
                   Config& config,
                   sampler::SamplerEngine* sampler = nullptr,
                   rec::RecordingEngine* recorder = nullptr,
-                  adevice::AudioDeviceEngine* adevice = nullptr);
+                  adevice::AudioDeviceEngine* adevice = nullptr,
+                  stems::StemsEngine* stems = nullptr);
     ~MainComponent() override {
         stopTimer();
         juce::Desktop::getInstance().setDefaultLookAndFeel(nullptr);
@@ -65,6 +67,7 @@ private:
     rec::RecordingEngine*                   recorder_ = nullptr; // borrowed
     adevice::AudioDeviceEngine*             adevice_ = nullptr; // borrowed
     audio::AudioEngine*                     engine_ = nullptr; // borrowed
+    stems::StemsEngine*                     stems_ = nullptr;  // borrowed
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

@@ -39,7 +39,8 @@ inline const char* padModeName(PadMode m) {
 }
 inline bool padModeImplemented(PadMode m) {
     return ((int)m >= 0 && (int)m <= (int)PadMode::Loop)
-        || m == PadMode::Roll;   // Phase 20 §15-16 — implemented
+        || m == PadMode::Roll
+        || m == PadMode::Stems;  // Phase 21 — implemented
 }
 
 /// A resolved pad action — produced by PadModeManager, consumed by

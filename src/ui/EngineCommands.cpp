@@ -507,6 +507,37 @@ void registerEngineCommands(CommandManager& cm,
             [p, d](float v, CommandSource) {
                 if (p.perf) p.perf->reverseMomentary(d, v > 0.5f);
             }));
+
+        // ---- Phase 21: stems surface -------------------------------
+        cm.add(mk(cmd::forDeck(cmd::DeckStemModeTgl, d),
+            "deck" + dn + ".stemsMode", cat,
+            [p, d](float, CommandSource) {
+                if (p.stemModeToggle) p.stemModeToggle(d); }));
+        cm.add(mk(cmd::forDeck(cmd::DeckStemAnalyze, d),
+            "deck" + dn + ".stemsAnalyze", cat,
+            [p, d](float, CommandSource) {
+                if (p.stemsAnalyze) p.stemsAnalyze(d); }));
+        cm.add(mk(cmd::forDeck(cmd::DeckStemCancel, d),
+            "deck" + dn + ".stemsCancel", cat,
+            [p, d](float, CommandSource) {
+                if (p.stemsCancel) p.stemsCancel(d); }));
+        cm.add(mk(cmd::forDeck(cmd::DeckStemUnmute, d),
+            "deck" + dn + ".stemsUnmute", cat,
+            [p, d](float, CommandSource) {
+                if (p.stemAction) p.stemAction(d, -1, 8, 0.0f); }));
+        // per-stem: base + stem*8 + kind (mute/solo/gain±/pan±/gate/set)
+        for (int s = 0; s < 4; ++s) {
+            static const char* kKind[8] = {
+                "mute", "solo", "gainUp", "gainDn",
+                "panL", "panR", "gate", "gainSet" };
+            for (int k = 0; k < 8; ++k) {
+                cm.add(mk(cmd::forDeck(cmd::DeckStemBase, d) + s * 8 + k,
+                    "deck" + dn + ".stem" + std::to_string(s) + "." + kKind[k],
+                    cat,
+                    [p, d, s, k](float v, CommandSource) {
+                        if (p.stemAction) p.stemAction(d, s, k, v); }));
+            }
+        }
     }
 
     // ---- Phase 20 §41: performance undo/redo (global) ----

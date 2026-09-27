@@ -135,7 +135,9 @@ TEST_CASE("Sampler: enum surfaces — quantize, beatjump, mode names",
     REQUIRE(std::string(ui::pads::padModeName(
                 ui::pads::PadMode::Sampler)) == "SAMPLER");
     REQUIRE(ui::pads::padModeImplemented(ui::pads::PadMode::Loop));
-    REQUIRE(!ui::pads::padModeImplemented(ui::pads::PadMode::Stems));
+    // Phase 21 §21 — Stems mode is implemented (pad1-4 mute, shift
+    // solo, pad5-8 gate)
+    REQUIRE(ui::pads::padModeImplemented(ui::pads::PadMode::Stems));
 }
 
 TEST_CASE("Sampler: SampleSync math", "[sampler][sync]") {
@@ -634,8 +636,9 @@ TEST_CASE("PadModeManager: every mode resolves to the right action",
 
     m.setMode(0, PadMode::PadFx);                        // reserved
     REQUIRE(m.resolve(0, 0, false, true).kind == PadAction::None);
+    // Phase 21 §21 — Stems mode resolves pad presses to stem commands
     m.setMode(0, PadMode::Stems);
-    REQUIRE(m.resolve(0, 0, false, true).kind == PadAction::None);
+    REQUIRE(m.resolve(0, 0, false, true).kind == PadAction::Command);
 }
 
 TEST_CASE("PadLayer: pad.press commands dispatch through CommandManager",

@@ -138,7 +138,10 @@ public:
             case PadMode::Sampler:  return D::Sampler;
             case PadMode::BeatJump: return D::BeatJump;
             case PadMode::BeatLoop: return D::Loop;
-            case PadMode::PadFx1:
+            // Phase 21 §21: PAD FX1 carries the stems performance
+            // surface (1-4 mute / shift solo / 5-8 gate); PAD FX2
+            // stays reserved for future per-stem FX (§18).
+            case PadMode::PadFx1:   return D::Stems;
             case PadMode::PadFx2:   return D::PadFx;
             case PadMode::Keyboard: return D::Keyboard;
             case PadMode::KeyShift: return D::KeyShift;

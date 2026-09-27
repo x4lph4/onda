@@ -26,6 +26,7 @@ void DeckEngine::setStretcher(std::unique_ptr<ITimeStretcher> s) noexcept {
 
 void DeckEngine::prepareDsp(double rate) noexcept {
     if (stretcher_) stretcher_->prepare(rate, AudioFormat::kMaxBlockFrames);
+    stemStage_.assign((size_t)kFeedChunk * 2, 0.0f); // non-RT: prealloc
 }
 
 // ============================ track lifecycle ============================
@@ -37,6 +38,7 @@ void DeckEngine::adoptPendingTrack() noexcept {
         return;
 
     adoptPendingGrid(); // a new track may already have a grid waiting
+    adoptPendingStems(); // and possibly a cached stem set (Phase 21)
 
     // Retire the previous track for the loader to free.
     if (track_ != nullptr)
@@ -62,6 +64,10 @@ void DeckEngine::unloadTrack() noexcept {
         retiredGrid_.store(grid_, std::memory_order_release);
         grid_ = nullptr;
     }
+    if (stems_ != nullptr) {   // stems belong to the track (Phase 21)
+        retiredStems_.store(stems_, std::memory_order_release);
+        stems_ = nullptr;
+    }
     playing_     = false;
     trackEnded_  = false;
     pos_         = 0.0;
@@ -80,6 +86,86 @@ void DeckEngine::adoptPendingGrid() noexcept {
     if (grid_ != nullptr)
         retiredGrid_.store(grid_, std::memory_order_release);
     grid_ = g;
+}
+
+// ============================== stems (Phase 21) =========================
+//
+// Stems render at `pos_` through the SAME read head as the track —
+// loops, slip, sync tempo and key-lock all apply identically to every
+// stem (§36-38) because there is no separate stem clock. The original
+// track buffer stays live: stemMode_=0 or a missing set renders it
+// untouched (§25).
+
+void DeckEngine::adoptPendingStems() noexcept {
+    const DeckStemBuffers* s = pendingStems_.exchange(
+        nullptr, std::memory_order_acq_rel);
+    if (s == nullptr)
+        return;
+    if (stems_ != nullptr)
+        retiredStems_.store(stems_, std::memory_order_release);
+    stems_ = s;
+    recomputeStemMasks();
+    publishStemStats();
+}
+
+void DeckEngine::setStemMode(int mode) noexcept {
+    stemMode_ = mode == 1 ? 1 : 0;
+    publishStemStats();
+}
+
+void DeckEngine::setStemParam(int stem, float gain, float pan,
+                              bool mute, bool solo) noexcept {
+    if (stem < 0 || stem >= DeckStemBuffers::kMaxStems) return;
+    if (gain < 0.0f) gain = 0.0f;
+    if (gain > 2.0f) gain = 2.0f;
+    if (pan  < -1.0f) pan = -1.0f;
+    if (pan  > 1.0f)  pan = 1.0f;
+    // store resolved intent; targets recomputed below for all stems
+    // (solo state is global — one stem's solo affects every target)
+    stem_[stem].p = { gain, pan, mute, solo };
+    recomputeStemMasks();
+    publishStemStats();
+}
+
+void DeckEngine::recomputeStemMasks() noexcept {
+    stemAnySolo_ = false;
+    for (int i = 0; i < DeckStemBuffers::kMaxStems; ++i)
+        stemAnySolo_ |= stem_[i].p.solo;
+    for (int i = 0; i < DeckStemBuffers::kMaxStems; ++i) {
+        const auto& p = stem_[i].p;
+        const bool audible =
+            stems_ != nullptr && (stems_->mask & (1u << i)) != 0 &&
+            !p.mute && !(stemAnySolo_ && !p.solo);
+        const double t = ((double)p.pan + 1.0) * 0.7853981633974483;
+        stem_[i].gL = audible ? (float)(p.gain * std::cos(t)) : 0.0f;
+        stem_[i].gR = audible ? (float)(p.gain * std::sin(t)) : 0.0f;
+    }
+}
+
+void DeckEngine::stemsMixAt(double pos, float& l, float& r) noexcept {
+    constexpr float kSmooth = 0.001f;   // same one-pole as smGain_
+    l = 0.0f; r = 0.0f;
+    for (int i = 0; i < DeckStemBuffers::kMaxStems; ++i) {
+        const float* s = stems_->samples[i];
+        if (s == nullptr) continue;
+        float sl, sr;
+        readCubicStereo(s, stems_->frames, pos, sl, sr);
+        StemRt& t = stem_[i];
+        t.smL += kSmooth * (t.gL - t.smL);
+        t.smR += kSmooth * (t.gR - t.smR);
+        l += sl * t.smL;
+        r += sr * t.smR;
+    }
+}
+
+void DeckEngine::publishStemStats() noexcept {
+    if (!stats_) return;
+    stats_->stemMode.store(stems_ != nullptr ? stemMode_ : 0);
+    uint32_t m = 0;
+    if (stemsActive())
+        for (int i = 0; i < DeckStemBuffers::kMaxStems; ++i)
+            if (stem_[i].gL != 0.0f || stem_[i].gR != 0.0f) m |= (1u << i);
+    stats_->stemsAudible.store(m);
 }
 
 // ================================ transport ============================
@@ -376,6 +462,7 @@ void DeckEngine::advanceDisp(int produced) noexcept {
 void DeckEngine::renderPcm(float* l, float* r, int n) noexcept {
     adoptPendingTrack();
     adoptPendingGrid();
+    adoptPendingStems();   // sets may arrive mid-playback (Phase 21)
 
     if (!playing_ || track_ == nullptr) {
         std::memset(l, 0, (size_t)n * sizeof(float));
@@ -416,7 +503,10 @@ void DeckEngine::renderVarispeed(float* l, float* r, int n) noexcept {
 
         for (int i = 0; i < step; ++i) {
             float sl, sr;
-            readCubicStereo(s, frames, pos_, sl, sr);
+            if (stemsActive())                      // Phase 21 stems
+                stemsMixAt(pos_, sl, sr);
+            else
+                readCubicStereo(s, frames, pos_, sl, sr);
             const float f = fade_ < 1.0f ? (fade_ = std::min(1.0f, fade_ + 1.0f/256.0f)) : 1.0f;
             l[produced + i] = sl * f;
             r[produced + i] = sr * f;
@@ -479,7 +569,18 @@ void DeckEngine::renderStretch(float* l, float* r, int n) noexcept {
             continue;
         }
         const int64_t ipos = clampPos(pos_);
-        pushed_ += stretcher_->push(s + ipos * 2, (size_t)chunk);
+        const float* feed = s + ipos * 2;
+        if (stemsActive() && (size_t)chunk * 2 <= stemStage_.size()) {
+            // Phase 21: stage the stem mix — the stretcher is
+            // content-agnostic, so the same WSOLA path stretches all
+            // stems identically (§37).
+            for (int64_t i = 0; i < chunk; ++i)
+                stemsMixAt((double)(ipos + i),
+                           stemStage_[(size_t)i * 2],
+                           stemStage_[(size_t)i * 2 + 1]);
+            feed = stemStage_.data();
+        }
+        pushed_ += stretcher_->push(feed, (size_t)chunk);
         pos_ += (double)chunk;
         if (loopOn_ && framesToBoundary() <= 0) {
             wrapLoop();
@@ -562,6 +663,7 @@ void DeckEngine::publishStats() noexcept {
     else if (track_ != nullptr)
         stats_->state.store(playing_ ? (int)DeckState::Playing
                                      : (int)DeckState::Paused, std::memory_order_relaxed);
+    publishStemStats();   // stemMode/stemsAudible echoes (Phase 21)
 }
 
 } // namespace onda

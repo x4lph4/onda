@@ -44,6 +44,11 @@ struct SlipBegin      { uint8_t deck; };
 struct SlipEnd        { uint8_t deck; };
 struct SlipReanchor   { uint8_t deck; };  // shadow := displayed pos (Phase 20)
 
+// ---- stems commands (Phase 21) ----
+struct SetStemMode    { uint8_t deck; uint8_t mode; };   // 0 orig, 1 stems
+struct SetStemParam   { uint8_t deck; uint8_t stem;
+                        float gain, pan; uint8_t mute, solo; };
+
 // ---- generic mixer parameter (ids from mixer::ParameterRegistry) ----
 struct SetParam       { uint16_t id; float v; };
 
@@ -63,6 +68,7 @@ using Command = std::variant<
     SetEqBand, SetFilter,
     DeckSeekFrame, SetLoopFrames, SyncSetMaster, SyncSetMode,
     SlipBegin, SlipEnd, SlipReanchor, SetParam,
+    SetStemMode, SetStemParam,
     SampleTrigger, SampleRelease, SampleStop,
     SampleSlotParam, SamplerParam>;
 

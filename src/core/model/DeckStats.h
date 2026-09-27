@@ -50,6 +50,11 @@ struct DeckStats {
     std::atomic<float>    syncErrMs{0.0f}; // phase error to master, ms
     std::atomic<bool>     syncLimited{false}; // sync tempo out of pitch range
     std::atomic<bool>     slip{false};
+
+    // ---- stems (Phase 21) ----
+    std::atomic<int>      stemMode{0};        // 0 original, 1 stems
+    std::atomic<uint32_t> stemsAudible{0};    // bit per rendered stem
+    std::atomic<int>      stemsAvail{0};      // stems::StemAvailability
 };
 
 } // namespace onda

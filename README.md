@@ -2,6 +2,53 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 21 (professional stems engine)
+
+Track separation into VOCALS/DRUMS/BASS/INSTRUMENTS with real-time
+per-stem performance (`docs/stems/stems-engine.md`,
+`docs/adr/0021-stems-engine.md`) — stems ride the deck's own
+timeline, so pitch/keylock/sync/loops/slip/reverse apply identically.
+
+- `StemsEngine` coordinator: `StemScheduler` (priority jobs,
+  cooperative cancel, CPU gate that yields to playback),
+  `StemManager` per-deck state, `StemMixer` (gain/mute/solo/pan
+  resolution, explicit solo semantics, click-free ramps),
+  `StemRouter`/`StemFXRouter` (legal routing plans + FX intent),
+  `StemPresetManager`, `StemDiagnostics`.
+- Model-swappable seam: `StemSeparationModel` interface +
+  `StemModelProvider` (hardware probe → quality/GPU config, CPU
+  fallback that never blocks). Reference `BandSplitModel` —
+  deterministic DSP whose instrument stem is the exact residual, so
+  Σstems ≡ source (RMS diff < 1e-4 verified).
+- `StemCache`: float32 WAVs keyed by
+  FNV(contentHash|model|version|quality|rate|channels) —
+  relocation-safe, atomic tmp→rename commits, validated reads,
+  `readRange` streaming seam, storage stats/clear. `stem_sets`
+  (schema v7) holds metadata only — no audio in SQLite.
+- RT path: POD `DeckStemBuffers` handoff via `pendingStems_` (same
+  protocol as TrackAudio); `renderVarispeed`/`renderStretch` mix
+  stems at `pos_`. Unconditional original-track fallback; partial
+  sets legal; model failure never stops playback.
+- Commands `0x0090-0x0093` + `0x00C0+` per deck: stemsMode/analyze/
+  cancel/unmute + per-stem mute/solo/gain±/pan±/gate/set. First stem
+  action auto-enables stems mode.
+- `PadMode::Stems` implemented: pads 1-4 mute (shift=solo), 5-8
+  momentary gate; `PadFeedbackEngine` stem states (Set/Off/Playing/
+  Dim). `StemsPanel` per deck — 4 strips, M/S, drag-gain, status —
+  snapshot-fed, zero engine access.
+- Real bugs found by tests: scheduler wait-predicate was popping
+  jobs; `StemMixer` masked `stem & 8` (kStemMax=9 ≠ power of two);
+  `StemsEngine` member order let workers outlive their state;
+  shared-set publishing moved buffers out from under deck 2;
+  decode failure never wrote a Failed row.
+- 32 new tests (**425 cases / 1,646,300 assertions green**):
+  separation/alignment/reconstruction, cache keys+round-trip+range+
+  cancel+clear, store CRUD+rollup, mixer/router resolution,
+  scheduler order/cancel/CPU-gate, deck RT (fallback, mute→silence,
+  solo, gain scale, partial sets, keylock path), engine E2E incl.
+  two decks sharing one set, pads+feedback, provider GPU policy,
+  4-deck stem stress.
+
 ## Status — Phase 20 (professional performance engine)
 
 Complete musical performance layer

@@ -11,16 +11,17 @@ MainComponent::MainComponent(audio::AudioEngine& engine,
                              Config& config,
                              sampler::SamplerEngine* sampler,
                              rec::RecordingEngine* recorder,
-                             adevice::AudioDeviceEngine* adevice)
+                             adevice::AudioDeviceEngine* adevice,
+                             stems::StemsEngine* stems)
     : look_(theme_), sampler_(sampler), recorder_(recorder),
-      adevice_(adevice), engine_(&engine) {
+      adevice_(adevice), engine_(&engine), stems_(stems) {
     juce::Desktop::getInstance().setDefaultLookAndFeel(&look_);
     setLookAndFeel(&look_);
 
     shortcuts_ = ui::ShortcutManager::defaultProfile();
     bridge_ = std::make_unique<ui::EngineBridge>(
         engine, perf, analysis, lib, commands_, notes_, sampler,
-        recorder, adevice);
+        recorder, adevice, stems);
 
     // ---- Phase 13: device engine ports (control thread only) ----
     if (adevice_) {
@@ -185,6 +186,8 @@ void MainComponent::timerCallback() {
         ctrl_->tick(juce::Time::getMillisecondCounterHiRes() / 1000.0);
     if (sampler_)
         sampler_->tick();   // drain loader results + retire RT trash
+    if (stems_)
+        stems_->poll();     // publish finished stem sets + retire views
     if (recorder_)
         recorder_->tick();  // writer health, splits, clips, setlist
     if (adevice_ && engine_) {

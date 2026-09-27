@@ -102,6 +102,28 @@ public:
                     a.label = std::string("RL") + kN[pad]; }
                 return a;
 
+            case PadMode::Stems:
+                // §21 — pads 1-4 = stem mute toggle (shift = solo);
+                // pads 5-8 = momentary stem gate (hold = kill, release
+                // = restore). Mapping lives HERE only — engines and
+                // hardware never hardcode it.
+                a.kind = PadAction::Command;
+                if (pad < 4) {
+                    if (!press) { a.kind = PadAction::None; return a; }
+                    a.cmdId = cmd::forDeck(cmd::DeckStemBase, deck)
+                              + pad * 8 + (shift ? 1 : 0);
+                    a.label = std::string(pad == 0 ? "VOC" : pad == 1 ? "DRM"
+                                    : pad == 2 ? "BAS" : "INS")
+                              + (shift ? " SOLO" : " MUTE");
+                    return a;
+                }
+                a.cmdId = cmd::forDeck(cmd::DeckStemBase, deck)
+                          + (pad - 4) * 8 + 6;      // gate
+                a.arg = press ? 1.0f : 0.0f;
+                a.label = std::string(pad == 4 ? "VOC" : pad == 5 ? "DRM"
+                                : pad == 6 ? "BAS" : "INS") + " GATE";
+                return a;
+
             case PadMode::PadFx:
                 if (!press) { a.kind = PadAction::None; return a; }
                 // reserved for a future FX-preset surface — consumed

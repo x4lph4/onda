@@ -27,6 +27,7 @@ add_library(onda_core STATIC
     core/library/HistoryManager.cpp
     core/library/MusicLibraryEngine.cpp
     core/performance/PerformanceEngine.cpp
+    core/stems/StemsEngine.cpp
     core/sampler/SamplerEngine.cpp
     core/rec/RecordingEngine.cpp)
 target_include_directories(onda_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

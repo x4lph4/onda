@@ -38,6 +38,9 @@ bool applyDeckCommand(DeckEngine& d, int deck, const C& c) noexcept {
     else if constexpr (std::is_same_v<C, rt::SlipBegin>)     d.beginSlip();
     else if constexpr (std::is_same_v<C, rt::SlipEnd>)       d.endSlip();
     else if constexpr (std::is_same_v<C, rt::SlipReanchor>)  d.reanchorSlip();
+    else if constexpr (std::is_same_v<C, rt::SetStemMode>)   d.setStemMode(c.mode);
+    else if constexpr (std::is_same_v<C, rt::SetStemParam>)
+        d.setStemParam(c.stem, c.gain, c.pan, c.mute != 0, c.solo != 0);
     else return false; // not a deck-scoped command
     return true;
 }

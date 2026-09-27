@@ -16,6 +16,10 @@
 #include "../core/rec/RecordingRepository.h"
 #include "../core/sampler/SampleRepository.h"
 #include "../core/sampler/SamplerEngine.h"
+#include "../core/stems/StemsEngine.h"
+#include "../core/engine/DecodeToTrackAudio.h"
+
+#include <unordered_map>
 
 namespace onda {
 
@@ -123,12 +127,48 @@ public:
         adevice_ = std::make_unique<adevice::AudioDeviceEngine>(
             *juceBackend_);
 
+        // Phase 21: stems coordinator — DB metadata + file cache under
+        // <app-data>/Onda/stems; decks bound via pendingStems slots.
+        stems_ = std::make_unique<stems::StemsEngine>(
+            *db_, engine_->commands());
+        {
+            stems::StemConfig sc;
+            sc.cacheDir = dbDir.getChildFile("stems")
+                              .getFullPathName().toStdString();
+            sc.autoSeparate = true;      // deck loads queue missing sets
+            sc.workers = 1;              // CPU-safe background (§45)
+            stems_->configure(sc);
+            for (int i = 0; i < audio::AudioEngine::kNumDecks; ++i)
+                stems_->bindDeck(i, engine_->deckRaw(i),
+                                 &engine_->deckStats(i));
+            stems_->setDecoder([this](const std::string& path)
+                               -> const TrackAudio* {
+                // decode-on-demand per job; results held for the job's
+                // lifetime (worker thread owns this map — jobs are
+                // serialized on the scheduler's single worker)
+                auto it = stemAudio_.find(path);
+                if (it != stemAudio_.end()) return it->second.get();
+                const double rate = engine_->sampleRate() > 0.0
+                                  ? engine_->sampleRate() : 48000.0;
+                auto t = decodeToTrackAudio(
+                    path, rate,
+                    [] { return std::make_unique<FFmpegDecoder>(); });
+                if (!t) return nullptr;
+                if (stemAudio_.size() >= 4) stemAudio_.clear(); // bound
+                auto [it2, ok] = stemAudio_.emplace(path, std::move(t));
+                return it2->second.get();
+            });
+            // yield stem work while audio runs (§45)
+            stems_->setPlaybackActive(true);
+        }
+
         mainWindow_ = std::make_unique<MainWindow>(getApplicationName(),
                                                  *engine_, *analysis_,
                                                  *perf_, *lib_, config_,
                                                  sampler_.get(),
                                                  recorder_.get(),
-                                                 adevice_.get());
+                                                 adevice_.get(),
+                                                 stems_.get());
     }
 
     void shutdown() override {
@@ -144,6 +184,8 @@ public:
             sampler_->stopAll();
             if (db_ && db_->isOpen()) sampler_->saveAll();
         }
+        stems_.reset();      // join stem workers before engines die
+        stemAudio_.clear();
         if (engine_) {
             engine_->shutdown();
             engine_->attachSampler(nullptr);   // RT engine gone
@@ -169,14 +211,15 @@ private:
                    library::MusicLibraryEngine& lib, Config& config,
                    sampler::SamplerEngine* sampler,
                    rec::RecordingEngine* recorder,
-                   adevice::AudioDeviceEngine* adevice)
+                   adevice::AudioDeviceEngine* adevice,
+                   stems::StemsEngine* stems)
             : juce::DocumentWindow(name,
                                    juce::Colour(0xff0d0f12),
                                    juce::DocumentWindow::allButtons) {
             setUsingNativeTitleBar(true);
             setContentOwned(new MainComponent(engine, analysis, perf,
                                               lib, config, sampler,
-                                              recorder, adevice),
+                                              recorder, adevice, stems),
                             true);
             setResizable(true, true);
             setResizeLimits(960, 540, 10000, 10000);
@@ -204,6 +247,8 @@ private:
     std::unique_ptr<audio::JuceAudioBackend> juceBackend_;
     std::unique_ptr<adevice::AudioDeviceEngine> adevice_;
     std::unique_ptr<audio::AudioEngine> engine_;
+    std::unique_ptr<stems::StemsEngine> stems_;
+    std::unordered_map<std::string, std::unique_ptr<TrackAudio>> stemAudio_;
     std::unique_ptr<MainWindow> mainWindow_;
 };
 

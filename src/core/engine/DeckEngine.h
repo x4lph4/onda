@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -12,6 +13,19 @@
 namespace onda {
 
 class ITimeStretcher;
+
+/// Phase 21: POD view of a deck's stem buffers for the loader→RT
+/// handoff. The owner (StemsEngine) builds this from whatever
+/// container it uses and keeps the backing alive until the deck
+/// retires the pointer — same protocol as tracks/grids. The deck
+/// only ever sees raw interleaved-stereo pointers sharing the
+/// track's timeline (same numFrames, frame 0 aligned).
+struct DeckStemBuffers {
+    static constexpr int kMaxStems = 9;   // stems::StemType capacity
+    const float* samples[kMaxStems] {};   // nullptr = stem absent
+    int64_t      frames { 0 };
+    uint32_t     mask   { 0 };            // bit per present stem
+};
 
 /// One fully independent deck. Everything inside is owned by the RT audio
 /// thread except the two handoff slots, which implement the lock-free
@@ -90,6 +104,18 @@ public:
     void setLoopSizeSec(double sizeSec) noexcept;
     void exitLoop() noexcept { loopOn_ = false; }
 
+    // ---- stems (RT, Phase 21) ----
+    /// 0 = original track, 1 = stem mix. With no set adopted the deck
+    /// always renders the original (§25 fallback is unconditional).
+    void setStemMode(int mode) noexcept;
+    /// Resolved per-stem params. `stem` indexes stems::StemType.
+    /// Mute wins over solo; if any stem is soloed, non-solo stems are
+    /// silent (resolution mirrors StemMixer's documented semantics).
+    void setStemParam(int stem, float gain, float pan,
+                      bool mute, bool solo) noexcept;
+    bool stemsActive() const noexcept {
+        return stems_ != nullptr && stemMode_ == 1; }
+
     /// Stats slot the deck was bound with — the mixer ChannelStrip
     /// re-uses it to publish channel meters (pre-fader level).
     DeckStats* stats() const noexcept { return stats_; }
@@ -107,6 +133,12 @@ public:
     /// Retired grids are published here for the owner to release.
     std::atomic<const BeatGrid*>  pendingGrid_{nullptr};
     std::atomic<const BeatGrid*>  retiredGrid_{nullptr};
+
+    /// Phase 21: stem-buffer handoff — identical protocol. The
+    /// StemsEngine owns the backing StemSet and publishes a POD view;
+    /// retired views are released by the owner on its poll.
+    std::atomic<const DeckStemBuffers*> pendingStems_{nullptr};
+    std::atomic<const DeckStemBuffers*> retiredStems_{nullptr};
 
 private:
     // render paths
@@ -127,6 +159,14 @@ private:
     void advanceDisp(int produced) noexcept; // keylock transport clock
     int64_t clampPos(double p) const noexcept;
     void   advanceSlip(int produced) noexcept;
+
+    // ---- stems (RT helpers, Phase 21) ----
+    void adoptPendingStems() noexcept;
+    /// Mix all present stems at source position `pos` — cubic read +
+    /// smoothed gain + pan per stem. Only called when stemsActive().
+    void stemsMixAt(double pos, float& l, float& r) noexcept;
+    void recomputeStemMasks() noexcept;      // after param change
+    void publishStemStats() noexcept;
 
     DeckStats* stats_ { nullptr };
     double deviceRate_ { 48000.0 };
@@ -166,6 +206,18 @@ private:
     bool   syncLimited_  { false };
     bool   slipActive_   { false };
     double slipShadow_   { 0.0 };           // where the track "would be"
+
+    // ---- stems (RT-owned, Phase 21) ----
+    const DeckStemBuffers* stems_ { nullptr }; // borrowed, owned upstream
+    int  stemMode_   { 0 };                    // 0 original, 1 stems
+    bool stemAnySolo_{ false };
+    struct StemRtParam { float gain { 1.0f }, pan { 0.0f };
+                         bool mute { false }, solo { false }; };
+    struct StemRt { float gL { 1.0f }, gR { 1.0f };   // resolved target
+                    float smL { 1.0f }, smR { 1.0f }; // smoothed state
+                    StemRtParam p; };
+    std::array<StemRt, DeckStemBuffers::kMaxStems> stem_{};
+    std::vector<float> stemStage_;             // stretcher feed staging
 
     std::unique_ptr<ITimeStretcher> stretcher_;
     std::vector<float> scratch_;            // stretcher pull buffer

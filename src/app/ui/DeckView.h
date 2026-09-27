@@ -8,6 +8,7 @@
 
 #include "OndaTheme.h"
 #include "PerformancePanel.h"
+#include "StemsPanel.h"
 #include "controls/Knob.h"
 #include "controls/MeterBar.h"
 #include "controls/StateButton.h"
@@ -36,7 +37,8 @@ public:
           pfl_(te, cm, cmd::forDeck(cmd::DeckPflToggle, deck), "PFL"),
           pitch_(te, "PITCH", -16.0, 16.0, 0.0),
           meters_(te),
-          perfPanel_(te, cm, deck) {
+          perfPanel_(te, cm, deck),
+          stemsPanel_(te, cm, deck) {
         cue_.setMomentary(true);
         for (auto* b : { &play_, &cue_, &sync_, &qnt_, &key_, &slip_,
                          &rev_, &pfl_ })
@@ -44,6 +46,7 @@ public:
         addAndMakeVisible(pitch_);
         addAndMakeVisible(meters_);
         addAndMakeVisible(perfPanel_);
+        addAndMakeVisible(stemsPanel_);
 
         range_.addItemList({ "+/-8%", "+/-16%", "+/-50%" }, 1);
         range_.setSelectedId(1, juce::dontSendNotification);
@@ -81,6 +84,8 @@ public:
         rev_.setState(s.reverse ? ControlState::On : ControlState::Off);
         pfl_.setState(s.pfl ? ControlState::On : ControlState::Off);
         perfPanel_.setLoopOn(s.loopOn);
+        stemsPanel_.setState(s.stemsAvail, s.stemMode,
+                             s.stemFlags, s.stemGain);
         if (std::abs(pitch_.value() - s.pitchPct) > 0.4)
             pitch_.setValue(s.pitchPct); // external change (sync etc.)
         meters_.set(s.levelL, s.levelR, 1.0f / 30.0f);
@@ -96,6 +101,8 @@ public:
     /// Direct panel access for the app shell — pad lights, memory
     /// cues, size readouts (all fed from snapshots/perf, no engines).
     PerformancePanel& perfPanel() { return perfPanel_; }
+    /// Phase 21 — stems strip access (state feeds via setState).
+    StemsPanel& stemsPanel() { return stemsPanel_; }
 
     // ---- Phase 19: display preferences (view-local state) ----
     /// §24 — time readout mode; click on the time row or the
@@ -306,7 +313,11 @@ public:
         // §37 performance cluster (loop/jump/sizes/roll/pads/memcues)
         perfPanel_.setBounds(b.removeFromTop(
             juce::jmin(perfPanel_.desiredHeight(),
-                       juce::jmax(0, b.getHeight() - 60))));
+                       juce::jmax(0, b.getHeight() - 60
+                                  - stemsPanel_.desiredHeight()))));
+        // Phase 21 §23: stems strip under the performance cluster
+        b.removeFromTop(m.gap2);
+        stemsPanel_.setBounds(b.removeFromTop(stemsPanel_.desiredHeight()));
 
         // pitch column right side + meters left of it
         auto bottom = b;
@@ -328,6 +339,7 @@ private:
     Fader      pitch_;
     MeterBar   meters_;
     PerformancePanel perfPanel_;
+    StemsPanel       stemsPanel_;
     juce::ComboBox range_;
     TimeMode timeMode_ = TimeMode::Elapsed;
     library::KeyNotation keyNotation_ = library::KeyNotation::Camelot;

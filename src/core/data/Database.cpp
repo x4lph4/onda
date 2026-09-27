@@ -227,6 +227,31 @@ ALTER TABLE cues ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE cues ADD COLUMN quantized INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE cues ADD COLUMN comment TEXT;
 )SQL",
+
+    // v7 — Phase 21 stems: separation-set metadata. Audio lives in the
+    // file cache (§29 — no audio blobs in the relational DB); this row
+    // is the library-facing availability record (§48). content_hash is
+    // the relocation-safe identity (§40).
+    R"SQL(
+CREATE TABLE IF NOT EXISTS stem_sets(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    track_id INTEGER NOT NULL,
+    content_hash INTEGER NOT NULL,
+    model_id TEXT NOT NULL,
+    model_version TEXT NOT NULL,
+    quality INTEGER NOT NULL DEFAULT 1,
+    sample_rate REAL NOT NULL,
+    channels INTEGER NOT NULL DEFAULT 2,
+    frames INTEGER NOT NULL DEFAULT 0,
+    stem_mask INTEGER NOT NULL DEFAULT 0,
+    state INTEGER NOT NULL DEFAULT 0,        -- 0 pending,1 ready,2 failed,3 orphaned
+    cache_key TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(content_hash, cache_key));
+CREATE INDEX IF NOT EXISTS idx_stem_sets_hash ON stem_sets(content_hash);
+CREATE INDEX IF NOT EXISTS idx_stem_sets_track ON stem_sets(track_id);
+)SQL",
 };
 
 bool Database::open(const std::string& path) {

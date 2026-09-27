@@ -67,6 +67,17 @@ struct EnginePorts {
     /// (deck, captured effective grid) → restore grid + persist the
     /// override. Used ONLY by undo — regular edits go via analysisEdit.
     std::function<void(int, const BeatGrid&)> gridRestore;
+
+    /// Phase 21 — stems surface (all non-RT; resolved params reach
+    /// the deck as rt::SetStemParam/SetStemMode):
+    /// (deck, stem 0..8, kind 0..7, value) → mute/solo/gain/pan/gate
+    std::function<void(int, int, int, float)> stemAction;
+    /// (deck) → toggle original ↔ stems render mode
+    std::function<void(int)>                  stemModeToggle;
+    /// (deck) → queue separation for the deck's loaded track
+    std::function<void(int)>                  stemsAnalyze;
+    /// (deck) → cancel that deck's running separation
+    std::function<void(int)>                  stemsCancel;
 };
 
 /// Register the whole command surface. All commands are POD-safe:

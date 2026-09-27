@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -37,6 +38,13 @@ struct DeckSnapshot {
     int    beatsPerBar = 4;
     bool   pfl = false;
     bool   streamEnded = false;
+    // Phase 21 — stems (availability mirrors stems::StemAvailability;
+    // stemFlags per pad: bit0 present,1 muted,2 solo,3 loading)
+    int      stemsAvail = 0;
+    int      stemMode = 0;                    // 0 original, 1 stems
+    uint32_t stemsAudible = 0;               // bit per rendered stem
+    std::array<uint8_t, 8> stemFlags {};
+    std::array<float, 4>   stemGain { 1.0f, 1.0f, 1.0f, 1.0f };
     // meta (filled by bridge from track/library, not atomics)
     std::string path, title, artist, keyText;
     int    keyIndex = -1;               // 0..23 — notation chosen by view

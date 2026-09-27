@@ -17,9 +17,11 @@ EngineBridge::EngineBridge(audio::AudioEngine& engine,
                            NotificationCenter& notes,
                            sampler::SamplerEngine* sampler,
                            rec::RecordingEngine*   recorder,
-                           adevice::AudioDeviceEngine* adevice)
+                           adevice::AudioDeviceEngine* adevice,
+                           stems::StemsEngine*     stems)
     : engine_(engine), perf_(perf), analysis_(analysis), lib_(lib),
-      notes_(notes), recorder_(recorder), adevice_(adevice) {
+      notes_(notes), recorder_(recorder), adevice_(adevice),
+      stems_(stems) {
     ports_.queue  = &engine_.commands();
     ports_.mixer  = &engine_.mixerCtl();
     ports_.perf   = &perf_;
@@ -45,10 +47,21 @@ EngineBridge::EngineBridge(audio::AudioEngine& engine,
         }
         // queue analysis so the deck gets its grid/waveform ASAP
         analysis_.analyzeTrack(path, (int)AnalysisPriority::High);
+        // Phase 21: resolve stems availability — deck plays the
+        // original regardless; a cached set joins asynchronously.
+        if (stems_) {
+            library::Track t;
+            const bool known = lib_.tracks().getByPath(path, t);
+            stems_->onTrackLoading(d, known ? t.id : -1,
+                                   known ? t.contentHash : 0, path,
+                                   engine_.sampleRate() > 0.0
+                                       ? engine_.sampleRate() : 48000.0);
+        }
         notifyTrackLoaded(d, path);
     };
     ports_.unloadTrack = [this](int d) {
         engine_.unloadTrack(d);
+        if (stems_) stems_->onTrackUnloaded(d);
         deckPath_[d & 3].clear();
     };
     // ---- Phase 14: analysis edit surface (0x9000 commands) ----
@@ -105,6 +118,29 @@ EngineBridge::EngineBridge(audio::AudioEngine& engine,
         perf_.attachGrid(d,
             std::make_shared<BeatGrid>(g.rescaled(dev)),
             analysis_.trackIdFor(path), conf);
+    };
+
+    // Phase 21: stems surface — actions resolve in StemsEngine and
+    // reach the deck as rt::SetStemParam/SetStemMode (non-RT path).
+    ports_.stemAction = [this](int d, int stem, int kind, float v) {
+        if (stems_) stems_->stemAction(d, stem, kind, v);
+    };
+    ports_.stemModeToggle = [this](int d) {
+        if (stems_) stems_->setStemMode(d,
+            stems_->stemMode(d) == 1 ? 0 : 1);
+    };
+    ports_.stemsAnalyze = [this](int d) {
+        if (!stems_) return;
+        const std::string path = deckPath_[d & 3];
+        if (path.empty()) return;
+        library::Track t;
+        if (!lib_.tracks().getByPath(path, t) || t.contentHash == 0)
+            return;                      // unknown track → nothing to key
+        stems_->requestSeparation(t.id, t.contentHash, path,
+                                  -1, 1); // user request → high priority
+    };
+    ports_.stemsCancel = [this](int d) {
+        if (stems_) stems_->cancelForDeck(d);
     };
 
     // Phase 15: copyable sync diagnostics → clipboard
@@ -254,6 +290,27 @@ void EngineBridge::snapshotDeck(int deck, DeckSnapshot& o) {
     o.streamEnded  = s.streamEnded.load();
     o.pfl          = pfl_[deck];
     o.path         = deckPath_[deck];
+    // Phase 21 — stems state: atomics for RT echoes, engine model
+    // for presence/mutes (control-thread owned, cheap reads).
+    o.stemMode     = s.stemMode.load();
+    o.stemsAudible = s.stemsAudible.load();
+    o.stemsAvail   = s.stemsAvail.load();    // published by StemsEngine
+    if (stems_) {
+        const auto& mgr = stems_->manager(deck);
+        const auto& mx  = stems_->mixer(deck);
+        for (int i = 0; i < 8; ++i) {
+            uint8_t f = 0;
+            if (mgr.presentMask() & (1u << (i & 3))) f |= 0x01;
+            if (mx.param(i & 3).muted)               f |= 0x02;
+            if (mx.param(i & 3).solo)                f |= 0x04;
+            if (o.stemsAvail == (int)stems::StemAvailability::Loading ||
+                o.stemsAvail == (int)stems::StemAvailability::Separating)
+                f |= 0x08;
+            o.stemFlags[i] = f;
+        }
+        for (int i = 0; i < 4; ++i)
+            o.stemGain[i] = mx.param(i).gain * 0.5f;   // 0..2 → 0..1
+    }
     // Phase 15 — sync control plane (control-thread reads; cheap)
     const auto ss = perf_.deckSyncState(deck);
     o.syncStatus   = (int)ss.status;
@@ -404,7 +461,7 @@ std::string EngineBridge::deckTrackPath(int deck) const {
     return deckPath_[deck & 3];
 }
 
-void EngineBridge::refreshDeckMeta(int deck, DeckSnapshot& o) {
+void EngineBridge::refreshDeckMeta(int, DeckSnapshot& o) {
     if (o.path.empty() || !lib_.isOpen()) return;
     if (o.trackId >= 0 && !o.title.empty()) return;   // cached
     library::Track t;

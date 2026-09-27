@@ -56,6 +56,16 @@ enum Id : uint32_t {
     DeckJumpSizeUp   = 0x008C,  // step beat-jump size up (1…64 bt)
     DeckJumpSizeDn   = 0x008D,  // step beat-jump size down
     DeckRevHold      = 0x008E,  // momentary reverse (press/release)
+
+    // ---- stems surface: +deck*0x400 (Phase 21) ----
+    DeckStemModeTgl  = 0x0090,  // toggle original ↔ stems render
+    DeckStemAnalyze  = 0x0091,  // queue separation for the loaded track
+    DeckStemCancel   = 0x0092,  // cancel that deck's separation job
+    DeckStemUnmute   = 0x0093,  // clear all mutes+solos on the deck
+    // per-stem actions: base + stem(0..3)*8 + kind
+    //   0 mute tgl, 1 solo tgl, 2 gain up, 3 gain down,
+    //   4 pan left, 5 pan right, 6 gate (arg 1=down,0=up), 7 gain set
+    DeckStemBase     = 0x00C0,
     DeckMemCueBase   = 0x00A0,  // + slot*4 + action (0 goto,1 set,2 del)
 
     // ---- mixer: 0x2000 + (ch << 6) | kind ----

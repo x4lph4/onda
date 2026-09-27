@@ -38,6 +38,12 @@ struct PadDeckState {
     int    loopSizeIdx   { 5 };
     int    jumpSizeIdx   { 2 };
     int    pendingLoopIn { -1 };           // in-point armed, awaiting out
+
+    /// Phase 21 §22 — per-pad stem state flags (stem i ↔ pads i, i+4):
+    /// bit0 present in the loaded set, bit1 muted, bit2 soloed,
+    /// bit3 loading/separating. Absent/loading → Dim; muted → Off;
+    /// soloed → Playing; active → Set.
+    std::array<uint8_t, 8> stemFlags {};
 };
 
 class PadFeedbackEngine {
@@ -80,6 +86,15 @@ public:
                 out.state = ((pad & 3) == s.jumpSizeIdx)
                     ? PadLightState::Selected : PadLightState::Set;
                 break;
+            case PadMode::Stems: {
+                const uint8_t f = s.stemFlags[(size_t)pad];
+                if (f & 0x08)      out.state = PadLightState::Dim;   // loading
+                else if (!(f & 0x01)) out.state = PadLightState::Dim;// absent
+                else if (f & 0x04) out.state = PadLightState::Playing;// solo
+                else if (f & 0x02) out.state = PadLightState::Off;   // muted
+                else               out.state = PadLightState::Set;   // active
+                break;
+            }
             default:
                 out.state = PadLightState::Off;   // sampler/other own it
                 break;
