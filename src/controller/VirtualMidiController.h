@@ -24,6 +24,7 @@ public:
     VirtualMidiController(ControllerEngine& eng,
                           std::string name = "Virtual Ctrl 1")
         : eng_(&eng), info_{ 0xF00D, std::move(name), "OndaTests",
+                             "Virtual-1",
                              Transport::Virtual,
                              CAP_PADS | CAP_FADERS | CAP_EQ |
                              CAP_JOG_WHEEL | CAP_TOUCH |

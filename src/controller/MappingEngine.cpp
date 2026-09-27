@@ -50,12 +50,23 @@ void MappingEngine::indexAddr(const Mapping& m, int idx) {
     }
 }
 
+/// Sort an address bucket: layer-specific entries that match the
+/// active layer first is unnecessary (filtering handles that), but
+/// priority must order same-layer siblings — higher priority wins.
+static void sortBucket(std::vector<int>& v,
+                       const std::vector<Mapping>& maps) {
+    std::stable_sort(v.begin(), v.end(), [&](int a, int b) {
+        return maps[(size_t)a].priority > maps[(size_t)b].priority;
+    });
+}
+
 void MappingEngine::setMappings(std::vector<Mapping> maps) {
     maps_ = std::move(maps);
     run_.assign(maps_.size(), MappingRuntime{});
     byAddr_.clear();
     for (int i = 0; i < (int)maps_.size(); ++i)
         indexAddr(maps_[(size_t)i], i);
+    for (auto& [k, v] : byAddr_) sortBucket(v, maps_);
 }
 
 int MappingEngine::addMapping(const Mapping& m) {
@@ -63,6 +74,12 @@ int MappingEngine::addMapping(const Mapping& m) {
     maps_.push_back(m);
     run_.push_back(MappingRuntime{});
     indexAddr(m, idx);
+    sortBucket(byAddr_[m.in.pack()], maps_);
+    if (m.hiRes) {
+        MidiAddr lsb = m.in;
+        lsb.number = (uint8_t)(m.in.number + 0x20);
+        sortBucket(byAddr_[lsb.pack()], maps_);
+    }
     return idx;
 }
 
@@ -114,6 +131,17 @@ bool MappingEngine::process(const MidiMsg& msg, double nowSec) {
 
     auto it = byAddr_.find(addr.pack());
     if (it != byAddr_.end()) {
+        // ---- layer resolution (§18-19): if any binding on the
+        // active layer owns this input, Default-layer siblings are
+        // shadowed for this message. --------------------------
+        bool layerHit = false;
+        if (activeLayer_ != 0)
+            for (int i : it->second)
+                if (maps_[(size_t)i].enabled &&
+                    maps_[(size_t)i].layer == activeLayer_) {
+                    layerHit = true; break;
+                }
+
         // edge classification
         bool press = false, release = false;
         float raw01 = msgValue01(msg);
@@ -131,8 +159,12 @@ bool MappingEngine::process(const MidiMsg& msg, double nowSec) {
             if (!hi && r.pressed)  release = true;
             r.pressed = hi;
         }
-        for (int i : it->second)
+        for (int i : it->second) {
+            const uint8_t ml = maps_[(size_t)i].layer;
+            if (ml != 0 && ml != activeLayer_) continue;   // other layer
+            if (ml == 0 && layerHit)         continue;   // shadowed
             acted |= dispatch(i, msg, raw01, press, release, nowSec);
+        }
     }
 
     if (acted) ++processed_; else ++dropped_;
@@ -186,6 +218,16 @@ bool MappingEngine::dispatch(int idx, const MidiMsg& msg, float raw01,
 
         case MappingMode::Momentary:
             if (!edge) return false;
+            // long-press bookkeeping (§17): press stamps the hold
+            // time; release clears it (and releases longCmd if fired)
+            if (m.longMs > 0 && m.target.kind == Target::Kind::Command) {
+                if (press) { r.pressAtSec = nowSec; r.longFired = false; }
+                else {
+                    if (r.longFired && ports_.sendCommand)
+                        ports_.sendCommand(m.longCmd, 0.0f);
+                    r.pressAtSec = -1.0; r.longFired = false;
+                }
+            }
             if (m.target.kind == Target::Kind::Command && ports_.sendCommand) {
                 ports_.sendCommand(m.target.cmd, press ? 1.0f : 0.0f);
                 return true;
@@ -285,6 +327,94 @@ bool MappingEngine::dispatch(int idx, const MidiMsg& msg, float raw01,
 
 int MappingEngine::decodeDelta(const Mapping& m, uint8_t v) const {
     return encoderDelta(m.encoder, v);
+}
+
+int MappingEngine::poll(double nowSec) {
+    int fired = 0;
+    for (size_t i = 0; i < maps_.size(); ++i) {
+        const Mapping& m = maps_[i];
+        MappingRuntime& r = run_[i];
+        if (m.longMs == 0 || r.pressAtSec < 0.0 || r.longFired ||
+            !m.enabled || m.longCmd == 0) continue;
+        // a held binding on a non-active layer never fires
+        if (m.layer != 0 && m.layer != activeLayer_) continue;
+        if ((nowSec - r.pressAtSec) * 1000.0 < (double)m.longMs) continue;
+        r.longFired = true;
+        if (ports_.sendCommand) ports_.sendCommand(m.longCmd, 1.0f);
+        ++fired;
+    }
+    return fired;
+}
+
+std::vector<std::string> MappingEngine::findIssues(
+    const std::vector<Mapping>& maps) {
+    std::vector<std::string> out;
+    std::unordered_map<uint32_t, std::vector<int>> byAddr;
+    for (int i = 0; i < (int)maps.size(); ++i) {
+        const Mapping& m = maps[(size_t)i];
+        if (!m.enabled) continue;
+        byAddr[m.in.pack()].push_back(i);
+
+        if (m.in.channel > 15)
+            out.push_back("mapping " + std::to_string(i) +
+                          ": channel > 15");
+        if (m.hiRes && m.in.kind != AddrKind::CC)
+            out.push_back("mapping " + std::to_string(i) +
+                          ": hiRes requires a CC input");
+        if (m.hiRes && m.in.number > 0x5F)
+            out.push_back("mapping " + std::to_string(i) +
+                          ": hiRes pair exceeds CC space (LSB wraps)");
+        if ((m.mode == MappingMode::Relative ||
+             m.mode == MappingMode::IncDec) &&
+            m.in.kind != AddrKind::CC)
+            out.push_back("mapping " + std::to_string(i) +
+                          ": encoder modes expect a CC input");
+        if (m.encoder != EncoderMode::Absolute &&
+            m.mode != MappingMode::Relative &&
+            m.mode != MappingMode::IncDec)
+            out.push_back("mapping " + std::to_string(i) +
+                          ": relative encoding on a non-encoder mode");
+        if (m.longMs > 0 && m.longCmd == 0)
+            out.push_back("mapping " + std::to_string(i) +
+                          ": longMs set but longCmd is empty");
+        if (m.layer > 3)
+            out.push_back("mapping " + std::to_string(i) +
+                          ": layer id > Custom");
+        if (m.target.kind == Target::Kind::Param &&
+            m.target.paramId == 0xFFFF)
+            out.push_back("mapping " + std::to_string(i) +
+                          ": invalid param id");
+        if (!m.verified)
+            out.push_back("mapping " + std::to_string(i) +
+                          ": UNVERIFIED protocol entry");
+    }
+
+    // duplicate / conflicting bindings on the same layer (§49/§53)
+    for (auto& [pack, idxs] : byAddr) {
+        std::unordered_map<uint8_t, int> layers;
+        for (int i : idxs) {
+            const uint8_t l = maps[(size_t)i].layer;
+            if (layers.count(l)) {
+                const int j = layers[l];
+                const Mapping& a = maps[(size_t)j];
+                const Mapping& b = maps[(size_t)i];
+                const bool sameTarget =
+                    a.target.kind == b.target.kind &&
+                    a.target.cmd == b.target.cmd &&
+                    a.target.paramId == b.target.paramId;
+                out.push_back(
+                    std::string("conflict: input ch") +
+                    std::to_string(maps[(size_t)i].in.channel) + " #" +
+                    std::to_string(maps[(size_t)i].in.number) +
+                    " bound twice on layer " + std::to_string(l) +
+                    (sameTarget ? " (same target — redundant)"
+                     : a.priority == b.priority
+                        ? " (equal priority — order is declaration)"
+                        : " (priority resolves order)"));
+            } else layers[l] = i;
+        }
+    }
+    return out;
 }
 
 } // namespace onda::ctrl

@@ -491,8 +491,8 @@ TEST_CASE("Controller: hot-plug disconnect/reconnect", "[ctrl]") {
     REQUIRE(r.eng.devices().connected(0xF00D));
 
     // attach a second device
-    DeviceInfo d2 { 0xBEEF, "Second Ctrl", "X", Transport::MidiUsb,
-                    0, true, true };
+    DeviceInfo d2 { 0xBEEF, "Second Ctrl", "X", "Ctrl-2",
+                    Transport::MidiUsb, 0, true, true };
     r.eng.attachDevice(d2, [](const MidiMsg&) {}, 1.0);
     REQUIRE(r.eng.devices().count() == 2);
 

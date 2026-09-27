@@ -5,6 +5,7 @@
 
 #include "MiniJson.h"
 #include "ParamNames.h"
+#include "MappingEngine.h"
 
 namespace onda::ctrl {
 
@@ -148,7 +149,8 @@ std::string ControllerProfile::validate() const {
             return "mapping " + std::to_string(i) +
                    " has empty output range";
         if (m.target.kind == Target::Kind::Command &&
-            m.target.cmd == 0 && m.target.cmdName.empty())
+            m.target.cmd == 0 && m.target.cmdName.empty() &&
+            m.target.control.empty())
             return "mapping " + std::to_string(i) + " targets no command";
         if (m.target.kind == Target::Kind::Param &&
             m.target.paramId == kInvalidParam)
@@ -158,6 +160,16 @@ std::string ControllerProfile::validate() const {
             return "mapping " + std::to_string(i) + " jog deck > 3";
     }
     return "";
+}
+
+std::vector<std::string> ControllerProfile::findIssues() const {
+    return MappingEngine::findIssues(mappings);
+}
+
+int ControllerProfile::unverifiedCount() const {
+    int n = 0;
+    for (const auto& m : mappings) if (!m.verified) ++n;
+    return n;
 }
 
 static JsonValue addrToJson(const MidiAddr& a) {
@@ -209,6 +221,10 @@ std::string ControllerProfile::toJson() const {
     c["model"]        = JsonValue::makeString(meta.model);
     c["nameContains"] = JsonValue::makeString(meta.nameContains);
     c["author"]       = JsonValue::makeString(meta.author);
+    if (!meta.protocolRev.empty())
+        c["protocolRev"] = JsonValue::makeString(meta.protocolRev);
+    if (!meta.origin.empty())
+        c["origin"] = JsonValue::makeString(meta.origin);
     root["controller"] = std::move(c);
 
     JsonValue caps = JsonValue::makeArray();
@@ -230,6 +246,15 @@ std::string ControllerProfile::toJson() const {
         e["step"]    = JsonValue::makeNumber(m.step);
         if (m.hiRes) e["hires"] = JsonValue::makeBool(true);
         e["enabled"] = JsonValue::makeBool(m.enabled);
+        // Phase 27 fields — only emitted when non-default so v1
+        // files stay byte-stable for unchanged entries.
+        if (m.layer != 0)    e["layer"]    = JsonValue::makeNumber(m.layer);
+        if (m.priority != 0) e["priority"] = JsonValue::makeNumber(m.priority);
+        if (m.longMs != 0)   e["longMs"]   = JsonValue::makeNumber(m.longMs);
+        if (m.longCmd != 0)  e["longCmd"]  = JsonValue::makeNumber(m.longCmd);
+        if (!m.verified)     e["verified"] = JsonValue::makeBool(false);
+        if (!m.target.control.empty())
+            e["control"] = JsonValue::makeString(m.target.control);
         if (m.out.addr.pack() != 0 || m.out.followValue) {
             JsonValue fo = addrToJson(m.out.addr);
             fo["on"] = JsonValue::makeNumber(m.out.onValue);
@@ -263,6 +288,8 @@ bool ControllerProfile::fromJson(const std::string& text,
         p.meta.model        = c->text("model");
         p.meta.nameContains = c->text("nameContains");
         p.meta.author       = c->text("author");
+        p.meta.protocolRev  = c->text("protocolRev");
+        p.meta.origin       = c->text("origin", "user");
     }
 
     if (const JsonValue* caps = root.at("capabilities")) {
@@ -302,6 +329,12 @@ bool ControllerProfile::fromJson(const std::string& text,
             m.step   = (float)e.num("step", 1.0);
             m.hiRes  = e.flag("hires", false);
             m.enabled = e.flag("enabled", true);
+            m.layer    = (uint8_t)e.integer("layer", 0);
+            m.priority = (uint8_t)e.integer("priority", 0);
+            m.longMs   = (uint16_t)e.integer("longMs", 0);
+            m.longCmd  = (uint32_t)e.integer("longCmd", 0);
+            m.verified = e.flag("verified", true);
+            m.target.control = e.text("control");
 
             if (const JsonValue* t = e.at("target")) {
                 const std::string k = t->text("kind", "none");

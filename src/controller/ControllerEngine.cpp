@@ -2,6 +2,8 @@
 
 #include <chrono>
 
+#include "ControlRegistry.h"
+
 namespace onda::ctrl {
 
 static int64_t steadyUs() {
@@ -16,6 +18,22 @@ ControllerEngine::ControllerEngine(std::string profileDir)
             onDeviceEvent(d, e);
         });
     ports_.notify = [](const std::string&, const std::string&, int) {};
+
+    // generic surfaces share the same outbound ports (§20-29)
+    jogWheel_.setPorts({
+        [this](int deck, int mode, double delta) {
+            if (ports_.jog) ports_.jog(deck, mode, delta);
+        },
+        [this](int dir) {
+            if (ports_.sendCommand)
+                ports_.sendCommand(dir > 0 ? 0x3001 /*BrowserNextTrack*/
+                                         : 0x3002 /*BrowserPrevTrack*/,
+                                   1.0f);
+        }});
+    pads_.setPorts({
+        [this](uint32_t cmd, float v) {
+            if (ports_.sendCommand) ports_.sendCommand(cmd, v);
+        }});
 }
 
 void ControllerEngine::setPorts(Ports p) {
@@ -48,6 +66,8 @@ int ControllerEngine::attachDevice(
     auto st = std::make_unique<DeviceState>();
     st->info = d;
     st->connected = true;
+    st->lifecycle = DeviceLifecycle::Detected;
+    st->lastError.clear();
     st->sendRaw = std::move(send);
     st->capabilities = d.capabilities;
     st->mapping.setPorts({
@@ -65,7 +85,10 @@ int ControllerEngine::attachDevice(
 
 void ControllerEngine::detachDevice(uint32_t deviceId, double nowSec) {
     auto* st = device(deviceId);
-    if (st) st->connected = false;
+    if (st) {
+        st->connected = false;
+        st->lifecycle = DeviceLifecycle::Disconnecting;
+    }
     devMgr_.detach(deviceId, nowSec);
 }
 
@@ -74,7 +97,10 @@ void ControllerEngine::onDeviceEvent(const DeviceInfo& d,
     using Ev = DeviceManager::Event;
     auto* st = device(d.id);
     if (e == Ev::Connected || e == Ev::Reconnected) {
-        if (st) st->connected = true;
+        if (st) {
+            st->connected = true;
+            st->lifecycle = DeviceLifecycle::Connecting;
+        }
         // auto-assign a matching profile
         std::string err;
         const std::string pid =
@@ -90,11 +116,17 @@ void ControllerEngine::onDeviceEvent(const DeviceInfo& d,
                 if (applyProfile(d.id, *p, perr)) {
                     st->profileId = pid;
                     st->capabilities |= p->capabilities;
-                } else if (ports_.notify) {
-                    ports_.notify("Profile error",
-                                  perr, 2);
+                    st->lifecycle = DeviceLifecycle::Ready;
+                } else {
+                    st->lifecycle = DeviceLifecycle::Error;
+                    st->lastError = perr;
+                    if (ports_.notify)
+                        ports_.notify("Profile error", perr, 2);
                 }
             }
+        } else if (st) {
+            // no profile matched — transport open, unmapped device
+            st->lifecycle = DeviceLifecycle::Connected;
         }
         if (e == Ev::Reconnected) {
             restoreFeedback(d.id);
@@ -106,6 +138,7 @@ void ControllerEngine::onDeviceEvent(const DeviceInfo& d,
                                     ? " — " + st->profileId : ""), 0);
         }
     } else if (e == Ev::Disconnected) {
+        if (st) st->lifecycle = DeviceLifecycle::Disconnected;
         if (ports_.notify)
             ports_.notify("Controller disconnected", d.name, 2);
     }
@@ -170,14 +203,86 @@ void ControllerEngine::processInput(uint32_t deviceId,
 
     const bool acted = st->mapping.process(m, nowSec_);
     if (acted) { ++st->actedCount; ++totalActed_; }
-    diag_.logIn(deviceId, m, nowSec_, acted);
+    // §50: decode which control produced the action (monitor column)
+    diag_.logIn(deviceId, m, nowSec_, acted,
+                acted ? decodeControl(*st, addrOf(m)) : "");
     diag_.noteLatency(st->mapping.lastProcessUs());
+}
+
+void ControllerEngine::processSysex(uint32_t deviceId,
+                                    const SysExMsg& sx) {
+    DeviceState* st = device(deviceId);
+    if (!st || !st->connected) return;
+    ++st->inCount; ++totalIn_;
+    bool consumed = false;
+    if (onSysex) consumed = onSysex(deviceId, sx);
+    diag_.logSysex(deviceId, sx, nowSec_, consumed);
+    if (consumed) { ++st->actedCount; ++totalActed_; }
+}
+
+void ControllerEngine::setLayer(uint32_t deviceId, uint8_t layer) {
+    DeviceState* st = device(deviceId);
+    if (st) st->mapping.setLayer(layer);
+}
+uint8_t ControllerEngine::layer(uint32_t deviceId) const {
+    const DeviceState* st = device(deviceId);
+    return st ? st->mapping.layer() : 0;
+}
+
+ControllerState ControllerEngine::state(uint32_t deviceId) const {
+    ControllerState s;
+    const DeviceState* st = device(deviceId);
+    if (!st) return s;
+    s.id             = st->info.id;
+    s.name           = st->info.name;
+    s.manufacturer   = st->info.manufacturer;
+    s.model          = st->info.model;
+    s.transport      = st->info.transport;
+    s.connected      = st->connected;
+    s.lifecycle      = st->lifecycle;
+    s.initialized    = !st->profileId.empty() &&
+                       st->lifecycle == DeviceLifecycle::Ready;
+    s.profileId      = st->profileId;
+    s.activeLayer    = st->mapping.layer();
+    s.mappingCount   = (int)st->mapping.mappings().size();
+    s.feedbackWatches= (int)st->feedback.watches().size();
+    s.inCount        = st->inCount;
+    s.actedCount     = st->actedCount;
+    s.lastError      = st->lastError;
+    return s;
+}
+
+/// §50 monitor decode: which logical/mapped control fired.
+std::string ControllerEngine::decodeControl(const DeviceState& st,
+                                            const MidiAddr& a) const {
+    const int idx = st.mapping.find(a);
+    if (idx < 0) return {};
+    const Mapping& m = st.mapping.mappings()[(size_t)idx];
+    if (!m.target.control.empty()) return m.target.control;
+    switch (m.target.kind) {
+        case Target::Kind::Command:
+            return !m.target.cmdName.empty()
+                   ? m.target.cmdName
+                   : "cmd#" + std::to_string(m.target.cmd);
+        case Target::Kind::Param:
+            return "param#" + std::to_string(m.target.paramId);
+        case Target::Kind::Jog:
+            return "jog.deck" + std::to_string(m.target.jogDeck);
+        default:
+            return {};
+    }
 }
 
 void ControllerEngine::tick(double nowSec) {
     nowSec_ = nowSec;
-    for (auto& [id, st] : states_)
-        if (st->connected) st->feedback.tick(nowSec);
+    for (auto& [id, st] : states_) {
+        if (!st->connected) continue;
+        // §17 long-press housekeeping rides the same UI tick
+        if (st->mapping.poll(nowSec) > 0) {
+            ++st->actedCount; ++totalActed_;
+        }
+        st->feedback.tick(nowSec);
+    }
 }
 
 // ----------------------------------------------------------------------
@@ -192,13 +297,32 @@ bool ControllerEngine::applyProfile(uint32_t deviceId,
                                     std::string& err) {
     DeviceState* st = device(deviceId);
     if (!st) { err = "no such device"; return false; }
-    if ((err = p.validate()), !err.empty()) return false;
+    if ((err = p.validate()), !err.empty()) {
+        st->lifecycle = DeviceLifecycle::Error;
+        st->lastError = err;
+        return false;
+    }
 
     std::vector<Mapping> maps = p.mappings;
     std::vector<FeedbackEngine::Watch> watches;
     watches.reserve(maps.size());
 
     for (Mapping& m : maps) {
+        // §10 logical control ids resolve first — "decka.play" →
+        // the canonical Target (command/param/jog) from the registry.
+        if (!m.target.control.empty()) {
+            const LogicalControl* lc =
+                controlRegistry().find(m.target.control);
+            if (!lc) {
+                err = "unknown control '" + m.target.control + "'";
+                return false;
+            }
+            const std::string keepName = m.target.cmdName;
+            m.target = lc->target;
+            m.target.control = lc->id;
+            if (!keepName.empty() && m.target.cmdName.empty())
+                m.target.cmdName = keepName;
+        }
         // resolve named commands → ids via CommandManager
         if (m.target.kind == Target::Kind::Command &&
             m.target.cmd == 0 && !m.target.cmdName.empty() &&
@@ -229,6 +353,8 @@ bool ControllerEngine::applyProfile(uint32_t deviceId,
     st->feedback.setWatches(std::move(watches));
     st->profileId = profiles_.idFor(p);
     st->capabilities |= p.capabilities;
+    st->lifecycle = DeviceLifecycle::Ready;
+    st->lastError.clear();
     return true;
 }
 

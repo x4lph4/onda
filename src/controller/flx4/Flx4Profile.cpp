@@ -14,12 +14,15 @@ static MidiAddr CA(int ch, int c) {
 }
 
 static Mapping cmdMap(MidiAddr a, const char* name, MappingMode mode,
-                      bool led) {
+                      bool led, ControlKind kind = ControlKind::Button,
+                      bool verified = true) {
     Mapping m;
     m.in = a;
     m.target.kind = Target::Kind::Command;
     m.target.cmdName = name;   // resolved at applyProfile
     m.mode = mode;
+    m.kind = kind;
+    m.verified = verified;     // §9 UNVERIFIED flag for non-[OFF] ids
     if (led) {
         m.out.addr = a;        // LED echo: same note, vel 0x7F/0x00
         m.out.hasCustom = true;
@@ -30,7 +33,9 @@ static Mapping cmdMap(MidiAddr a, const char* name, MappingMode mode,
 }
 
 static Mapping parMap(MidiAddr a, uint16_t param, float lo, float hi,
-                      bool hiRes, Curve c = Curve::Linear) {
+                      bool hiRes, Curve c = Curve::Linear,
+                      ControlKind kind = ControlKind::Knob,
+                      bool verified = true) {
     Mapping m;
     m.in = a;
     m.target.kind = Target::Kind::Param;
@@ -40,6 +45,8 @@ static Mapping parMap(MidiAddr a, uint16_t param, float lo, float hi,
     m.outMin = lo;
     m.outMax = hi;
     m.hiRes = hiRes;
+    m.kind = kind;
+    m.verified = verified;
     return m;
 }
 
@@ -50,6 +57,8 @@ ControllerProfile buildProfile() {
     p.meta.model        = kModel;
     p.meta.nameContains = kNameMatch;
     p.meta.author       = "onda (documented public sources only)";
+    p.meta.protocolRev  = "flx4-midi-fw1.02";   // Mixxx docs baseline
+    p.meta.origin       = "factory";
     p.capabilities = CAP_JOG_WHEEL | CAP_TOUCH | CAP_PADS | CAP_FADERS |
                      CAP_EQ | CAP_FILTER | CAP_CROSSFADER |
                      CAP_FX_CONTROLS | CAP_LED_FEEDBACK;
@@ -58,32 +67,48 @@ ControllerProfile buildProfile() {
         const int ch = kDeckCh(d);
         const std::string dn = std::string("deck") + char('a' + d);
         auto cmd = [&](int n, const char* tail, MappingMode md,
-                       bool led) {
+                       bool led,
+                       ControlKind k = ControlKind::Button,
+                       bool ver = true) {
             p.mappings.push_back(cmdMap(
-                NA(ch, n), (dn + "." + tail).c_str(), md, led));
+                NA(ch, n), (dn + "." + tail).c_str(), md, led, k, ver));
         };
+        // [OFF]-sourced entries verified=true; ids documented only by
+        // community sources ([MIX]/[SLP-hw]) ride verified=false until
+        // confirmed on hardware (§9 UNVERIFIED — they still work).
         cmd(N_PLAY,       "playToggle",     MappingMode::Toggle,    true);
         cmd(N_PLAY_SHIFT, "reverseToggle",  MappingMode::Momentary, false);
         cmd(N_CUE,        "cueTrigger",     MappingMode::Momentary, true);
-        cmd(N_CUE_SHIFT,  "stop",           MappingMode::Momentary, false);
+        cmd(N_CUE_SHIFT,  "stop",           MappingMode::Momentary,
+            false, ControlKind::Button, /*verified*/ false);
         cmd(N_SYNC,       "syncToggle",     MappingMode::Toggle,    true);
-        cmd(N_SYNC_LONG,  "syncToggle",     MappingMode::Momentary, false);
-        cmd(N_LOOP_IN,    "loopIn",         MappingMode::Momentary, false);
-        cmd(N_LOOP_OUT,   "loopOut",        MappingMode::Momentary, false);
-        cmd(N_4BEAT_EXIT, "loopToggle",     MappingMode::Toggle,    false);
-        cmd(N_CALL_L,     "loopHalve",      MappingMode::Momentary, false);
-        cmd(N_CALL_R,     "loopDouble",     MappingMode::Momentary, false);
-        cmd(N_PFL,        "pflToggle",      MappingMode::Toggle,    true);
-        cmd(N_QUANTIZE,   "quantizeToggle", MappingMode::Toggle,    false);
-        cmd(N_JUMP_FWD,   "jumpFwd",        MappingMode::Momentary, false);
-        cmd(N_JUMP_BACK,  "jumpBack",       MappingMode::Momentary, false);
+        cmd(N_SYNC_LONG,  "syncToggle",     MappingMode::Momentary,
+            false, ControlKind::Button, false);
+        cmd(N_LOOP_IN,    "loopIn",         MappingMode::Momentary,
+            false, ControlKind::Button, false);
+        cmd(N_LOOP_OUT,   "loopOut",        MappingMode::Momentary,
+            false, ControlKind::Button, false);
+        cmd(N_4BEAT_EXIT, "loopToggle",     MappingMode::Toggle,
+            false, ControlKind::Toggle, false);
+        cmd(N_CALL_L,     "loopHalve",      MappingMode::Momentary,
+            false, ControlKind::Button, false);
+        cmd(N_CALL_R,     "loopDouble",     MappingMode::Momentary,
+            false, ControlKind::Button, false);
+        cmd(N_PFL,        "pflToggle",      MappingMode::Toggle,
+            true, ControlKind::Toggle, false);
+        cmd(N_QUANTIZE,   "quantizeToggle", MappingMode::Toggle,
+            false, ControlKind::Toggle, false);
+        cmd(N_JUMP_FWD,   "jumpFwd",        MappingMode::Momentary,
+            false, ControlKind::Button, false);
+        cmd(N_JUMP_BACK,  "jumpBack",       MappingMode::Momentary,
+            false, ControlKind::Button, false);
 
         // 14-bit continuous — pct range is absolute percent; the
         // deck engine clamps to the active pitch range. Sign of
         // physical fader orientation is documented-pending.
         p.mappings.push_back(parMap(
             CA(ch, CC_TEMPO), deckParamId(d, kDeckParamPitch),
-            -25.0f, 25.0f, true));
+            -25.0f, 25.0f, true, Curve::Linear, ControlKind::Fader));
         p.mappings.push_back(parMap(
             CA(ch, CC_TRIM), mixer::ParameterRegistry::channelGain(d), 0.0f, 2.0f, true));
         p.mappings.push_back(parMap(
@@ -97,22 +122,23 @@ ControllerProfile buildProfile() {
             true));
         p.mappings.push_back(parMap(
             CA(ch, CC_FADER), mixer::ParameterRegistry::channelFader(d), 0.0f, 1.0f,
-            true));
+            true, Curve::Linear, ControlKind::Fader));
     }
 
     // ---- mixer bus (ch 6) ----
     p.mappings.push_back(parMap(
         CA(kMixCh, CC_XF), mixer::ParameterRegistry::CROSSFADER,
-        -1.0f, 1.0f, true));
+        -1.0f, 1.0f, true, Curve::Linear, ControlKind::Fader));
     p.mappings.push_back(parMap(
         CA(kMixCh, CC_HEADMIX), mixer::ParameterRegistry::CUE_MIX,
         0.0f, 1.0f, true));
     p.mappings.push_back(parMap(
-        CA(kMixCh, CC_CFX_A), mixer::ParameterRegistry::channelFilter(0), -1.0f, 1.0f,
-        true));
+        CA(kMixCh, CC_CFX_A), mixer::ParameterRegistry::channelFilter(0),
+        -1.0f, 1.0f, true, Curve::Linear, ControlKind::Knob,
+        /*verified*/ false));
     p.mappings.push_back(parMap(
-        CA(kMixCh, CC_CFX_B), mixer::ParameterRegistry::channelFilter(1), -1.0f, 1.0f,
-        true));
+        CA(kMixCh, CC_CFX_B), mixer::ParameterRegistry::channelFilter(1),
+        -1.0f, 1.0f, true, Curve::Linear, ControlKind::Knob, false));
 
     // ---- browser load buttons (ch 6 notes) ----
     p.mappings.push_back(cmdMap(NA(kMixCh, N_LOAD_A), "decka.load",
@@ -145,7 +171,7 @@ ControllerProfile buildProfile() {
 
 std::string installProfile(ProfileManager& pm, std::string& err) {
     ControllerProfile p = buildProfile();
-    return pm.installProfile(p, err);
+    return pm.installFactory(p, err);   // factory — memory only (§48)
 }
 
 } // namespace onda::ctrl::flx4

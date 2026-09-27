@@ -2,6 +2,53 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 27 (controller engine completion)
+
+Completed the controller layer on top of the Phase-9/10 foundation
+(`docs/hardware/controller-engine.md`, `docs/adr/0027-controller-engine.md`)
+— audit showed ~75% of the spec already existed; this phase closed
+the real gaps.
+
+- **`DeviceLifecycle` + `ControllerState`** (§5, §46): explicit
+  DETECTED→CONNECTING→CONNECTED→READY/ERROR/DISCONNECTING machine on
+  `DeviceState`; `applyProfile` owns the transition (plugin-applied
+  and auto-matched profiles behave identically); copyable per-device
+  snapshot for UI; musical state never lives in the device layer.
+- **`ControlRegistry`** (§10): canonical logical ids —
+  `decka.play`, `decka.pad.1`, `decka.eq.low`, `ch1.cue`,
+  `mixer.crossfader`, `browser.next` — resolved to CommandManager /
+  ParameterRegistry / jog targets for all 4 decks; profiles can
+  address `target.control` (unknown id → rejected at apply);
+  `skeleton()` feeds Learn/editor templates.
+- **Mapping upgrades** (§12-19, §49, §53): `ControlKind`
+  (button/toggle/momentary/encoder/fader/knob/jog/pad/switch),
+  per-device layers (Default/Shift/Alt/Custom — active-layer
+  shadowing), `priority` ordering on shared inputs, `longMs` +
+  `longCmd` long-press via `poll()`, `verified=false` UNVERIFIED flag,
+  `findIssues()` duplicate/conflict/range validation.
+- **SysEx** (§13): bounded 64-byte `SysExMsg` on a parallel path —
+  `onSysex` hook + monitor ring; never reaches MappingEngine;
+  JUCE adapter converts both directions.
+- **Generic `JogWheelEngine`/`PadEngine`** (§20-29): Vinyl/CDJ/
+  Search/Browse modes, per-deck sensitivity, touch gating,
+  platter-vs-edge safety, browse never touches the deck; 8 pads ×
+  4 decks × shift with velocity + LED-facing `PadState`. FLX4 plugin
+  now feeds these — decode stays device-side, semantics stay in
+  `PadLayer`.
+- **`LedPattern` blink** (§42): Blink/SlowBlink/FastBlink rendered
+  from wall-clock phase inside `tick()` — exact rates at any poll
+  cadence, state-diffing + throttle intact.
+- **Factory/user profiles** (§47-48, §54): `installFactory` is
+  memory-only (can never be deleted/renamed — `duplicateProfile` is
+  the customization path), user profiles shadow on auto-match,
+  `protocolRev` + `origin` in JSON; FLX4 entries sourced only from
+  community docs are marked UNVERIFIED.
+- **19 new `[ctrl27]` tests**: lifecycle, registry, layers,
+  long-press, priority, validation, SysEx, blink, jog/pad engines,
+  profile split, JSON roundtrip, FLX4 marks, VirtualFlx4 end-to-end,
+  monitor decode, multi-controller, 40k-msg flood (~400k msg/s, 0
+  drops), state snapshot.
+
 ## Status — Phase 26 (audio device engine completion)
 
 Completed the device layer on top of the Phase-13 `adevice` foundation

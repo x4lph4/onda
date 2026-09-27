@@ -29,6 +29,8 @@ struct ControllerMeta {
     std::string nameContains;      // match substring for auto-assign
     std::string author;
     int         schemaMin = 1;     // oldest profileVersion we accept
+    std::string protocolRev;       // §54 wire-protocol revision
+    std::string origin = "user";   // §48 "factory" | "user"
 };
 
 /// Optional explicit jog entry — a jog is just a mapping with
@@ -44,6 +46,11 @@ struct ControllerProfile {
     // ---- validation (pure data checks — no execution) ----
     /// Returns "" or the first problem found.
     std::string validate() const;
+    /// §49 non-fatal issue report — duplicates/conflicts/UNVERIFIED
+    /// entries and suspicious combos. Empty = clean.
+    std::vector<std::string> findIssues() const;
+    /// §9 count of UNVERIFIED mappings (hardware untested entries).
+    int unverifiedCount() const;
 
     // ---- JSON (MiniJson — no code, no eval) ----
     std::string toJson() const;

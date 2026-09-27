@@ -54,13 +54,32 @@ public:
     const std::vector<Mapping>& mappings() const { return maps_; }
     int find(const MidiAddr& a) const;            // -1 or index
 
+    // ---- layers (§18-19) ----
+    /// One active layer per device. A mapping fires when:
+    ///   m.layer == 0 (Default)  → fires on the default layer OR when
+    ///      no layer-specific binding exists for the same input;
+    ///   m.layer == activeLayer_ → fires (overrides Default siblings).
+    void    setLayer(uint8_t layer) { activeLayer_ = layer; }
+    uint8_t layer() const { return activeLayer_; }
+
     // ---- input ----
     /// Process one message. Returns true when it produced an action.
     bool process(const MidiMsg& msg, double nowSec);
 
+    /// Housekeeping — fires long-press targets (§17). Call at UI rate.
+    /// Returns number of long-press actions emitted this call.
+    int  poll(double nowSec);
+
     /// Update the known target value for pickup/relative bookkeeping
     /// (called with feedback state or after UI-side changes).
     void noteTargetValue(const MidiAddr& in, float v);
+
+    // ---- validation (§49) ----
+    /// Non-fatal issue list for a mapping set — duplicate bindings on
+    /// the same layer, conflicting modes, out-of-range fields, encoder
+    /// semantics on non-CC inputs, long-press without target, etc.
+    static std::vector<std::string> findIssues(
+        const std::vector<Mapping>& maps);
 
     // ---- diagnostics ----
     int64_t processed() const { return processed_; }
@@ -81,6 +100,7 @@ private:
     std::vector<MappingRuntime> run_;
     // addr → indices for O(1) lookup (multiple mappings per addr ok)
     std::unordered_map<uint32_t, std::vector<int>> byAddr_;
+    uint8_t activeLayer_ = 0;     // MapLayer::Default
 
     int64_t processed_ = 0, dropped_ = 0;
     int64_t processUs_ = 0, lastUs_ = 0;

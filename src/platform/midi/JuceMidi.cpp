@@ -1,5 +1,7 @@
 #include "JuceMidi.h"
 
+#include <cstring>
+
 namespace onda::ctrl {
 
 MidiManager::MidiManager(ControllerEngine& engine, int pollMs)
@@ -26,6 +28,20 @@ uint32_t MidiManager::deviceKey(const juce::String& osId) {
         h *= 16777619u;
     }
     return h ? h : 1u;
+}
+
+/// SysEx conversion — bounded copy into the fixed SysExMsg buffer
+/// (§13): longer dumps are truncated at the adapter, never queued.
+static SysExMsg toSysEx(const juce::MidiMessage& m) {
+    SysExMsg sx;
+    sx.timeUs = (int64_t)(m.getTimeStamp() * 1e6);
+    const int n = std::min<int>(m.getSysExDataSize() + 1,
+                                (int)SysExMsg::kMax);
+    sx.data[0] = 0xF0;
+    if (n > 1)
+        std::memcpy(sx.data + 1, m.getSysExData(), (size_t)(n - 1));
+    sx.len = (uint16_t)n;
+    return sx;
 }
 
 MidiMsg MidiManager::toMsg(const juce::MidiMessage& m) {
@@ -131,6 +147,15 @@ void MidiManager::scan() {
                     it->second.dev->sendMessageNow(toJuce(m));
             },
             juce::Time::getMillisecondCounterHiRes() / 1000.0);
+        // §13 outbound SysEx path — vendor handshakes, position dumps
+        if (auto* st = eng_->device(id))
+            st->sendSysex = [this, id](const SysExMsg& sx) {
+                auto it = outs_.find(id);
+                if (it != outs_.end() && it->second.dev && sx.len > 1)
+                    it->second.dev->sendMessageNow(
+                        juce::MidiMessage::createSysExMessage(
+                            sx.data + 1, sx.len - 1));
+            };
     }
     firstScan_ = false;
 }
@@ -139,7 +164,8 @@ void MidiManager::handleIncomingMidiMessage(
     juce::MidiInput* src, const juce::MidiMessage& m) {
     for (auto& [id, in] : ins_)
         if (in.dev.get() == src) {
-            eng_->processInput(id, toMsg(m));
+            if (m.isSysEx()) eng_->processSysex(id, toSysEx(m));
+            else             eng_->processInput(id, toMsg(m));
             return;
         }
 }

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 
 namespace onda::ctrl {
 
@@ -39,11 +40,24 @@ bool FeedbackEngine::isEcho(const MidiAddr& in, uint8_t value,
     return echo;
 }
 
+/// Blink rate in Hz for each blink pattern (§42). Phase is computed
+/// from wall-clock so the rate stays exact regardless of tick cadence.
+static double blinkHz(FeedbackEngine::LedPattern p) {
+    using LP = FeedbackEngine::LedPattern;
+    switch (p) {
+        case LP::Blink:     return 2.0;
+        case LP::SlowBlink: return 0.5;
+        case LP::FastBlink: return 4.0;
+        default:            return 0.0;
+    }
+}
+
 int FeedbackEngine::tick(double nowSec, bool force) {
     int emitted = 0;
     for (const Watch& w : watches_) {
         // resolve current source value → output byte
         uint8_t v;
+        bool srcOn = false;      // for blink patterns
         if (w.followValue && ports_.paramState) {
             // note: paramId 0 is a *valid* id (channel 0 gain)
             const float span = w.srcMax - w.srcMin;
@@ -51,14 +65,27 @@ int FeedbackEngine::tick(double nowSec, bool force) {
                 (ports_.paramState(w.paramId) - w.srcMin) /
                     (span != 0.0f ? span : 1.0f),
                 0.0f, 1.0f);
+            srcOn = x > 0.5f;
             v = (uint8_t)std::clamp<int>(
                 (int)(w.offValue + x * (w.onValue - w.offValue)),
                 0, 127);
         } else if (w.cmd != 0 && ports_.commandState) {
             const int s = ports_.commandState(w.cmd);
-            v = s > 0 ? w.onValue : w.offValue;
+            srcOn = s > 0;
+            v = srcOn ? w.onValue : w.offValue;
         } else {
             continue;
+        }
+
+        // §42 blink: while the source is on, the output alternates
+        // between onValue/offValue at the pattern rate. Off = solid.
+        if (srcOn) {
+            const double hz = blinkHz(w.pattern);
+            if (hz > 0.0) {
+                const double phase =
+                    nowSec * hz - std::floor(nowSec * hz);
+                v = phase < 0.5 ? w.onValue : w.offValue;
+            }
         }
 
         const uint32_t key = w.out.pack();

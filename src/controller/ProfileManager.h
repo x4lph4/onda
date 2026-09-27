@@ -23,9 +23,32 @@ public:
 
     // ---- library ops ----
     /// Validate + write to the library. Returns profileId or "" on
-    /// failure (err filled).
+    /// failure (err filled). Marks the profile origin="user" — user
+    /// files live on disk and are safe to edit/delete (§48).
     std::string installProfile(const ControllerProfile& p,
                                std::string& err);
+    /// §48 factory install: registers the profile in memory ONLY —
+    /// built-in mappings ship inside the binary, are never written
+    /// to the user dir, and can never be overwritten or deleted
+    /// through the library. User edits go through duplicateProfile().
+    std::string installFactory(const ControllerProfile& p,
+                               std::string& err);
+    /// §47 duplicate: copy `profileId` under a new model name as a
+    /// user profile. Works on factory profiles too (the original
+    /// stays untouched — this is how users customize factory maps).
+    std::string duplicateProfile(const std::string& profileId,
+                                 const std::string& newModel,
+                                 std::string& err);
+    /// §47 rename: user profiles only — writes under the new id and
+    /// deletes the old file. Refuses factory profiles.
+    bool renameProfile(const std::string& profileId,
+                       const std::string& newModel,
+                       std::string& err);
+    /// §47 reset-to-factory: removes a user profile, letting any
+    /// same-id factory registration resurface. No-op otherwise.
+    void resetToFactory(const std::string& profileId);
+    /// origin of an installed profile ("factory"/"user"/"" if absent)
+    std::string originOf(const std::string& profileId) const;
     /// Read + validate a file from anywhere (import).
     bool importProfile(const std::string& path, std::string& err);
     bool exportProfile(const std::string& profileId,

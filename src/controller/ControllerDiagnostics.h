@@ -23,6 +23,9 @@ public:
         double   atSec = 0.0;      // engine-local time
         uint32_t device = 0;
         bool     mapped = false;   // produced an action
+        bool     sysex  = false;   // SysEx event (msg.data holds len)
+        SysExMsg sx;               // payload when sysex == true
+        std::string decoded;       // §50 decoded control name
     };
 
     static constexpr size_t kRing = 256;
@@ -30,8 +33,13 @@ public:
     void setMonitorEnabled(bool on) { monitor_ = on; }
     bool monitorEnabled() const { return monitor_; }
 
-    void logIn (uint32_t dev, const MidiMsg& m, double at, bool acted);
+    void logIn (uint32_t dev, const MidiMsg& m, double at, bool acted,
+                std::string decoded = "");
     void logOut(uint32_t dev, const MidiMsg& m, double at);
+    /// SysEx events live in the same ring (§13/§50) — the monitor
+    /// shows direction + bytes; never reaches MappingEngine.
+    void logSysex(uint32_t dev, const SysExMsg& sx, double at,
+                  bool consumed);
 
     /// input→action latency sample (µs) from MappingEngine timing.
     void noteLatency(int64_t us);
@@ -48,6 +56,11 @@ public:
     /// Human-readable monitor line (DeviceView / logs).
     static std::string describe(const Entry& e);
     static std::string describeMsg(const MidiMsg& m);
+    static std::string describeSysex(const SysExMsg& sx);
+
+    /// §51 raw-logger export: last `max` ring entries as text lines
+    /// (bounded — the ring itself is the recording; nothing grows).
+    std::string dump(size_t max = kRing) const;
 
 private:
     std::deque<Entry> ring_;

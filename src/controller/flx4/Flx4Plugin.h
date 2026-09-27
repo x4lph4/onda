@@ -87,12 +87,19 @@ public:
         if (PadModeManager::classify(m, deck, sh, pad, bank) == 0)
             return handlePad(deck, sh, pad, bank, m);
 
-        // jog family
+        // jog family — decoded events ride the generic JogWheelEngine
+        // (§20-26): mode policy/sensitivity live there, the plugin
+        // only supplies platter-vs-edge context + touch state.
         const JogEvent j = jog_.decode(m);
-        if (j.kind == JogEvent::Touch) return true;
+        if (j.kind == JogEvent::Touch) {
+            eng_->jogWheel().touch(j.deck, j.touching);
+            return true;
+        }
         if (j.kind == JogEvent::Turn) {
-            if (ports_jog())
-                eng_->ports().jog(j.deck, (int)j.mode, (double)j.delta);
+            const bool platter = m.data1 == CC_JOG_VON ||
+                                 m.data1 == CC_JOG_VOFF;
+            eng_->jogWheel().turn(j.deck, (double)j.delta, j.mode,
+                                  platter);
             return true;
         }
 
@@ -175,17 +182,16 @@ private:
             st->sendRaw(makeOut(a, v));
     }
 
-    /// Every pad event → the domain pad layer (ui::pads::PadLayer),
-    /// which resolves action by the app's current mode — the plugin
-    /// carries zero pad semantics (one semantic source of truth for
-    /// all controllers). Velocity normalized 0..1.
+    /// Every pad event → the generic PadEngine (§27-29): state is
+    /// tracked there (pressed/velocity/color) and it emits the forPad
+    /// command into the domain PadLayer — one semantic source of
+    /// truth for all controllers. Velocity normalized 0..1.
     bool handlePad(int deck, bool sh, int pad, int bank,
                    const MidiMsg& m) {
-        const bool press =
-            (m.type == MsgType::NoteOn && m.data2 > 0);
+        const float vel = (m.type == MsgType::NoteOn && m.data2 > 0)
+                          ? (float)m.data2 / 127.0f : 0.0f;
         (void)bank;   // bank is implied by domain mode (selector sets it)
-        sendCmd(ui::cmd::forPad(deck, pad, sh),
-                press ? (float)m.data2 / 127.0f : 0.0f);
+        eng_->pads().pad(deck, pad, sh, vel);
         return true;
     }
 
@@ -198,7 +204,7 @@ private:
         if (!st || !st->profileId.empty()) return;
         std::string err;
         const std::string id =
-            eng_->profiles().installProfile(buildProfile(), err);
+            eng_->profiles().installFactory(buildProfile(), err);
         if (id.empty()) return;
         std::string aerr;
         eng_->profiles().assignProfile((uint32_t)devId_, id, aerr);

@@ -16,7 +16,8 @@ struct VirtualFlx4 {
     explicit VirtualFlx4(ControllerEngine& e) : eng(&e) {}
 
     static DeviceInfo info() {
-        return { kId, "DDJ-FLX4", kManufacturer, Transport::Virtual,
+        return { kId, "DDJ-FLX4", kManufacturer, kModel,
+                 Transport::Virtual,
                  CAP_JOG_WHEEL | CAP_TOUCH | CAP_PADS | CAP_FADERS |
                  CAP_EQ | CAP_FILTER | CAP_CROSSFADER |
                  CAP_FX_CONTROLS | CAP_LED_FEEDBACK,

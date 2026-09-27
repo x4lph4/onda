@@ -44,8 +44,10 @@ std::vector<std::string> ProfileManager::listProfiles() const {
     return out;
 }
 
-std::string ProfileManager::installProfile(const ControllerProfile& p,
+std::string ProfileManager::installProfile(const ControllerProfile& pIn,
                                            std::string& err) {
+    ControllerProfile p = pIn;
+    if (p.meta.origin.empty()) p.meta.origin = "user";
     err = p.validate();
     if (!err.empty()) return "";
     std::error_code ec;
@@ -58,8 +60,76 @@ std::string ProfileManager::installProfile(const ControllerProfile& p,
     const std::string j = p.toJson();
     std::fwrite(j.data(), 1, j.size(), f);
     std::fclose(f);
-    installed_[id] = p;
+    installed_[id] = std::move(p);
     return id;
+}
+
+std::string ProfileManager::installFactory(const ControllerProfile& pIn,
+                                           std::string& err) {
+    ControllerProfile p = pIn;
+    p.meta.origin = "factory";
+    err = p.validate();
+    if (!err.empty()) return "";
+    const std::string id = idFor(p);
+    installed_[id] = std::move(p);   // memory only — no file written
+    return id;
+}
+
+std::string ProfileManager::duplicateProfile(const std::string& profileId,
+                                             const std::string& newModel,
+                                             std::string& err) {
+    if (!scanned_) rescan();
+    auto it = installed_.find(profileId);
+    if (it == installed_.end()) {
+        ControllerProfile p;
+        if (!loadProfileData(profileId, p, err)) return "";
+        it = installed_.emplace(profileId, std::move(p)).first;
+    }
+    ControllerProfile copy = it->second;
+    copy.meta.model  = newModel;
+    copy.meta.origin = "user";
+    return installProfile(copy, err);
+}
+
+bool ProfileManager::renameProfile(const std::string& profileId,
+                                   const std::string& newModel,
+                                   std::string& err) {
+    if (!scanned_) rescan();
+    auto it = installed_.find(profileId);
+    if (it == installed_.end()) { err = "no such profile"; return false; }
+    if (it->second.meta.origin == "factory") {
+        err = "factory profiles cannot be renamed — duplicate instead";
+        return false;
+    }
+    ControllerProfile p = it->second;
+    p.meta.model = newModel;
+    const std::string newId = installProfile(p, err);
+    if (newId.empty()) return false;
+    // re-point any device assignments, then remove the old file
+    for (auto& [dev, pid] : assigned_)
+        if (pid == profileId) pid = newId;
+    const fs::path fp = fs::path(dir_) / (profileId + ".json");
+    std::error_code ec;
+    fs::remove(fp, ec);
+    installed_.erase(profileId);
+    return true;
+}
+
+void ProfileManager::resetToFactory(const std::string& profileId) {
+    auto it = installed_.find(profileId);
+    if (it != installed_.end() && it->second.meta.origin == "factory")
+        return;                               // nothing to reset
+    const fs::path fp = fs::path(dir_) / (profileId + ".json");
+    std::error_code ec;
+    fs::remove(fp, ec);
+    installed_.erase(profileId);
+    for (auto a = assigned_.begin(); a != assigned_.end();)
+        a = a->second == profileId ? assigned_.erase(a) : std::next(a);
+}
+
+std::string ProfileManager::originOf(const std::string& profileId) const {
+    auto it = installed_.find(profileId);
+    return it == installed_.end() ? std::string() : it->second.meta.origin;
 }
 
 bool ProfileManager::loadProfileData(const std::string& profileId,
@@ -112,12 +182,19 @@ bool ProfileManager::exportProfile(const std::string& profileId,
 
 bool ProfileManager::deleteProfile(const std::string& profileId,
                                    std::string& err) {
+    auto it = installed_.find(profileId);
+    if (it != installed_.end() &&
+        it->second.meta.origin == "factory") {
+        err = "factory profiles cannot be deleted — "
+              "resetToFactory removes user overrides instead";
+        return false;
+    }
     const fs::path fp = fs::path(dir_) / (profileId + ".json");
     std::error_code ec;
     installed_.erase(profileId);
-    for (auto it = assigned_.begin(); it != assigned_.end();)
-        it = it->second == profileId ? assigned_.erase(it)
-                                     : std::next(it);
+    for (auto a = assigned_.begin(); a != assigned_.end();)
+        a = a->second == profileId ? assigned_.erase(a)
+                                   : std::next(a);
     if (!fs::remove(fp, ec) || ec) {
         err = "cannot delete " + fp.string();
         return false;
@@ -158,8 +235,14 @@ std::string ProfileManager::profileIdFor(uint32_t deviceId) const {
 std::string ProfileManager::autoMatch(const std::string& osDeviceName,
                                       std::string& err) {
     if (!scanned_) rescan();
-    for (auto& [id, p] : installed_)
-        if (p.matchesDevice(osDeviceName)) return id;
+    // §48: user profiles shadow factory ones on the same device name
+    for (int pass = 0; pass < 2; ++pass) {
+        const bool wantUser = (pass == 0);
+        for (auto& [id, p] : installed_)
+            if ((p.meta.origin == "user") == wantUser &&
+                p.matchesDevice(osDeviceName))
+                return id;
+    }
     err = "no profile matches '" + osDeviceName + "'";
     return "";
 }

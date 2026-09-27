@@ -11,7 +11,9 @@
 #include "ControllerProfile.h"
 #include "DeviceManager.h"
 #include "FeedbackEngine.h"
+#include "JogWheelEngine.h"
 #include "MappingEngine.h"
+#include "PadEngine.h"
 #include "ProfileManager.h"
 
 namespace onda::ctrl {
@@ -30,8 +32,33 @@ struct DeviceState {
 
     /// platform output (set by the MIDI layer / test double).
     std::function<void(const MidiMsg&)> sendRaw;
+    /// optional SysEx path — virtual devices / HID-side channels.
+    std::function<void(const SysExMsg&)> sendSysex;
 
     int64_t inCount = 0, actedCount = 0;
+
+    // ---- Phase 27: lifecycle + layer + error (§5,§19,§46) ----
+    DeviceLifecycle lifecycle = DeviceLifecycle::Disconnected;
+    std::string     lastError;
+};
+
+/// Public snapshot of one controller's state (§46) — copyable POD-ish
+/// view for UI/diagnostics; never exposes mutable engine internals.
+struct ControllerState {
+    uint32_t        id = 0;
+    std::string     name;
+    std::string     manufacturer;
+    std::string     model;
+    Transport       transport   = Transport::MidiUsb;
+    bool            connected   = false;
+    bool            initialized = false; // profile applied
+    DeviceLifecycle lifecycle   = DeviceLifecycle::Disconnected;
+    std::string     profileId;
+    uint8_t         activeLayer = 0;
+    int             mappingCount  = 0;
+    int             feedbackWatches = 0;
+    int64_t         inCount = 0, actedCount = 0;
+    std::string     lastError;
 };
 
 /// The controller subsystem façade.
@@ -83,6 +110,30 @@ public:
     /// One inbound message. LearnMode eats armed captures; clock msgs
     /// go to MidiClock; the rest feeds echo-check → mapping → ports.
     void processInput(uint32_t deviceId, const MidiMsg& msg);
+    /// SysEx path (§13) — routed to the device plugin hook +
+    /// diagnostics, never to MappingEngine.
+    void processSysex(uint32_t deviceId, const SysExMsg& sx);
+
+    // ---- layers (§18-19) ----
+    /// Set the active mapping layer for a device (0=Default, 1=Shift,
+    /// 2=Alt, 3=Custom). Device plugins and layer-switch mappings use
+    /// this; hardware-split devices (FLX4) leave it at Default.
+    void    setLayer(uint32_t deviceId, uint8_t layer);
+    uint8_t layer(uint32_t deviceId) const;
+
+    // ---- state snapshot (§46) ----
+    /// Copyable state view of one device (empty id → disconnected
+    /// snapshot). Cheap; safe to call every UI tick.
+    ControllerState state(uint32_t deviceId) const;
+
+    // ---- generic input surfaces (§20-29) ----
+    /// Device-agnostic jog engine — plugins and jog mappings feed
+    /// decoded turns here; mode/sensitivity/browse policy applied
+    /// before the deck jog port.
+    JogWheelEngine& jogWheel() { return jogWheel_; }
+    /// Device-agnostic pad engine — 8 pads × 4 decks × shift state;
+    /// emits forPad commands through the command port.
+    PadEngine&      pads()     { return pads_; }
 
     // ---- periodic ----
     /// Feedback poll + housekeeping; call ~15–30 Hz from the UI tick.
@@ -113,6 +164,9 @@ public:
     /// of connect/disconnect/reconnect (event = DeviceManager::Event
     /// cast to int).
     std::function<void(const DeviceInfo&, int)> onDevice;
+    /// Optional SysEx observer (§13) — sees every inbound SysEx
+    /// (position dumps, vendor handshakes). Return true = consumed.
+    std::function<bool(uint32_t deviceId, const SysExMsg&)> onSysex;
 
     // ---- pieces (public for UI/diagnostics/tests) ----
     DeviceManager&          devices()  { return devMgr_; }
@@ -140,6 +194,9 @@ public:
 private:
     void onDeviceEvent(const DeviceInfo&, DeviceManager::Event);
     void wireFeedbackPorts(DeviceState& st, uint32_t id);
+    /// §50 monitor decode — logical/mapped control name for an input.
+    std::string decodeControl(const DeviceState& st,
+                              const MidiAddr& a) const;
 
     Ports            ports_;
     DeviceManager    devMgr_;
@@ -153,6 +210,9 @@ private:
     std::unordered_map<uint32_t, std::unique_ptr<DeviceState>> states_;
     uint32_t learnDevice_ = 0;         // device learn is armed on
     int64_t  totalIn_ = 0, totalActed_ = 0;
+
+    JogWheelEngine jogWheel_;          // §20-26 generic jog layer
+    PadEngine      pads_;              // §27-29 generic pad layer
 };
 
 } // namespace onda::ctrl

@@ -20,6 +20,17 @@ namespace onda::ctrl {
 /// echo host-sent values back).
 class FeedbackEngine {
 public:
+    /// LED render mode (§42) — blink is evaluated in tick() from the
+    /// wall-clock phase, so blink rate is exact and independent of
+    /// the poll cadence (the throttle still applies).
+    enum class LedPattern : uint8_t {
+        Off = 0,      // follow source: on → onValue, off → offValue
+        On,           // same as Off (explicit "solid")
+        Blink,        // ~2 Hz square while source is on
+        SlowBlink,    // ~0.5 Hz square while source is on
+        FastBlink,    // ~4 Hz square while source is on
+    };
+
     /// What to watch for one output address.
     struct Watch {
         MidiAddr   out;             // where to send
@@ -31,6 +42,7 @@ public:
         bool       followValue = false; // echo param magnitude (motors)
         float      srcMin = 0.0f, srcMax = 1.0f; // param range → 0..1
         double     minIntervalSec = 0.02; // per-output throttle
+        LedPattern pattern = LedPattern::Off; // §42 blink rendering
     };
 
     struct Ports {

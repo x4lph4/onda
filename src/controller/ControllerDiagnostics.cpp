@@ -6,11 +6,15 @@
 namespace onda::ctrl {
 
 void ControllerDiagnostics::logIn(uint32_t dev, const MidiMsg& m,
-                                  double at, bool acted) {
+                                  double at, bool acted,
+                                  std::string decoded) {
     ++in_;
     if (acted) ++acted_;
     if (!monitor_) return;
-    ring_.push_back({ true, m, at, dev, acted });
+    Entry e;
+    e.in = true; e.msg = m; e.atSec = at; e.device = dev;
+    e.mapped = acted; e.decoded = std::move(decoded);
+    ring_.push_back(std::move(e));
     if (ring_.size() > kRing) ring_.pop_front();
 }
 
@@ -18,7 +22,22 @@ void ControllerDiagnostics::logOut(uint32_t dev, const MidiMsg& m,
                                    double at) {
     ++out_;
     if (!monitor_) return;
-    ring_.push_back({ false, m, at, dev, false });
+    Entry e;
+    e.in = false; e.msg = m; e.atSec = at; e.device = dev;
+    ring_.push_back(std::move(e));
+    if (ring_.size() > kRing) ring_.pop_front();
+}
+
+void ControllerDiagnostics::logSysex(uint32_t dev, const SysExMsg& sx,
+                                     double at, bool consumed) {
+    ++in_;
+    if (!monitor_) return;
+    Entry e;
+    e.in = true; e.atSec = at; e.device = dev;
+    e.mapped = consumed; e.sysex = true; e.sx = sx;
+    e.msg.type = MsgType::Unknown;
+    e.msg.data1 = (uint8_t)sx.len;
+    ring_.push_back(std::move(e));
     if (ring_.size() > kRing) ring_.pop_front();
 }
 
@@ -56,13 +75,45 @@ std::string ControllerDiagnostics::describeMsg(const MidiMsg& m) {
     return b;
 }
 
+std::string ControllerDiagnostics::describeSysex(const SysExMsg& sx) {
+    std::string out = "SysEx   [" + std::to_string(sx.len) + "] ";
+    const int n = sx.len < 16 ? sx.len : 16;
+    char hb[8];
+    for (int i = 0; i < n; ++i) {
+        std::snprintf(hb, sizeof hb, "%02X ", sx.data[i]);
+        out += hb;
+    }
+    if (sx.len > n) out += "…";
+    return out;
+}
+
 std::string ControllerDiagnostics::describe(const Entry& e) {
-    char b[96];
+    char b[160];
+    if (e.sysex) {
+        std::snprintf(b, sizeof b, "%s dev%-2u %8.3fs  %s%s",
+                      e.in ? "IN " : "OUT", e.device, e.atSec,
+                      describeSysex(e.sx).c_str(),
+                      e.mapped ? "  →consumed" : "");
+        return b;
+    }
     std::snprintf(b, sizeof b, "%s dev%-2u %8.3fs  %s%s",
                   e.in ? "IN " : "OUT", e.device, e.atSec,
                   describeMsg(e.msg).c_str(),
                   e.mapped ? "  →action" : "");
-    return b;
+    std::string s = b;
+    if (!e.decoded.empty()) s += "  [" + e.decoded + "]";
+    return s;
+}
+
+std::string ControllerDiagnostics::dump(size_t max) const {
+    std::string out;
+    const size_t n = ring_.size() < max ? ring_.size() : max;
+    const size_t start = ring_.size() - n;
+    for (size_t i = start; i < ring_.size(); ++i) {
+        out += describe(ring_[i]);
+        out += '\n';
+    }
+    return out;
 }
 
 // ----------------------------------------------------------------------

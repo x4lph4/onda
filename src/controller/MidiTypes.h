@@ -94,6 +94,23 @@ inline MidiMsg makeOut(const MidiAddr& a, uint8_t value) {
     return m;
 }
 
+/// SysEx payload — kept OUT of MidiMsg so the channel-message POD
+/// stays 8 bytes. Bounded: the FLX4 position-dump family is ≤64 B;
+/// longer dumps are truncated at the adapter, never buffered open-end.
+struct SysExMsg {
+    static constexpr size_t kMax = 64;
+    uint8_t  data[kMax] = {};
+    uint16_t len = 0;              // includes 0xF0/0xF7 when present
+    int64_t  timeUs = 0;
+
+    bool isUmp() const { return len >= 1 && (data[0] & 0xF0) == 0x40; }
+};
+/// Parallel input path — SysEx never reaches MappingEngine (no addr).
+struct SysExEvent {
+    uint32_t device = 0;
+    SysExMsg sx;
+};
+
 /// Transport classes — what physical link carries the messages.
 enum class Transport : uint8_t {
     MidiUsb = 0, MidiDin, MidiBle, Hid, Virtual,
@@ -120,10 +137,36 @@ struct DeviceInfo {
     uint32_t    id = 0;
     std::string name;             // "DDJ-FLX4" (OS-reported)
     std::string manufacturer;
+    std::string model;            // parsed model when distinguishable
     Transport   transport = Transport::MidiUsb;
     uint32_t    capabilities = 0;
     bool        hasInput  = true;
     bool        hasOutput = false;
 };
+
+/// Device lifecycle (task §5) — explicit state machine driven by
+/// DeviceManager events + profile application. READY = profile
+/// applied and feedback restored; usable for musical input.
+enum class DeviceLifecycle : uint8_t {
+    Disconnected = 0,
+    Detected,        // attach() ran, profile lookup pending
+    Connecting,      // profile being resolved/applied
+    Connected,       // transport open, no profile (unmapped device)
+    Ready,           // profile applied — fully operational
+    Error,           // last operation failed (see lastError)
+    Disconnecting,   // detach observed, teardown in progress
+};
+inline const char* lifecycleName(DeviceLifecycle s) {
+    switch (s) {
+        case DeviceLifecycle::Disconnected:  return "DISCONNECTED";
+        case DeviceLifecycle::Detected:      return "DETECTED";
+        case DeviceLifecycle::Connecting:    return "CONNECTING";
+        case DeviceLifecycle::Connected:     return "CONNECTED";
+        case DeviceLifecycle::Ready:         return "READY";
+        case DeviceLifecycle::Error:         return "ERROR";
+        case DeviceLifecycle::Disconnecting: return "DISCONNECTING";
+    }
+    return "?";
+}
 
 } // namespace onda::ctrl
