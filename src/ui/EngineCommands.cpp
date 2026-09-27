@@ -699,6 +699,7 @@ void registerEngineCommands(CommandManager& cm,
     app(cmd::AppLayoutNext,      "app.layoutNext",      "App");
     app(cmd::AppFullscreen,      "app.fullscreen",      "App");
     app(cmd::AppToggleFx,        "app.toggleFx",        "App");
+    app(cmd::AppToggleHelp,      "app.toggleHelp",      "App");
 
     // tempo master: AUTO → deck A..D → AUTO (Phase 15)
     cm.add(mk(cmd::SyncMasterCycle, "sync.masterCycle", "Sync",

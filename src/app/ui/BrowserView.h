@@ -17,16 +17,20 @@
 #include "core/smart/SmartLibraryEngine.h"
 #include "ui/CommandManager.h"
 #include "ui/TrackTableModel.h"
+#include "ui/UiState.h"
 
 namespace onda::ui {
 
 /// Browser panel: search field, left rail (sources + playlists/crates),
 /// virtualized track table, column header. Drag source: rows expose
 /// the track path for deck/playlist targets.
+/// File drop target: audio files import directly, folders become
+/// watched roots (recursive + autoImport) and trigger a scan.
 ///
 /// Virtualization: juce::ListBox paints only visible rows; the model
 /// fetches kPage-row pages — a 100k library costs like a 1k one.
-class BrowserView : public juce::Component {
+class BrowserView : public juce::Component,
+                    public juce::FileDragAndDropTarget {
 public:
     BrowserView(const ThemeEngine& te, CommandManager& cm,
                 library::MusicLibraryEngine& lib)
@@ -42,6 +46,22 @@ public:
         search_.setJustification(juce::Justification::centredLeft);
         addAndMakeVisible(search_);
 
+        // import entry points — files via picker, folders become
+        // watched roots; drag & drop onto the panel does both.
+        auto setupImport = [this](juce::TextButton& b,
+                                  const char* tip) {
+            b.setColour(juce::TextButton::buttonColourId,
+                        col(theme_->theme().palette.surfaceRaised));
+            b.setColour(juce::TextButton::textColourOffId,
+                        col(theme_->theme().palette.accent));
+            b.setTooltip(tip);
+            addAndMakeVisible(b);
+        };
+        setupImport(importFiles_, "Import audio files");
+        setupImport(importDir_, "Watch a music folder (recursive)");
+        importFiles_.onClick = [this] { openImportChooser(false); };
+        importDir_.onClick  = [this] { openImportChooser(true); };
+
         rail_.setModel(&railModel_);
         rail_.setRowHeight(24);
         rail_.setColour(juce::ListBox::backgroundColourId,
@@ -51,6 +71,10 @@ public:
         table_.setModel(&tableModel_);
         table_.setRowHeight(theme_->metrics().rowH);
         table_.setMultipleSelectionEnabled(true);
+        // row drag → decks/playlists: payload is "ondatrack:<path>"
+        table_.onRowDrag = [this](int row, const juce::MouseEvent& e) {
+            startTrackDrag(row, e);
+        };
         table_.setColour(juce::ListBox::backgroundColourId,
                          col(theme_->theme().palette.surfaceSunk));
         addAndMakeVisible(table_);
@@ -73,6 +97,33 @@ public:
 
     // ---- wiring outward ----
     std::function<void(const library::Track&)> onLoadDeck; // dbl-click
+    /// right-click context menu → assign to a specific deck (0-3)
+    std::function<void(int deck, const library::Track&)> onLoadDeckTo;
+
+    /// Right-click row menu — "Load to Deck A-D".
+    void showTrackMenu(int row, int screenX, int screenY) {
+        const library::Track* t = model_.row(row);
+        if (!t || t->path.empty()) return;
+        const library::Track track = *t;   // copy — menu is async
+        juce::PopupMenu m;
+        const juce::String title =
+            juce::String(track.artist.empty() ? track.filename
+                                            : track.artist)
+            + " - " + juce::String(track.title);
+        m.addSectionHeader(title);
+        m.addSeparator();
+        for (int d = 0; d < 4; ++d)
+            m.addItem(1 + d,
+                      "Load to Deck " + juce::String(
+                          (char)('A' + d)));
+        m.showMenuAsync(juce::PopupMenu::Options()
+                .withTargetScreenArea(juce::Rectangle<int>(
+                    screenX, screenY, 1, 1)),
+            [this, track](int picked) {
+                if (picked >= 1 && picked <= 4 && onLoadDeckTo)
+                    onLoadDeckTo(picked - 1, track);
+            });
+    }
 
     /// Phase 23 — attach the smart-library facade (lazy panel).
     void setSmartLib(smart::SmartLibraryEngine* e) {
@@ -262,6 +313,39 @@ public:
         rail_.updateContent();
     }
 
+    /// Begin an app drag for a table row — payload
+    /// "ondatrack:<path>"; deck/waveform targets load the track. — a labelled chip follows
+    /// the cursor; decks accept the drop and load the track.
+    void startTrackDrag(int row, const juce::MouseEvent&) {
+        const library::Track* t = model_.row(row);
+        if (!t || t->path.empty()) return;
+        auto* dnd =
+            juce::DragAndDropContainer::findParentDragContainerFor(this);
+        if (!dnd) return;
+
+        const juce::String label =
+            juce::String(t->artist.empty() ? t->filename : t->artist)
+            + " - " + juce::String(t->title.empty() ? "" : t->title);
+        const int iw = 220, ih = 24;
+        juce::Image img(juce::Image::ARGB, iw, ih, true);
+        {
+            juce::Graphics g(img);
+            g.setColour(col(theme_->theme().palette.surfaceRaised));
+            g.fillRoundedRectangle(0, 0, (float)iw, (float)ih, 4.0f);
+            g.setColour(col(theme_->theme().accentColor()));
+            g.drawRoundedRectangle(0.5f, 0.5f, iw - 1.0f, ih - 1.0f,
+                                   4.0f, 1.0f);
+            g.setColour(col(theme_->theme().palette.text));
+            g.setFont(juce::Font(juce::FontOptions(12.0f)));
+            g.drawText(label, 8, 0, iw - 12, ih,
+                       juce::Justification::centredLeft, true);
+        }
+        dnd->startDragging(
+            juce::var(juce::String(kTrackDragPrefix)
+                      + juce::String(t->path)),
+            &table_, juce::ScaledImage(img), false);
+    }
+
     /// Called by AppShell's tick — debounce search typing.
     void tick() {
         if (searchDebounce_ > 0 && --searchDebounce_ == 0)
@@ -294,11 +378,27 @@ public:
         g.setColour(col(p.textFaint));
         g.drawText("SOURCES", 8, 34, railW_ - 8, 20,
                    juce::Justification::centredLeft);
+
+        if (dragHover_) {
+            g.setColour(col(p.accent).withAlpha(0.15f));
+            g.fillRect(getLocalBounds());
+            g.setColour(col(p.accent));
+            g.drawRect(getLocalBounds().reduced(1), 2);
+            g.setFont(juce::Font(juce::FontOptions(
+                (float)theme_->metrics().fontLg, juce::Font::bold)));
+            g.drawText("DROP TO IMPORT", getLocalBounds(),
+                       juce::Justification::centred);
+        }
     }
 
     void resized() override {
         auto b = getLocalBounds();
-        search_.setBounds(b.removeFromTop(30).reduced(4));
+        auto top = b.removeFromTop(30).reduced(4);
+        importDir_.setBounds(top.removeFromRight(84));
+        top.removeFromRight(4);
+        importFiles_.setBounds(top.removeFromRight(64));
+        top.removeFromRight(4);
+        search_.setBounds(top);
         // Phase 23 — smart query editor docks to the bottom edge
         if (smartPanel_ && smartPanel_->isVisible()) {
             const int ph = juce::jmin(300, getHeight() / 2);
@@ -316,8 +416,118 @@ public:
         table_.setBounds(b);
     }
 
+    // ---- file import (drag & drop + pickers) ----
+    bool isInterestedInFileDrag(const juce::StringArray& files) override {
+        for (const auto& f : files)
+            if (juce::File(f).isDirectory() ||
+                library::TrackImporter::isAudioFile(f.toStdString()))
+                return true;
+        return false;
+    }
+    void fileDragEnter(const juce::StringArray&, int, int) override {
+        dragHover_ = true; repaint();
+    }
+    void fileDragExit(const juce::StringArray&) override {
+        dragHover_ = false; repaint();
+    }
+    void filesDropped(const juce::StringArray& files, int, int) override {
+        dragHover_ = false; repaint();
+        importPaths(files);
+    }
+
+    /// pickFolder → watched root (recursive, autoImport, persisted);
+    /// otherwise multi-file picker → direct import.
+    void openImportChooser(bool pickFolder) {
+        chooser_ = std::make_unique<juce::FileChooser>(
+            pickFolder ? "Choose a music folder to watch"
+                       : "Choose audio files to import",
+            juce::File::getSpecialLocation(
+                juce::File::userMusicDirectory),
+            "*.wav;*.wave;*.aif;*.aiff;*.aifc;*.flac;*.mp3;*.m4a;"
+            "*.aac;*.ogg;*.opus;*.wma", true);
+        chooser_->launchAsync(
+            juce::FileBrowserComponent::openMode
+            | juce::FileBrowserComponent::canSelectMultipleItems
+            | (pickFolder
+               ? juce::FileBrowserComponent::canSelectDirectories
+               : juce::FileBrowserComponent::canSelectFiles),
+            [this](const juce::FileChooser& fc) {
+                juce::StringArray items;
+                for (const auto& f : fc.getResults())
+                    items.add(f.getFullPathName());
+                importPaths(items);
+            });
+    }
+
 private:
+    /// Folders become watched roots + scan; audio files import directly.
+    void importPaths(const juce::StringArray& items) {
+        std::vector<std::string> files;
+        bool dirs = false;
+        for (const auto& s : items) {
+            const juce::File f(s);
+            if (f.isDirectory()) {
+                lib_->addWatchRoot(s.toStdString(), true, true);
+                dirs = true;
+            } else if (f.existsAsFile() &&
+                       library::TrackImporter::isAudioFile(
+                           s.toStdString())) {
+                files.push_back(s.toStdString());
+            }
+        }
+        if (dirs)
+            lib_->scanAsync([this](const library::ScanDiff&) {
+                refreshAfterImport();
+            });
+        if (!files.empty())
+            lib_->importPathsAsync(std::move(files),
+                [this](const library::ImportResult&) {
+                    refreshAfterImport();
+                });
+    }
+
+    /// Import callbacks run on the library worker — bounce to the
+    /// message thread before touching the model.
+    void refreshAfterImport() {
+        juce::Component::SafePointer<BrowserView> safe(this);
+        juce::MessageManager::callAsync([safe] {
+            if (auto* b = safe.getComponent()) {
+                b->applySpec();
+                b->reloadRail();
+            }
+        });
+    }
+
     struct RailItem { std::string name; int id; };
+
+    // -------- track table: ListBox + row-drag source --------
+    /// A ListBox that reports when a row drag passes the threshold —
+    /// the view turns it into a track drag ("ondatrack:<path>").
+    struct TrackTable : juce::ListBox {
+        using juce::ListBox::ListBox;
+        std::function<void(int, const juce::MouseEvent&)> onRowDrag;
+        void mouseDown(const juce::MouseEvent& e) override {
+            // Capture the row at press time — by the drag threshold
+            // the cursor may sit on a neighbour row.
+            dragRow_ = getRowContainingPosition(e.x, e.y);
+            juce::ListBox::mouseDown(e);
+        }
+        void mouseDrag(const juce::MouseEvent& e) override {
+            if (onRowDrag && dragRow_ >= 0
+                && e.getDistanceFromDragStart() > 10) {
+                const int row = dragRow_;
+                dragRow_ = -1;      // one drag attempt per gesture
+                onRowDrag(row, e);
+                return;
+            }
+            juce::ListBox::mouseDrag(e);
+        }
+        void mouseUp(const juce::MouseEvent& e) override {
+            dragRow_ = -1;
+            juce::ListBox::mouseUp(e);
+        }
+        int dragRow_ = -1;
+    };
 
     // -------- rail model: sources + playlists --------
     struct RailModel : juce::ListBoxModel {
@@ -439,6 +649,12 @@ private:
             const library::Track* t = o_.model_.row(row);
             if (t && o_.onLoadDeck) o_.onLoadDeck(*t);
         }
+        void listBoxItemClicked(int row,
+                                const juce::MouseEvent& e) override {
+            if (!e.mods.isPopupMenu()) return;
+            o_.table_.selectRow(row);
+            o_.showTrackMenu(row, e.getScreenX(), e.getScreenY());
+        }
         BrowserView& o_;
     };
 
@@ -449,8 +665,12 @@ private:
     RailModel          railModel_;
     TableModel         tableModel_;
     juce::TextEditor   search_;
-    juce::ListBox      rail_{ "rail", nullptr },
-                     table_{ "tracks", nullptr };
+    juce::TextButton   importFiles_{ "+ FILES" },
+                       importDir_{ "+ FOLDER" };
+    std::unique_ptr<juce::FileChooser> chooser_;
+    bool               dragHover_ = false;
+    juce::ListBox      rail_{ "rail", nullptr };
+    TrackTable         table_{ "tracks" };
     HarmonicPanel      harmonic_;
     struct { int keyIndex { -1 }; float conf { 0.0f };
              bool ambiguous { false }; double bpm { 0.0 };

@@ -169,6 +169,7 @@ ShortcutManager ShortcutManager::defaultProfile() {
     b("Ctrl+Comma",AppToggleSettings);
     b("Ctrl+T",    AppLayoutNext);
     b("Escape",    AppPanic);
+    b("H",         AppToggleHelp);
 
     // ---- recording (Phase 12) ----
     b("Ctrl+R",    RecToggle);           // quick record start/stop

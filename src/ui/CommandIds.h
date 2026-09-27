@@ -175,6 +175,7 @@ enum Id : uint32_t {
     AppFullscreen      = 0x3F02,
     AppPanic           = 0x3F03,   // stop all decks + center xf
     AppToggleFx        = 0x3F04,
+    AppToggleHelp      = 0x3F05,   // shortcut cheat-sheet overlay
     // ---- Phase 20: performance undo ----
     PerfUndo           = 0x3F10,   // undo last cue/loop/grid edit
     PerfRedo           = 0x3F11,

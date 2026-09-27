@@ -1,5 +1,6 @@
 build/
 out/
+/Onda.exe
 .vs/
 .idea/
 .vscode/
@@ -9,3 +10,4 @@ CMakeUserPresets.json
 .cache/
 compile_commands.json
 third_party/
+*.obj

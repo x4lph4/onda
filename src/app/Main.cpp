@@ -214,7 +214,8 @@ public:
     void systemRequestedQuit() override { quit(); }
 
 private:
-    class MainWindow : public juce::DocumentWindow {
+    class MainWindow : public juce::DocumentWindow,
+                       public juce::DragAndDropContainer {
     public:
         MainWindow(const juce::String& name, audio::AudioEngine& engine,
                    AnalysisService& analysis, PerformanceEngine& perf,

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <vector>
@@ -31,7 +32,8 @@ namespace onda::ui {
 /// Interactions become WaveCmd values — the host (AppShell) routes
 /// them to rt commands / PerformanceEngine / the analysis-edit port.
 /// The component performs no musical logic itself (§41-42).
-class WaveformView : public juce::Component {
+class WaveformView : public juce::Component,
+                     public juce::DragAndDropTarget {
 public:
     WaveformView(const ThemeEngine& te, int deck)
         : theme_(&te), deck_(deck) {
@@ -89,6 +91,27 @@ public:
     // ---- commands out — AppShell routes them (§42) ----
     std::function<void(double sec)> onSeek;          // fast seek path
     std::function<void(const WaveCmd&)> onWaveCmd;   // everything else
+    /// browser track drag dropped on the waveform → load this path.
+    std::function<void(const std::string&)> onTrackDrop;
+
+    // ---- track-drop target ("ondatrack:<path>" var drags) ----
+    bool isInterestedInDragSource(
+            const juce::DragAndDropTarget::SourceDetails& d) override {
+        return d.description.toString()
+                   .startsWith(kTrackDragPrefix);
+    }
+    void itemDragEnter(const juce::DragAndDropTarget::SourceDetails&)
+        override { dropHover_ = true; repaint(); }
+    void itemDragExit(const juce::DragAndDropTarget::SourceDetails&)
+        override { dropHover_ = false; repaint(); }
+    void itemDropped(const juce::DragAndDropTarget::SourceDetails& d)
+        override {
+        dropHover_ = false; repaint();
+        const auto p = d.description.toString()
+            .substring((int)std::strlen(kTrackDragPrefix))
+            .toStdString();
+        if (!p.empty() && onTrackDrop) onTrackDrop(p);
+    }
 
     // ---- view-local configuration (command surface) ----
     void setGridEdit(bool on) {
@@ -145,6 +168,18 @@ public:
         paintDetail(g, det, p);
         engine_.buildOverview(ovFrame_);
         paintOverview(g, ovw, p);
+
+        // browser track drag hovering — accent edge + LOAD hint
+        if (dropHover_) {
+            g.setColour(col(theme_->theme().accentColor())
+                            .withAlpha(0.15f));
+            g.fillRect(b);
+            g.setColour(col(theme_->theme().accentColor()));
+            g.drawRect(b.reduced(1), 2);
+            g.setFont(juce::Font(juce::FontOptions(
+                (float)theme_->metrics().fontMd, juce::Font::bold)));
+            g.drawText("LOAD", b, juce::Justification::centred);
+        }
     }
 
     void resized() override {
@@ -648,6 +683,7 @@ private:
     uint32_t    dataRev_ = 0;
 
     bool   dragOver_ = false;
+    bool   dropHover_ = false;   // external track drag hovering
     double lastSnapMs_ = 0.0;
     juce::MouseCursor::StandardCursorType curType_ =
         juce::MouseCursor::NormalCursor;

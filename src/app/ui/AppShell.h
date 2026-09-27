@@ -10,6 +10,7 @@
 #include "DeckView.h"
 #include "EngineBridge.h"
 #include "FXView.h"
+#include "HelpView.h"
 #include "MixerView.h"
 #include "SettingsView.h"
 #include "TopBar.h"
@@ -84,6 +85,15 @@ public:
                 perf_->setPitchRange(d, v);
             };
             decks_[(size_t)d]->bindPitch();
+            // browser row drag → drop on deck or its waveform loads
+            auto loadPort = [this](int dd, const std::string& p) {
+                if (auto& lt = bridge_->ports().loadTrack)
+                    lt(dd, p);
+            };
+            decks_[(size_t)d]->onTrackDrop =
+                [loadPort, d](const std::string& p) { loadPort(d, p); };
+            waves_[(size_t)d]->onTrackDrop =
+                [loadPort, d](const std::string& p) { loadPort(d, p); };
         }
         // Phase 20 §41 — shared performance undo stack for the
         // perf.undo/perf.redo commands and every cue/loop/grid edit.
@@ -111,6 +121,8 @@ public:
                 }
             };
         fx_ = std::make_unique<FXView>(te, engine.mixerCtl());
+        help_ = std::make_unique<HelpView>(te, cm, shortcuts);
+        help_->onClose = [this] { setHelpVisible(false); };
 
         addAndMakeVisible(topbar_);
         addAndMakeVisible(mixer_);
@@ -118,6 +130,8 @@ public:
         addAndMakeVisible(browser_);
         addChildComponent(notifications_);
         notifications_.setAlwaysOnTop(true);
+        addChildComponent(*help_);
+        help_->setAlwaysOnTop(true);
 
         setWantsKeyboardFocus(true);
         startTimerHz(30);
@@ -144,11 +158,19 @@ public:
         if (settings_) settings_->setVisible(v);
         topbar_.settingsButton().setState(v ? ControlState::On
                                             : ControlState::Off);
-        if (v) grabKeyboardFocus();
+        if (v) { resized(); grabKeyboardFocus(); }
     }
     bool settingsVisible() const {
         return settings_ && settings_->isVisible();
     }
+    void setHelpVisible(bool v) {
+        if (help_) help_->setVisible(v);
+        topbar_.helpButton().setState(v ? ControlState::On
+                                        : ControlState::Off);
+        resized();   // overlay bounds are only assigned while visible
+        grabKeyboardFocus();
+    }
+    bool helpVisible() const { return help_ && help_->isVisible(); }
     void setBrowserVisible(bool v) {
         prefs_.browserOpen = v;
         browser_.setVisible(v);
@@ -170,12 +192,16 @@ public:
     bool keyPressed(const juce::KeyPress& kp) override {
         // §53 — Escape aborts an in-flight waveform scrub before the
         // shortcut table sees it (the session owns the key first).
-        if (kp.getKeyCode() == juce::KeyPress::escapeKey)
+        if (kp.getKeyCode() == juce::KeyPress::escapeKey) {
+            // help overlay owns Esc while open — a panic-stop while
+            // just reading the cheat sheet would be a nasty surprise
+            if (helpVisible()) { setHelpVisible(false); return true; }
             for (auto& w : waves_)
                 if (w && w->seekActive()) {
                     w->cancelSeekDrag();
                     return true;
                 }
+        }
         const KeyDesc k = toKeyDesc(kp);
         const uint32_t id = shortcuts_->lookup(k);
         if (id == cmd::Invalid) return false;
@@ -231,6 +257,8 @@ public:
                 setSettingsVisible(!settingsVisible()); break;
             case cmd::AppToggleFx:
                 setFxVisible(!prefs_.fxOpen); break;
+            case cmd::AppToggleHelp:
+                setHelpVisible(!helpVisible()); break;
             case cmd::BrowserFocusSearch:
                 if (!prefs_.browserOpen) setBrowserVisible(true);
                 browser_.focusSearch(); break;
@@ -270,6 +298,10 @@ public:
             settings_->setBounds(getLocalBounds().reduced(
                 juce::jmin(120, getWidth() / 6),
                 juce::jmin(80, getHeight() / 8)));
+        if (help_ && help_->isVisible())
+            help_->setBounds(getLocalBounds().reduced(
+                juce::jmin(140, getWidth() / 7),
+                juce::jmin(70, getHeight() / 9)));
         notifications_.setBounds(getLocalBounds());
     }
 
@@ -511,6 +543,7 @@ private:
     std::unique_ptr<FXView>      fx_;
     BrowserView browser_;
     std::unique_ptr<SettingsView> settings_;
+    std::unique_ptr<HelpView>     help_;
     NotificationOverlay notifications_;
 
     std::string wfPath_[4];

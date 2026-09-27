@@ -19,10 +19,12 @@ public:
           settings_(te, cm, cmd::AppToggleSettings, "SET"),
           browser_(te, cm, cmd::BrowserTogglePanel, "LIB"),
           fx_(te, cm, cmd::AppToggleFx, "FX"),
+          help_(te, cm, cmd::AppToggleHelp, "?"),
           rec_(te, cm) {
         addAndMakeVisible(settings_);
         addAndMakeVisible(browser_);
         addAndMakeVisible(fx_);
+        addAndMakeVisible(help_);
         addAndMakeVisible(rec_);
         settings_.setState(ControlState::Off);
         browser_.setState(ControlState::On);
@@ -32,6 +34,7 @@ public:
     StateButton& settingsButton() { return settings_; }
     StateButton& browserButton()  { return browser_; }
     StateButton& fxButton()       { return fx_; }
+    StateButton& helpButton()     { return help_; }
 
     void setSnapshot(const UiSnapshot& s) {
         snap_ = &s; rec_.setSnapshot(s); repaint();
@@ -51,15 +54,17 @@ public:
         g.setColour(col(theme_->theme().accentColor()));
         g.setFont(juce::Font(juce::FontOptions(
             (float)m.fontXl, juce::Font::bold)));
-        g.drawText("ONDA", b.removeFromLeft(86).reduced(8, 0),
+        g.drawText("ONDA", b.removeFromLeft(kBrandW).reduced(8, 0),
                    juce::Justification::centredLeft);
 
         if (!snap_) return;
         const auto& s = *snap_;
 
-        // master tempo block — left of brand: "MASTER 128.0 BPM (A)"
-        auto left = b;
-        left.removeFromRight(3 * 34 + 8 + 190); // buttons + rec zone
+        // fixed right-side reservations so text never overlaps:
+        // [device text][stats][rec strip][buttons]
+        b.removeFromRight(kBtns * kBtnW + kGap + kRecW);
+        auto stats = b.removeFromRight(kStats * kStatW);
+
         g.setFont(juce::Font(juce::FontOptions((float)m.fontMd)));
         juce::String tempo;
         if (s.master.masterDeck >= 0 && s.master.masterBpm > 0.0) {
@@ -68,59 +73,68 @@ public:
                 'A' + s.master.masterDeck);
         } else tempo = "MASTER —";
         g.setColour(col(p.textDim));
-        g.drawText(tempo, left.removeFromLeft(150),
+        g.drawText(tempo, b.removeFromLeft(kTempoW),
                    juce::Justification::centred);
 
         // audio device summary, centred
         const double latMs = s.audio.outputLatencySec * 1000.0;
-        juce::String dev = juce::String::formatted(
-            "%s  %.1f kHz / %d smp  %.1f ms",
-            s.audio.deviceName.c_str(),
-            s.audio.sampleRate / 1000.0, s.audio.bufferSize, latMs);
+        // NB: String::formatted uses wide printf on Windows — %s expects
+        // wchar_t*, so never pass a char* to it (UTF-8 bytes get read as
+        // UTF-16 pairs and render as CJK garbage).
+        juce::String dev = juce::String(s.audio.deviceName)
+            + juce::String::formatted("  %.1f kHz / %d smp  %.1f ms",
+                                      s.audio.sampleRate / 1000.0,
+                                      s.audio.bufferSize, latMs);
         g.setColour(col(s.audio.running ? p.text : p.warn));
-        g.drawText(dev, left, juce::Justification::centred);
+        g.drawText(dev, b, juce::Justification::centred);
 
-        // right status cluster (before rec widget + buttons):
-        // DSP%, XRUN, CLIP
-        auto right = b;
-        right.removeFromLeft(left.getWidth());
-        right.removeFromRight(190);        // rec strip zone
-        auto stat = [&](juce::Rectangle<int>& r,
-                        const juce::String& t, uint32_t c) {
+        // status cluster in its reserved strip: UI, DSP, XRUN, CLIP
+        auto stat = [&](const juce::String& t, uint32_t c) {
             g.setColour(col(c));
-            g.drawText(t, r.removeFromLeft(64),
+            g.drawText(t, stats.removeFromLeft(kStatW),
                        juce::Justification::centred);
         };
         char buf[48];
         std::snprintf(buf, sizeof buf, "UI %.0f",
                       (double)s.audio.uiFps);
-        stat(right, buf, s.audio.uiFps > 0.0f &&
-                         s.audio.uiFps < 20.0f ? p.warn : p.textFaint);
+        stat(buf, s.audio.uiFps > 0.0f &&
+                  s.audio.uiFps < 20.0f ? p.warn : p.textFaint);
         const float cpu = s.audio.cpuLoad * 100.0f;
         std::snprintf(buf, sizeof buf, "DSP %.0f%%", cpu);
-        stat(right, buf, cpu > 80.0f ? p.danger
-                     : cpu > 55.0f ? p.warn : p.textDim);
+        stat(buf, cpu > 80.0f ? p.danger
+                  : cpu > 55.0f ? p.warn : p.textDim);
         std::snprintf(buf, sizeof buf, "XRUN %llu",
                       (unsigned long long)s.audio.xruns);
-        stat(right, buf, s.audio.xruns ? p.warn : p.textFaint);
+        stat(buf, s.audio.xruns ? p.warn : p.textFaint);
         std::snprintf(buf, sizeof buf, "CLIP %llu",
                       (unsigned long long)s.audio.clips);
-        stat(right, buf, s.audio.clips ? p.danger : p.textFaint);
+        stat(buf, s.audio.clips ? p.danger : p.textFaint);
     }
 
     void resized() override {
-        auto r = getLocalBounds().removeFromRight(3 * 34 + 8 + 190)
-                    .withTrimmedTop(3).withTrimmedBottom(3);
-        settings_.setBounds(r.removeFromRight(34).reduced(1));
-        fx_.setBounds(r.removeFromRight(34).reduced(1));
-        browser_.setBounds(r.removeFromRight(34).reduced(1));
-        rec_.setBounds(r.withTrimmedLeft(6));
+        auto r = getLocalBounds().withTrimmedTop(3).withTrimmedBottom(3);
+        auto btns = r.removeFromRight(kBtns * kBtnW);
+        help_.setBounds(btns.removeFromRight(kBtnW).reduced(4, 2));
+        settings_.setBounds(btns.removeFromRight(kBtnW).reduced(4, 2));
+        fx_.setBounds(btns.removeFromRight(kBtnW).reduced(4, 2));
+        browser_.setBounds(btns.removeFromRight(kBtnW).reduced(4, 2));
+        r.removeFromRight(kGap);
+        rec_.setBounds(r.removeFromRight(kRecW).withTrimmedLeft(4));
     }
 
 private:
+    static constexpr int kBrandW = 86;   // "ONDA" wordmark
+    static constexpr int kTempoW = 150;  // "MASTER 128.0 [A]"
+    static constexpr int kStats  = 4;    // UI, DSP, XRUN, CLIP
+    static constexpr int kStatW  = 72;
+    static constexpr int kRecW   = 190;  // recording strip
+    static constexpr int kBtns   = 4;    // LIB, FX, SET, ?
+    static constexpr int kBtnW   = 44;
+    static constexpr int kGap    = 10;
+
     const ThemeEngine* theme_;
     const UiSnapshot*  snap_ = nullptr;
-    StateButton settings_, browser_, fx_;
+    StateButton settings_, browser_, fx_, help_;
     RecordingView rec_;
 };
 

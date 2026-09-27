@@ -201,8 +201,10 @@ EngineBridge::EngineBridge(audio::AudioEngine& engine,
         });
     });
 
-    // app-level actions are bound by AppShell after construction
-    registerEngineCommands(cmds, ports_);
+    // app-level actions (appAction, browserSelection, viewAction,
+    // undo) are bound by MainComponent/AppShell AFTER construction —
+    // command lambdas snapshot ports_ by value, so registration is
+    // deferred to registerCommands(), called once wiring completes.
 
     // Phase 11: domain pad layer — pad.press/pad.mode commands route
     // through CommandManager; sampler actions reach the engine
@@ -261,6 +263,10 @@ EngineBridge::EngineBridge(audio::AudioEngine& engine,
         recorder->setPorts(std::move(rp));
         engine_.attachRecorder(&recorder->rt());
     }
+}
+
+void EngineBridge::registerCommands(CommandManager& cm) {
+    registerEngineCommands(cm, ports_);
 }
 
 void EngineBridge::snapshotDeck(int deck, DeckSnapshot& o) {

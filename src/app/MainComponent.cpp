@@ -74,11 +74,36 @@ MainComponent::MainComponent(audio::AudioEngine& engine,
         const auto t = shell_->browser().selected();
         return t.path;
     };
-    // double-click loads to deck A (Shift+click for B later via DnD)
+    // double-click fills the first empty deck (A→B→C→D); once every
+    // deck holds a track it reloads deck A — explicit retargeting
+    // uses the right-click menu or drag&drop.
     shell_->browser().onLoadDeck = [this](const library::Track& t) {
-        if (!t.path.empty())
-            bridge_->ports().loadTrack(0, t.path);
+        if (t.path.empty()) return;
+        int deck = 0;
+        if (auto& ds = bridge_->ports().deckStats) {
+            for (int d = 0; d < audio::AudioEngine::kNumDecks; ++d) {
+                if (const auto* s = ds(d);
+                    s != nullptr &&
+                    s->state.load() == (int)DeckState::Empty) {
+                    deck = d;
+                    break;
+                }
+            }
+        }
+        bridge_->ports().loadTrack(deck, t.path);
     };
+    // right-click row menu → "Load to Deck A-D"
+    shell_->browser().onLoadDeckTo =
+        [this](int d, const library::Track& t) {
+            if (!t.path.empty() && d >= 0 && d < 4)
+                bridge_->ports().loadTrack(d, t.path);
+        };
+
+    // Register engine commands LAST — command lambdas snapshot the
+    // ports struct by value, so every late-bound port (appAction,
+    // browserSelection, viewAction, undo) must already be wired or
+    // the command dies silently on invoke.
+    bridge_->registerCommands(commands_);
 
     // ---- Phase 9: controller engine — same ports the UI uses ----
     const auto profileDir =

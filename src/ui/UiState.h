@@ -7,6 +7,11 @@
 
 namespace onda::ui {
 
+/// Payload prefix for internal track drags — the browser emits
+/// "ondatrack:<path>" via DragAndDropContainer; deck/waveform drop
+/// targets filter on this so unrelated var drags are ignored.
+inline constexpr const char* kTrackDragPrefix = "ondatrack:";
+
 /// Plain-value UI snapshots — views render ONLY from these structs.
 /// EngineBridge builds them from the engines' atomic stats so a view
 /// never touches DeckStats/MasterStats or calls into RT objects.

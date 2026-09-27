@@ -46,6 +46,13 @@ public:
     const EnginePorts& ports() const { return ports_; }
     EnginePorts&       mutablePorts()  { return ports_; }
 
+    /// Register engine commands into the CommandManager. Call AFTER
+    /// every late-bound port is wired (appAction, browserSelection,
+    /// viewAction, undo) — command lambdas capture the ports struct
+    /// by value, so ports assigned after registration stay null in
+    /// the captured copies.
+    void registerCommands(CommandManager& cm);
+
     /// Pull the current engine state. Cheap: atomic loads only —
     /// called every UI frame (30 Hz) plus on-demand.
     void snapshot(UiSnapshot& out);

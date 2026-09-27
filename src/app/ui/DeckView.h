@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstring>
 #include <functional>
 #include <memory>
 
@@ -24,7 +25,8 @@ namespace onda::ui {
 /// transport (PLAY/CUE/REV), performance toggles (SYNC/QNT/KEY/SLIP),
 /// pitch fader + range selector, loop row, 8 hot-cue pads, meters.
 /// Renders only from DeckSnapshot; actions go through CommandManager.
-class DeckView : public juce::Component {
+class DeckView : public juce::Component,
+                 public juce::DragAndDropTarget {
 public:
     DeckView(const ThemeEngine& te, CommandManager& cm, int deck)
         : theme_(&te), cmds_(&cm), deck_(deck),
@@ -65,6 +67,27 @@ public:
     /// DeckView's host (needs the CommandQueue).
     std::function<void(float)> onPitch;
     std::function<void(float)> onPitchRange;
+    /// browser track drag dropped on the deck → load this path.
+    std::function<void(const std::string&)> onTrackDrop;
+
+    // ---- track-drop target (browser row drags: "ondatrack:<path>") ----
+    bool isInterestedInDragSource(
+            const juce::DragAndDropTarget::SourceDetails& d) override {
+        return d.description.toString()
+                   .startsWith(kTrackDragPrefix);
+    }
+    void itemDragEnter(const juce::DragAndDropTarget::SourceDetails&)
+        override { dropHover_ = true; repaint(); }
+    void itemDragExit(const juce::DragAndDropTarget::SourceDetails&)
+        override { dropHover_ = false; repaint(); }
+    void itemDropped(const juce::DragAndDropTarget::SourceDetails& d)
+        override {
+        dropHover_ = false; repaint();
+        const auto p = d.description.toString()
+            .substring((int)std::strlen(kTrackDragPrefix))
+            .toStdString();
+        if (!p.empty() && onTrackDrop) onTrackDrop(p);
+    }
 
     void bindPitch() {
         pitch_.onValue = [this](double v) {
@@ -296,6 +319,15 @@ public:
         g.setFont(juce::Font(juce::FontOptions((float)m.fontMd)));
         g.drawText(TimeDisplay::tag(tmode), tr,
                    juce::Justification::centredRight);
+
+        // browser track drag hovering — accent edge + LOAD hint
+        if (dropHover_) {
+            g.setColour(col(theme_->theme().accentColor())
+                            .withAlpha(0.18f));
+            g.fillRect(getLocalBounds());
+            g.setColour(col(theme_->theme().accentColor()));
+            g.drawRect(getLocalBounds().reduced(1), 2);
+        }
     }
 
     void resized() override {
@@ -340,6 +372,7 @@ private:
     CommandManager*    cmds_;
     int                deck_;
     DeckSnapshot       snap_{};
+    bool               dropHover_ = false;
 
     StateButton play_, cue_, sync_, qnt_, key_, slip_, rev_;
     StateButton pfl_;
