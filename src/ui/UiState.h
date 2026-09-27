@@ -62,6 +62,8 @@ struct DeckSnapshot {
 struct ChannelSnapshot {
     float gain = 1.0f, low = 0.0f, mid = 0.0f, high = 0.0f;
     float filter = 0.0f, fader = 1.0f;
+    float pan = 0.0f;
+    int   eqMode = 0;
     float sendA = 0.0f, sendB = 0.0f;
     bool  cue = false, mute = false, solo = false;
     int   xfAssign = 1;                  // XfAssign: 0 A, 1 Thru, 2 B
@@ -81,6 +83,8 @@ struct MasterSnapshot {
     bool  clip = false;
     bool  cueAvailable = false;
     bool  masterCue = false;    // Phase 17: master → phones cue tap
+    float boothGain = 1.0f;     // Phase 24: booth monitor level
+    float boothPeakL = 0.0f, boothPeakR = 0.0f;
     int   deckMode = 4;         // Phase 17: visible deck channels
     double masterBpm = 0.0;
     int   masterDeck = -1;

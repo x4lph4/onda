@@ -1,5 +1,11 @@
 # Mixer Engine (Phase 17)
 
+> **Phase 24 update:** the mixer was completed in Phase 24 — pan, true
+> isolator filter bank, booth + recording buses, scheduled parameter
+> events, scene v2, spec-named presets. The authoritative document is
+> now [`docs/audio/mixer-engine.md`](../audio/mixer-engine.md); this
+> page remains as the Phase-17 design record.
+
 Professional mixer architecture — deepens the Phase-5 foundation into
 the complete spec surface: remappable sources, formal cue system,
 filter resonance, configurable EQ range, phase invert, scenes,

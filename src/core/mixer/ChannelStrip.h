@@ -12,6 +12,7 @@
 #include "GainSmoother.h"
 #include "MeteringEngine.h"
 #include "MixerTypes.h"
+#include "PanProcessor.h"
 
 namespace onda::mixer {
 
@@ -23,6 +24,7 @@ namespace onda::mixer {
 ///     -> FilterProcessor (LP/HP/position knob)
 ///     -> [pre-fader meter + PFL cue tap]
 ///     -> channel fader (curve, smoothed) * mute/solo * instant-cut
+///     -> pan (balance law, smoothed)
 ///     -> [post meter]
 ///     -> crossfader assignment gain (A / B / Thru)
 ///     -> summed into the master bus
@@ -56,6 +58,7 @@ public:
         smSend_[1].prepare(sampleRate, 5.0f);
         smSend_[0].snap(0.0f);
         smSend_[1].snap(0.0f);
+        pan_.prepare(sampleRate);
     }
 
     // ---- source input (written by the rendering engine each block) ----
@@ -100,6 +103,12 @@ public:
     bool cueOn() const noexcept        { return cue_; }
     void setXfAssign(XfAssign a) noexcept { assign_ = a; }
     XfAssign xfAssign() const noexcept    { return assign_; }
+
+    /// §22 — channel pan, -1 (L) .. +1 (R). Applied to the post-fader
+    /// signal so the pre-fader meter and PFL cue stay honest, while FX
+    /// sends and the master sum carry the panned image.
+    void setPan(float p) noexcept  { pan_.setPosition(p); }
+    float pan() const noexcept     { return pan_.position(); }
 
     /// FX send taps (post-fader, pre-crossfader): bus 0/1 levels 0..1.
     void setSendLevel(int bus, float v) noexcept {
@@ -168,16 +177,18 @@ public:
         if (cue_ && cueL != nullptr && cueR != nullptr)
             for (int i = 0; i < n; ++i) { cueL[i] += l[i]; cueR[i] += r[i]; }
 
-        // 5) fader/mute/cut/solo -> post tap -> xf assignment -> sum
+        // 5) fader/mute/cut/solo -> pan -> post tap -> xf assign -> sum
         const float postG = (anySolo && !solo_) ? 0.0f : 1.0f;
         const float xfG   = xf.gainFor(assign_);
+        float panL = 1.0f, panR = 1.0f;
+        pan_.tick(n, panL, panR);
         float post = 0.0f;
         for (int i = 0; i < n; ++i) {
             const float g = smFader_.tick() * smMute_.tick()
                           * smCut_.tick() * postG;
             post = g;
-            postL_[i] = l[i] * g;
-            postR_[i] = r[i] * g;
+            postL_[i] = l[i] * g * panL;
+            postR_[i] = r[i] * g * panR;
             if (mixL != nullptr && mixR != nullptr) {
                 mixL[i] += postL_[i] * xfG;
                 mixR[i] += postR_[i] * xfG;
@@ -234,6 +245,7 @@ private:
     GainSmoother smGain_, smFader_, smMute_, smCut_, smPhase_;
     EqProcessor     eq_;
     FilterProcessor filter_;
+    PanProcessor    pan_;
     MeteringEngine  metersEngine_;
     ChannelMeters   meters_;
 

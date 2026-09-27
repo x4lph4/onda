@@ -338,6 +338,8 @@ void EngineBridge::snapshot(UiSnapshot& o) {
         ch.high   = m.value(R::channelHigh(c));
         ch.filter = m.value(R::channelFilter(c));
         ch.fader  = m.value(R::channelFader(c));
+        ch.pan    = m.value(R::channelPan(c));
+        ch.eqMode = (int)m.value(R::channelEqMode(c));
         ch.sendA  = m.value(R::channelSendA(c));
         ch.sendB  = m.value(R::channelSendB(c));
         ch.cue    = m.value(R::channelCue(c))   >= 0.5f;
@@ -365,6 +367,11 @@ void EngineBridge::snapshot(UiSnapshot& o) {
     lastClipCount_ = st.clipCount.load();
     ms.cueAvailable = st.cueAvailable.load();
     ms.masterCue  = m.value(R::MASTER_CUE) >= 0.5f;
+    ms.boothGain  = m.value(R::BOOTH_GAIN);
+    {
+        const auto& bm = engine_.mixerEngine().booth().meters();
+        ms.boothPeakL = bm.peakL.load(); ms.boothPeakR = bm.peakR.load();
+    }
     ms.deckMode   = m.deckMode();
     ms.masterDeck = perf_.masterDeck();
     ms.masterBpm  = ms.masterDeck >= 0

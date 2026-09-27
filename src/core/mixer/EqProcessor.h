@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "../dsp/Biquad.h"
+#include "IsolatorProcessor.h"
 #include "MixerTypes.h"
 
 namespace onda::mixer {
@@ -28,6 +29,7 @@ public:
 
     void prepare(double sampleRate) noexcept {
         rate_ = sampleRate;
+        iso_.prepare(sampleRate);
         setMode(EqMode::Standard);
         for (int b = 0; b < kMaxBands; ++b) { curDb_[b] = 0.0; tgtDb_[b] = 0.0; }
         applyAll();
@@ -41,22 +43,29 @@ public:
     void setMode(EqMode m) noexcept {
         mode_ = m;
         if (m == EqMode::Standard) {
+            loDb_ = -30.0; hiDb_ = 12.0;
             numBands_ = 3;
             bands_[0] = { 250.0,  0.707, BandDef::LowShelf,  false };
             bands_[1] = { 1000.0, 0.8,   BandDef::Peak,      false };
             bands_[2] = { 4000.0, 0.707, BandDef::HighShelf, false };
             bands_[3] = { 300.0,  0.707, BandDef::Peak,      true  }; // spare
         } else {
-            // Isolator-style voicing placeholder: same topology for now,
-            // steeper slopes land with the FX phase work.
+            // §12 — isolator mode delegates to IsolatorProcessor's
+            // crossover split; the shelf bands stay configured (metadata
+            // only) and the applied range deepens so a band at its
+            // detent reaches ~silence, not just -26 dB.
             numBands_ = 3;
-            bands_[0] = { 200.0,  0.707, BandDef::LowShelf,  false };
-            bands_[1] = { 1000.0, 1.0,   BandDef::Peak,      false };
-            bands_[2] = { 6000.0, 0.707, BandDef::HighShelf, false };
-            bands_[3] = { 300.0,  0.707, BandDef::Peak,      true  };
+            loDb_ = IsolatorProcessor::kRangeLo;
+            hiDb_ = IsolatorProcessor::kRangeHi;
+            bands_[0] = { IsolatorProcessor::kLowFc,  0.707, BandDef::LowShelf,  false };
+            bands_[1] = { 1000.0,                     1.0,   BandDef::Peak,      false };
+            bands_[2] = { IsolatorProcessor::kHighFc, 0.707, BandDef::HighShelf, false };
+            bands_[3] = { 300.0,                      0.707, BandDef::Peak,      true  };
         }
         applyAll();
     }
+
+    EqMode mode() const noexcept { return mode_; }
 
     int numBands() const noexcept { return numBands_; }
 
@@ -81,6 +90,13 @@ public:
     void setFreq(int band, double hz) noexcept {
         if (band < 0 || band >= numBands_) return;
         bands_[band].freq = std::clamp(hz, 20.0, rate_ * 0.45);
+        if (mode_ == EqMode::Isolator) {
+            // crossover retune: band 0 owns the low edge, band 2 the
+            // high edge; mid is the residue and has no fc of its own.
+            if (band == 0)      iso_.setLowFc(bands_[band].freq);
+            else if (band == 2) iso_.setHighFc(bands_[band].freq);
+            return;
+        }
         applyBand(band);
     }
     void setQ(int band, double q) noexcept {
@@ -94,19 +110,39 @@ public:
 
     /// Advance band gains toward their targets and refresh changed
     /// coefficients. Call once per render block before process().
+    /// Isolator mode routes the target through IsolatorProcessor's kill
+    /// semantics (detent → ~silence) and uses a faster ramp so a kill
+    /// lands in ~80 ms instead of crawling to it; its coefficients are
+    /// static — only the linear band gains move.
     void tick() noexcept {
+        if (mode_ == EqMode::Isolator) {
+            // ramp cur toward the kill-aware target, then convert to a
+            // linear band gain; IsolatorProcessor smooths per-sample.
+            for (int b = 0; b < numBands_; ++b) {
+                const double tgt = bands_[b].bypass
+                                 ? 0.0
+                                 : IsolatorProcessor::effectiveDb(tgtDb_[b]);
+                double& cur = curDb_[b];
+                if (cur != tgt) {
+                    cur += std::clamp(tgt - cur, -6.0, 6.0);
+                }
+                iso_.setBandGain(b, (float)std::pow(10.0, cur / 20.0));
+            }
+            return;
+        }
         for (int b = 0; b < numBands_; ++b) {
-            const double tgt = tgtDb_[b];
             double& cur = curDb_[b];
-            if (cur == tgt) continue;
-            double step = tgt - cur;
-            step = std::clamp(step, -3.0, 3.0); // <= 3 dB per block
-            cur += step;
+            if (cur == tgtDb_[b]) continue;
+            cur += std::clamp(tgtDb_[b] - cur, -3.0, 3.0);
             applyBand(b);
         }
     }
 
     void process(float* l, float* r, int n) noexcept {
+        if (mode_ == EqMode::Isolator) {
+            iso_.process(l, r, n);
+            return;
+        }
         for (int i = 0; i < n; ++i) {
             float xl = l[i], xr = r[i];
             for (int b = 0; b < numBands_; ++b) {
@@ -147,6 +183,7 @@ private:
     double  curDb_[kMaxBands] { 0.0, 0.0, 0.0, 0.0 };
     double  tgtDb_[kMaxBands] { 0.0, 0.0, 0.0, 0.0 };
     Biquad  l_[kMaxBands], r_[kMaxBands];
+    IsolatorProcessor iso_;   // §12 — active when mode_ == Isolator
 };
 
 } // namespace onda::mixer

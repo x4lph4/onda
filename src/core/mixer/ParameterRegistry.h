@@ -42,6 +42,7 @@ public:
     static constexpr uint16_t FX_RETURN_A   = (uint16_t)BusParam::FxReturnA;
     static constexpr uint16_t FX_RETURN_B   = (uint16_t)BusParam::FxReturnB;
     static constexpr uint16_t MASTER_CUE    = (uint16_t)BusParam::MasterCue;
+    static constexpr uint16_t BOOTH_GAIN    = (uint16_t)BusParam::BoothGain;
 
     // ---- FX parameter ids (fx:: encoding, 0x1000 space) -------------
     using K = fx::FXSlotKind;
@@ -89,6 +90,9 @@ public:
     static constexpr uint16_t channelSendB  (int ch) { return chParam(ch, ChParam::SendB); }
     static constexpr uint16_t channelPhase  (int ch) { return chParam(ch, ChParam::PhaseInvert); }
     static constexpr uint16_t channelFilterRes(int ch){ return chParam(ch, ChParam::FilterRes); }
+    static constexpr uint16_t channelPan    (int ch) { return chParam(ch, ChParam::Pan); }
+    static constexpr uint16_t channelEqMode (int ch) { return chParam(ch, ChParam::EqMode); }
+    static constexpr uint16_t channelFilterType(int ch){ return chParam(ch, ChParam::FilterType); }
 
     /// Definition for a parameter id, or nullptr if unknown.
     static const ParamDef* find(uint16_t id) noexcept {
@@ -125,6 +129,9 @@ public:
                 case ChParam::SendB:     return &kChSendB;
                 case ChParam::PhaseInvert:return &kChPhase;
                 case ChParam::FilterRes: return &kChFilterRes;
+                case ChParam::Pan:       return &kChPan;
+                case ChParam::EqMode:    return &kChEqMode;
+                case ChParam::FilterType:return &kChFilterType;
             }
             return nullptr;
         }
@@ -140,6 +147,7 @@ public:
             case BusParam::FxReturnA:        return &kFxRetA;
             case BusParam::FxReturnB:        return &kFxRetB;
             case BusParam::MasterCue:        return &kMasterCue;
+            case BusParam::BoothGain:        return &kBoothGain;
         }
         return nullptr;
     }
@@ -174,6 +182,9 @@ private:
     static constexpr ParamDef kChSendB    { (uint16_t)ChParam::SendB,  "SendB",  0.0f, 0.0f, 1.0f, 0.001f, 5.0f };
     static constexpr ParamDef kChPhase    { (uint16_t)ChParam::PhaseInvert, "PhaseInvert", 0.0f, 0.0f, 1.0f, 1.0f, 0.0f };
     static constexpr ParamDef kChFilterRes{ (uint16_t)ChParam::FilterRes,   "FilterRes",   0.707f, 0.2f, 8.0f, 0.01f, 5.0f };
+    static constexpr ParamDef kChPan      { (uint16_t)ChParam::Pan,         "Pan",         0.0f,  -1.0f, 1.0f, 0.001f, 6.0f };
+    static constexpr ParamDef kChEqMode   { (uint16_t)ChParam::EqMode,      "EqMode",      0.0f,  0.0f, 1.0f, 1.0f,   0.0f };
+    static constexpr ParamDef kChFilterType{ (uint16_t)ChParam::FilterType, "FilterType",  0.0f,  0.0f, 2.0f, 1.0f,   0.0f };
 
     static constexpr ParamDef kXfPos      { (uint16_t)BusParam::CrossfaderPos, "Crossfader", 0.0f, -1.0f, 1.0f, 0.001f, 5.0f };
     static constexpr ParamDef kXfCurve    { (uint16_t)BusParam::XfCurve,       "XfCurve",    1.0f,  0.0f, 3.0f, 1.0f,   0.0f };
@@ -186,6 +197,7 @@ private:
     static constexpr ParamDef kFxRetA     { (uint16_t)BusParam::FxReturnA,     "FxReturnA",  1.0f,  0.0f, 2.0f, 0.001f, 8.0f };
     static constexpr ParamDef kFxRetB     { (uint16_t)BusParam::FxReturnB,     "FxReturnB",  1.0f,  0.0f, 2.0f, 0.001f, 8.0f };
     static constexpr ParamDef kMasterCue  { (uint16_t)BusParam::MasterCue,     "MasterCue",  0.0f,  0.0f, 1.0f, 1.0f,   0.0f };
+    static constexpr ParamDef kBoothGain  { (uint16_t)BusParam::BoothGain,     "BoothGain",  1.0f,  0.0f, 2.0f, 0.001f, 8.0f };
 
     // ---- FX slot params (kind templates; ids encoded by caller) ----
     static constexpr ParamDef kFxType     { 0, "FxType",     0.0f, 0.0f,

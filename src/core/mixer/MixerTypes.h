@@ -28,6 +28,9 @@ enum class ChParam : uint8_t {
     SendB,      // post-fader send level into FX bus 1 (0..1)
     PhaseInvert,// channel polarity flip (0/1)
     FilterRes,  // channel filter resonance (Q 0.2..8, default 0.707)
+    Pan,        // channel pan -1..+1, constant power, center 0 (§22)
+    EqMode,     // EqMode enum value (§9)
+    FilterType, // FilterType enum value (§14)
 };
 
 constexpr uint16_t chParam(int ch, ChParam k) noexcept {
@@ -46,6 +49,7 @@ enum class BusParam : uint16_t {
     FxReturnA = 0x408, // FX send bus 0 return level (0..2)
     FxReturnB,         // FX send bus 1 return level (0..2)
     MasterCue,         // 0/1 — taps post-master program into the cue bus
+    BoothGain = 0x40B, // booth monitor gain 0..2 — independent of master (§33)
 };
 
 enum class XfAssign : int { A = 0, B = 1, Thru = 2 };

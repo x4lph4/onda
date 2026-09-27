@@ -76,7 +76,12 @@ public:
     /// Phase 12: attach the recorder's RT tap — post-master program
     /// is pushed into its SPSC ring after mixer_.render() each block.
     /// Non-RT; wire at startup before recording.
-    void attachRecorder(rec::RecorderRt* r) noexcept { recorder_ = r; }
+    /// §34 RecordingBus: the mixer owns the post-master tap; attaching
+    /// here publishes the recorder into it (atomic, block-boundary safe).
+    void attachRecorder(rec::RecorderRt* r) noexcept {
+        recorder_ = r;
+        mixer_.attachRecorder(r);
+    }
     rec::RecorderRt*    recorder() noexcept { return recorder_; }
     /// Real device sample rate — written by audioDeviceAboutToStart.
     double sampleRate() const noexcept { return sampleRate_.load(); }
@@ -94,6 +99,21 @@ public:
         if (mode == 0) testPhase_ = 0;
     }
 
+    /// §44 — absolute audio timeline (frames since the engine started
+    /// streaming). Control threads read this to schedule ParamEvents.
+    int64_t audioFrame() const noexcept {
+        return audioFrame_.load(std::memory_order_acquire);
+    }
+    /// Schedule a mixer parameter change at an exact audio frame
+    /// (sanitized through ParameterRegistry like any other setParam).
+    /// The RT thread applies it at the boundary of the target frame —
+    /// sample-accurate, no locks. Events landing inside an already-
+    /// rendered block apply at the next callback top.
+    void scheduleParam(uint16_t id, float v, int64_t targetFrame) noexcept {
+        commandQueue_.tryPush(rt::ParamEvent{
+            id, mixer::ParameterRegistry::sanitize(id, v), targetFrame });
+    }
+
 private:
     // ---- AudioIODeviceCallback (RT thread) ----
     void audioDeviceIOCallbackWithContext(
@@ -106,6 +126,7 @@ private:
     void audioDeviceError(const juce::String& errorMessage) override;
 
     void applyCommand(const rt::Command& cmd) noexcept;
+    void stageParamEvent(const rt::ParamEvent& e) noexcept;
 
     Config& config_;
     juce::AudioDeviceManager deviceManager_;
@@ -129,6 +150,14 @@ private:
     bool started_    { false };
     std::atomic<int> testMode_ { 0 };   // adevice::TestSignal, non-RT set
     uint64_t         testPhase_ { 0 };  // RT-owned continuity
+
+    // ---- §44 scheduled parameter events (RT-owned) ----
+    std::atomic<int64_t> audioFrame_ { 0 };
+    struct PendingParam { uint16_t id; float v; int64_t target; };
+    static constexpr int kMaxPendingParams = 32;
+    std::array<PendingParam, kMaxPendingParams> pendingParams_ {};
+    int pendingCount_ { 0 };
+    std::atomic<uint32_t> schedOverflow_ { 0 }; // events applied early (queue full)
 };
 
 } // namespace onda::audio

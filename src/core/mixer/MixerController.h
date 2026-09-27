@@ -110,6 +110,10 @@ public:
     float cueVolume(float v)      { return setParam(ParameterRegistry::CUE_VOLUME,  v); }
     float cueMix(float m)         { return setParam(ParameterRegistry::CUE_MIX,     m); }
     float limiterOn(bool on)      { return setParam(ParameterRegistry::LIMITER_ON,  on ? 1.0f : 0.0f); }
+    float channelPan(int ch, float v)  { return setParam(ParameterRegistry::channelPan(ch), v); }
+    float channelEqMode(int ch, int m) { return setParam(ParameterRegistry::channelEqMode(ch), (float)m); }
+    float channelFilterType(int ch, int t) { return setParam(ParameterRegistry::channelFilterType(ch), (float)t); }
+    float boothGain(float v)      { return setParam(ParameterRegistry::BOOTH_GAIN, v); }
 
     // ---- FX helpers -------------------------------------------------
     float channelSend(int ch, int bus, float v) {
@@ -256,7 +260,7 @@ private:
     FxMover fxMover_;
     SourceSink srcSink_;
     DeckModeSink deckModeSink_;
-    std::array<Entry, 256> values_ {};
+    std::array<Entry, 384> values_ {};
     // routing mirror for scene capture (defaults match MixerEngine ctor)
     std::array<ChSource, 8> sources_ {
         ChSource::deck(0), ChSource::deck(1), ChSource::deck(2),

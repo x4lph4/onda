@@ -28,6 +28,7 @@ public:
           mid_(te,  "MID", -26.0, 6.0, 0.0),
           low_(te,  "LOW", -26.0, 6.0, 0.0),
           filt_(te, "FILT", -1.0, 1.0, 0.0),
+          pan_(te,  "PAN",  -1.0, 1.0, 0.0),
           sendA_(te, "A", 0.0, 1.0, 0.0),
           sendB_(te, "B", 0.0, 1.0, 0.0),
           fader_(te, "", 0.0, 1.0, 1.0),
@@ -42,6 +43,7 @@ public:
         bind(mid_,   R::channelMid(ch));
         bind(low_,   R::channelLow(ch));
         bind(filt_,  R::channelFilter(ch));
+        bind(pan_,   R::channelPan(ch));
         bind(sendA_, R::channelSendA(ch));
         bind(sendB_, R::channelSendB(ch));
         fader_.onValue = [&mc, ch](double v) {
@@ -63,6 +65,7 @@ public:
         for (auto* c : { (juce::Component*)&gain_, (juce::Component*)&high_,
                          (juce::Component*)&mid_, (juce::Component*)&low_,
                          (juce::Component*)&filt_,
+                         (juce::Component*)&pan_,
                          (juce::Component*)&sendA_,
                          (juce::Component*)&sendB_,
                          (juce::Component*)&fader_,
@@ -85,6 +88,7 @@ public:
         pull(mid_.slider(),   s.mid);
         pull(low_.slider(),   s.low);
         pull(filt_.slider(),  s.filter);
+        pull(pan_.slider(),   s.pan);
         pull(sendA_.slider(), s.sendA);
         pull(sendB_.slider(), s.sendB);
         pull(fader_.slider(), s.fader);
@@ -119,7 +123,14 @@ public:
             a.setBounds(r.removeFromLeft(r.getWidth() / 2).reduced(1));
             bb.setBounds(r.reduced(1));
         };
-        row2(gain_, filt_);
+        auto row3 = [&](Knob& a, Knob& bb, Knob& c) {
+            auto r = b.removeFromTop(kh);
+            const int w = r.getWidth() / 3;
+            a.setBounds(r.removeFromLeft(w).reduced(1));
+            bb.setBounds(r.removeFromLeft(w).reduced(1));
+            c.setBounds(r.reduced(1));
+        };
+        row3(gain_, filt_, pan_);
         auto r = b.removeFromTop(kh);
         high_.setBounds(r);
         r = b.removeFromTop(kh); mid_.setBounds(r);
@@ -139,7 +150,7 @@ public:
 private:
     const ThemeEngine* theme_;
     int ch_, xf_ = 1;
-    Knob gain_, high_, mid_, low_, filt_, sendA_, sendB_;
+    Knob gain_, high_, mid_, low_, filt_, pan_, sendA_, sendB_;
     Fader fader_;
     MeterBar meter_;
     StateButton cueBtn_, muteBtn_, xfBtn_;
@@ -154,6 +165,7 @@ public:
           masterGain_(te, "MASTER", 0.0, 2.0, 1.0),
           cueVol_(te, "CUE VOL", 0.0, 1.0, 0.8),
           cueMix_(te, "CUE MIX", 0.0, 1.0, 0.0),
+          booth_(te, "BOOTH", 0.0, 2.0, 1.0),
           masterMeter_(te, false),
           limBtn_(te, "LIM"),
           mCueBtn_(te, "M.CUE"),
@@ -169,6 +181,7 @@ public:
         };
         cueVol_.onValue = [&mc](double v) { mc.cueVolume((float)v); };
         cueMix_.onValue = [&mc](double v) { mc.cueMix((float)v); };
+        booth_.onValue = [&mc](double v) { mc.boothGain((float)v); };
         limBtn_.onInvoke = [&mc] {
             mc.limiterOn(mc.value(R::LIMITER_ON) < 0.5f);
         };
@@ -189,6 +202,7 @@ public:
         for (auto* c : { (juce::Component*)&masterGain_,
                          (juce::Component*)&cueVol_,
                          (juce::Component*)&cueMix_,
+                         (juce::Component*)&booth_,
                          (juce::Component*)&masterMeter_,
                          (juce::Component*)&limBtn_,
                          (juce::Component*)&mCueBtn_,
@@ -217,6 +231,7 @@ public:
         pull(masterGain_.slider(), s.gain);
         pull(cueVol_.slider(), s.cueVol);
         pull(cueMix_.slider(), s.cueMix);
+        pull(booth_.slider(), s.boothGain);
         pull(xf_, s.crossfader);
         limBtn_.setState(s.limiterOn ? ControlState::On
                                      : ControlState::Off);
@@ -259,9 +274,11 @@ public:
         mCueBtn_.setBounds(limRow.reduced(1));
         auto row3 = master.removeFromTop(
             juce::jmin(52, master.getHeight() / 5));
-        cueVol_.setBounds(row3.removeFromLeft(row3.getWidth() / 2)
+        cueVol_.setBounds(row3.removeFromLeft(row3.getWidth() / 3)
                               .reduced(1));
-        cueMix_.setBounds(row3.reduced(1));
+        cueMix_.setBounds(row3.removeFromLeft(row3.getWidth() / 2)
+                              .reduced(1));
+        booth_.setBounds(row3.reduced(1));
         masterGain_.setBounds(master);
     }
 
@@ -269,7 +286,7 @@ private:
     const ThemeEngine* theme_;
     std::array<std::unique_ptr<ChannelStrip>, 4> strips_;
     Fader      masterGain_;
-    Knob       cueVol_, cueMix_;
+    Knob       cueVol_, cueMix_, booth_;
     MeterBar   masterMeter_;      // horizontal master meter
     StateButton limBtn_, mCueBtn_;
     int        visibleChans_ = 4;

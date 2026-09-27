@@ -9,11 +9,13 @@
 #include "../fx/FXEngine.h"
 #include "../model/MasterStats.h"
 #include "../rt/AudioStats.h"
+#include "BoothBus.h"
 #include "ChannelStrip.h"
 #include "CrossfaderEngine.h"
 #include "CueManager.h"
 #include "HeadphoneBus.h"
 #include "MasterBus.h"
+#include "RecordingBus.h"
 #include "MixerDiagnostics.h"
 #include "MixerTypes.h"
 #include "ParameterRegistry.h"
@@ -33,7 +35,9 @@ namespace sampler { class SamplerRt; }
 ///                   -> [post tap -> send buses -> send FX -> return]
 ///                   -> xf assign -> master sum
 ///     master insert FX rack
+///     booth tap:   program (pre-master-gain) -> booth gain -> out[4..5]
 ///     master bus:  gain/mute -> limiter -> meters -> out[0..1]
+///     recording:   post-master program -> RecordingBus -> recorder ring
 ///     phones bus:  (cueSum * (1-mix) + masterPost * mix) * cueVol -> out[2..3]
 ///
 /// Cue behavior: the PFL tap is pre-fader but post insert-FX — the DJ
@@ -84,6 +88,10 @@ public:
     // ---- bus access ----
     mixer::MasterBus&      master() noexcept      { return master_; }
     mixer::HeadphoneBus&   phones() noexcept      { return phones_; }
+    mixer::BoothBus&       booth() noexcept       { return booth_; }
+    mixer::RecordingBus&   recordingBus() noexcept { return recording_; }
+    /// Attach the recording sink (control thread; published atomically).
+    void attachRecorder(rec::RecorderRt* r) noexcept { recording_.attach(r); }
     mixer::CrossfaderEngine& xf() noexcept        { return xf_; }
     mixer::CueManager&     cues() noexcept        { return cueMgr_; }
     const mixer::RoutingEngine& routing() const noexcept { return routing_; }
@@ -148,15 +156,19 @@ public:
     const float* masterR() const { return mixR_.data(); }
 
     /// Phase 13: physical output mapping (non-RT set, atomic publish).
-    /// master→[0,1], cue→[2,3]; -1 disables a pair. Defaults {0,1,2,3}.
-    void setOutputMap(int mL, int mR, int cL, int cR) noexcept {
+    /// master→[0,1], cue→[2,3], booth→[4,5]; -1 disables a pair.
+    /// Defaults {0,1,2,3,-1,-1} (booth unmapped until configured).
+    void setOutputMap(int mL, int mR, int cL, int cR,
+                      int bL = -1, int bR = -1) noexcept {
         outMap_[0].store(mL, std::memory_order_relaxed);
         outMap_[1].store(mR, std::memory_order_relaxed);
         outMap_[2].store(cL, std::memory_order_relaxed);
         outMap_[3].store(cR, std::memory_order_relaxed);
+        outMap_[4].store(bL, std::memory_order_relaxed);
+        outMap_[5].store(bR, std::memory_order_relaxed);
     }
     int outMap(int i) const noexcept {
-        return outMap_[i & 3].load(std::memory_order_relaxed);
+        return outMap_[i & 7].load(std::memory_order_relaxed);
     }
 
 private:
@@ -169,12 +181,15 @@ private:
     mixer::CrossfaderEngine xf_;
     mixer::MasterBus        master_;
     mixer::HeadphoneBus     phones_;
+    mixer::BoothBus         booth_;
+    mixer::RecordingBus     recording_;
     mixer::CueManager       cueMgr_;
     mixer::RoutingEngine    routing_;
     fx::FXEngine            fx_;
 
-    std::vector<float> mixL_, mixR_, cueL_, cueR_; // bus scratch (preallocated)
-    std::array<std::atomic<int>,4> outMap_ { 0, 1, 2, 3 }; // mL,mR,cL,cR
+    std::vector<float> mixL_, mixR_, cueL_, cueR_;       // bus scratch (preallocated)
+    std::vector<float> boothL_, boothR_;                 // booth tap scratch
+    std::array<std::atomic<int>,8> outMap_ { 0, 1, 2, 3, -1, -1, -1, -1 };
     /// Channel source table (packed ChSource). Written on the control
     /// thread, read every block — atomics only, never a lock.
     std::array<std::atomic<uint32_t>, kMaxChannels> chSource_ {};

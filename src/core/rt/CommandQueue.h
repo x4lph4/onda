@@ -52,6 +52,13 @@ struct SetStemParam   { uint8_t deck; uint8_t stem;
 // ---- generic mixer parameter (ids from mixer::ParameterRegistry) ----
 struct SetParam       { uint16_t id; float v; };
 
+/// §44 — sample-scheduled parameter event. POD only. `targetFrame` is
+/// an absolute audio-frame index on the engine's timeline (see
+/// AudioEngine::audioFrame()); the RT thread parks it in a small
+/// pending set and splits the render at its boundary so the change
+/// lands on the exact frame — no UI clock, no timer.
+struct ParamEvent     { uint16_t id; float v; int64_t targetFrame; };
+
 // ---- sampler commands (Phase 11) ----
 struct SampleTrigger  { uint8_t slot; float vel; };      // vel 0..1
 struct SampleRelease  { uint8_t slot; };                 // HOLD pad up
@@ -67,7 +74,7 @@ using Command = std::variant<
     SetQuantize, SetLoop, SetLoopOn, SetLoopSize,
     SetEqBand, SetFilter,
     DeckSeekFrame, SetLoopFrames, SyncSetMaster, SyncSetMode,
-    SlipBegin, SlipEnd, SlipReanchor, SetParam,
+    SlipBegin, SlipEnd, SlipReanchor, SetParam, ParamEvent,
     SetStemMode, SetStemParam,
     SampleTrigger, SampleRelease, SampleStop,
     SampleSlotParam, SamplerParam>;

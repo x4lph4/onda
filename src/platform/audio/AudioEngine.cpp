@@ -130,10 +130,22 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
 
     const auto start = std::chrono::steady_clock::now();
 
-    // Drain UI -> RT commands. Bounded, non-blocking.
+    // ---- §44 audio timeline for this block ----
+    const int64_t blkStart = audioFrame_.load(std::memory_order_relaxed);
+    const int64_t blkEnd   = blkStart + numSamples;
+
+    // Drain UI -> RT commands. Bounded, non-blocking. ParamEvents are
+    // staged: past-due apply now, future ones park in pendingParams_
+    // and split the render at their frame boundary below.
     rt::Command cmd;
-    while (commandQueue_.tryPop(cmd))
+    while (commandQueue_.tryPop(cmd)) {
+        if (const auto* pe = std::get_if<rt::ParamEvent>(&cmd)) {
+            if (pe->targetFrame <= blkStart) mixer_.setParam(pe->id, pe->v);
+            else stageParamEvent(*pe);
+            continue;
+        }
         applyCommand(cmd);
+    }
 
     // Sync pre-pass: computes each follower's tempo/phase correction for
     // this block (master phase predicted one block ahead so deck render
@@ -155,14 +167,52 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
         }
     }
 
-    mixer_.render(outputChannelData, numOutputChannels, numSamples,
-                  decks_.data(), (int)decks_.size(), stats_, sampler_);
+    // Collect the distinct event boundaries due inside this block
+    // (sorted; duplicate targets share one boundary).
+    int64_t due[kMaxPendingParams]; int nDue = 0;
+    for (int i = 0; i < pendingCount_; ++i) {
+        const int64_t t = pendingParams_[i].target;
+        if (t >= blkEnd) continue;
+        int j = 0;
+        for (; j < nDue; ++j) if (due[j] == t) break;
+        if (j < nDue) continue;
+        j = nDue;
+        while (j > 0 && due[j - 1] > t) { due[j] = due[j - 1]; --j; }
+        due[j] = t; ++nDue;
+    }
 
-    // recording tap — post-master program into the SPSC ring (bounded
-    // copy + atomics only; the writer thread does all disk IO)
-    if (recorder_)
-        recorder_->pushPostMaster(mixer_.masterL(), mixer_.masterR(),
-                                  numSamples);
+    if (nDue == 0) {
+        mixer_.render(outputChannelData, numOutputChannels, numSamples,
+                      decks_.data(), (int)decks_.size(), stats_, sampler_);
+    } else {
+        // §44 — split the render at each event boundary: the segment
+        // before the target frame renders with the old value, the
+        // parameter applies at the exact frame, the rest continues.
+        float* segOuts[32];
+        const int no = std::min(numOutputChannels, 32);
+        auto renderSeg = [&](int off, int nseg) {
+            for (int ch = 0; ch < no; ++ch)
+                segOuts[ch] = outputChannelData[ch] != nullptr
+                            ? outputChannelData[ch] + off : nullptr;
+            mixer_.render(segOuts, no, nseg,
+                          decks_.data(), (int)decks_.size(),
+                          stats_, sampler_);
+        };
+        int pos = 0;
+        for (int di = 0; di < nDue; ++di) {
+            const int tOff = (int)(due[di] - blkStart);
+            if (tOff > pos) { renderSeg(pos, tOff - pos); pos = tOff; }
+            for (int i = pendingCount_ - 1; i >= 0; --i) {
+                if (pendingParams_[i].target == due[di]) {
+                    mixer_.setParam(pendingParams_[i].id,
+                                    pendingParams_[i].v);
+                    pendingParams_[i] = pendingParams_[--pendingCount_];
+                }
+            }
+        }
+        if (pos < numSamples) renderSeg(pos, numSamples - pos);
+    }
+    audioFrame_.store(blkEnd, std::memory_order_release);
 
     // routing-test signal — replaces program audio on the mapped outs
     const int tm = testMode_.load(std::memory_order_relaxed);
@@ -206,6 +256,17 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     stats_.callbackCount.fetch_add(1, std::memory_order_relaxed);
 }
 
+/// Park a future ParamEvent in the RT-owned pending set (bounded 32).
+/// Overflow applies immediately — never drops a user edit silently.
+void AudioEngine::stageParamEvent(const rt::ParamEvent& e) noexcept {
+    if (pendingCount_ >= kMaxPendingParams) {
+        mixer_.setParam(e.id, e.v);
+        schedOverflow_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    pendingParams_[pendingCount_++] = { e.id, e.v, e.targetFrame };
+}
+
 void AudioEngine::applyCommand(const rt::Command& cmd) noexcept {
     std::visit([this, &cmd](const auto& c) {
         using T = std::decay_t<decltype(c)>;
@@ -229,6 +290,8 @@ void AudioEngine::applyCommand(const rt::Command& cmd) noexcept {
             mixer_.channel(deck).filter().setPosition(c.pos);
         else if constexpr (std::is_same_v<T, rt::SetParam>)
             mixer_.setParam(c.id, c.v);
+        else if constexpr (std::is_same_v<T, rt::ParamEvent>)
+            mixer_.setParam(c.id, c.v); // reached only via non-scheduled paths
         else if constexpr (std::is_same_v<T, rt::SyncSetMaster>)
             syncRt_.masterDeck = (c.deck >= kNumDecks) ? -1 : (int)c.deck;
         else if constexpr (std::is_same_v<T, rt::SampleTrigger> ||

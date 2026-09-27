@@ -2,6 +2,41 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 24 (mixer engine completion)
+
+Completed the central mixer architecture (`docs/audio/mixer-engine.md`,
+`docs/adr/0024-mixer-engine-completion.md`) on top of the Phase-17
+foundation — new components only where the spec had real gaps.
+
+- `PanProcessor` per channel: balance law (unity centre, true
+  silence at the edges), ~6 ms smoothing, applied post-fader so
+  meters/PFL stay honest; `channelN.pan` registry id + UI knob.
+- `IsolatorProcessor` — true 3-way filter bank (`LP4` / band-formed
+  mid / `HP4`, LR4 crossovers at 300 Hz/5 kHz) replacing the
+  re-voiced-shelf placeholder: a band at the −26 dB detent reaches
+  ~−72 dB (≈silence) with real spectral separation; linear band gains
+  smoothed per-sample, static coefficients — no clicks, ever.
+  `EqMode` exposed per channel and persisted.
+- `BoothBus`: taps the program pre-master-gain → booth level is
+  independent of house level and master mute; own gain/meters/clip
+  telemetry; routes to new `outMap[4..5]` pair.
+- `RecordingBus`: the mixer now owns the post-master tap —
+  `attachRecorder` publishes the `RecorderRt*` atomically; render
+  pushes each block into the same bounded SPSC ring, ~free detached.
+- `rt::ParamEvent` (§44): POD `{id, v, targetFrame}` on the existing
+  queue; absolute audio-frame counter + 32-deep pending set → the
+  audio callback splits the render at the event boundary for
+  sample-accurate parameter application; overflow applies early,
+  never drops.
+- Scene v2 (pan/eqMode/filterType/boothGain, v1-compatible defaults);
+  spec presets Default/Classic/Modern added (Custom = user scene);
+  UI: per-strip PAN knob, master-column BOOTH knob; diagnostics
+  carry booth meters + recorder state + pan/eqMode per channel.
+- 16 new `[mixer24]` tests (pan law, isolator kill/selectivity/
+  stability, booth independence+telemetry, recording tap, registry,
+  typed filter, scene v2, presets, 120-block automation hammer,
+  4-deck routing, sampler coexistence, 400-block full-mixer stress).
+
 ## Status — Phase 23 (smart playlists + intelligent library tools)
 
 Organisation, analysis-derived descriptors and explainable discovery

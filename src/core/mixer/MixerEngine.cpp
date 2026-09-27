@@ -12,7 +12,9 @@ MixerEngine::MixerEngine()
     : mixL_(AudioFormat::kMaxBlockFrames, 0.0f),
       mixR_(AudioFormat::kMaxBlockFrames, 0.0f),
       cueL_(AudioFormat::kMaxBlockFrames, 0.0f),
-      cueR_(AudioFormat::kMaxBlockFrames, 0.0f) {
+      cueR_(AudioFormat::kMaxBlockFrames, 0.0f),
+      boothL_(AudioFormat::kMaxBlockFrames, 0.0f),
+      boothR_(AudioFormat::kMaxBlockFrames, 0.0f) {
     // default crossfader assignments: ch0/2 -> A, ch1/3 -> B, rest thru
     for (int i = 0; i < kMaxChannels; ++i)
         strips_[i].setXfAssign(i < 4 ? (deckOnSideA(i) ? mixer::XfAssign::A
@@ -36,6 +38,7 @@ void MixerEngine::prepare(double sampleRate) noexcept {
     xf_.prepare(sampleRate);
     master_.prepare(sampleRate);
     phones_.prepare(sampleRate);
+    booth_.prepare(sampleRate);
     cueMgr_.prepare(sampleRate);
     fx_.prepare(sampleRate);
     rebuildRouting();
@@ -140,6 +143,11 @@ void MixerEngine::setParam(uint16_t id, float v) noexcept {
             case mixer::ChParam::SendA: s.setSendLevel(0, v); break;
             case mixer::ChParam::SendB: s.setSendLevel(1, v); break;
             case mixer::ChParam::PhaseInvert: s.setPhaseInvert(v > 0.5f); break;
+            case mixer::ChParam::Pan:         s.setPan(v); break;
+            case mixer::ChParam::EqMode:
+                s.eq().setMode((mixer::EqMode)(int)v); break;
+            case mixer::ChParam::FilterType:
+                s.filter().setType((mixer::FilterType)(int)v); break;
         }
         return;
     }
@@ -155,6 +163,7 @@ void MixerEngine::setParam(uint16_t id, float v) noexcept {
         case mixer::BusParam::FxReturnA:        fx_.setSendReturn(0, v); break;
         case mixer::BusParam::FxReturnB:        fx_.setSendReturn(1, v); break;
         case mixer::BusParam::MasterCue:        cueMgr_.setMasterCue(v > 0.5f); break;
+        case mixer::BusParam::BoothGain:        booth_.setGain(v); break;
     }
 }
 
@@ -239,6 +248,12 @@ void MixerEngine::render(float* const* out, int numOut, int n,
     // 2c) master insert FX (pre master-gain/limiter — limiter stays last)
     fx_.processMaster(mixL_.data(), mixR_.data(), n);
 
+    // 2d) booth tap (§33): the program AFTER master insert FX but BEFORE
+    //     master gain/mute/limiter — booth level is fully independent of
+    //     the house level. Copy once into the booth scratch pair.
+    std::memcpy(boothL_.data(), mixL_.data(), (size_t)n * sizeof(float));
+    std::memcpy(boothR_.data(), mixR_.data(), (size_t)n * sizeof(float));
+
     // 3) master bus in place -> outputs 0-1
     master_.process(mixL_.data(), mixR_.data(), n);
 
@@ -247,6 +262,8 @@ void MixerEngine::render(float* const* out, int numOut, int n,
     const int mR = outMap_[1].load(std::memory_order_relaxed);
     const int cL = outMap_[2].load(std::memory_order_relaxed);
     const int cR = outMap_[3].load(std::memory_order_relaxed);
+    const int bL = outMap_[4].load(std::memory_order_relaxed);
+    const int bR = outMap_[5].load(std::memory_order_relaxed);
 
     // clear every channel first: unmapped outs must carry silence
     for (int ch = 0; ch < numOut; ++ch)
@@ -265,6 +282,10 @@ void MixerEngine::render(float* const* out, int numOut, int n,
         stats.clipCount.fetch_add(clips - prev, std::memory_order_relaxed);
     mstats_.clipCount.store(clips, std::memory_order_relaxed);
 
+    // 3a) recording bus (§34): post-master program -> recorder ring.
+    //     ~free when no recorder is attached.
+    recording_.push(mixL_.data(), mixR_.data(), n);
+
     // 3b) master cue: post-master program -> cue sum (§17). Runs after
     //     the master bus so phones hear what the audience hears.
     cueMgr_.process(cueL_.data(), cueR_.data(),
@@ -277,6 +298,15 @@ void MixerEngine::render(float* const* out, int numOut, int n,
         phones_.process(cueL_.data(), cueR_.data(),
                         mixL_.data(), mixR_.data(),
                         out[cL], out[cR], n);
+
+    // 4b) booth bus -> mapped booth outputs (independent of master)
+    const bool booth = bL >= 0 && bR >= 0 && bL < numOut && bR < numOut
+                       && out[bL] != nullptr && out[bR] != nullptr;
+    if (booth)
+        booth_.process(boothL_.data(), boothR_.data(),
+                       out[bL], out[bR], n);
+    else
+        booth_.idle(n);
 
     // 5) publish legacy MasterStats from bus meters
     const auto& mm = master_.meters();
@@ -317,6 +347,12 @@ void MixerEngine::snapshot(mixer::MixerBusDiag& bus,
     const auto& cm = phones_.meters();
     bus.cuePeakL = cm.peakL.load(std::memory_order_relaxed);
     bus.cuePeakR = cm.peakR.load(std::memory_order_relaxed);
+    bus.boothGain = booth_.gain();
+    const auto& bm = booth_.meters();
+    bus.boothPeakL = bm.peakL.load(std::memory_order_relaxed);
+    bus.boothPeakR = bm.peakR.load(std::memory_order_relaxed);
+    bus.boothClips = bm.clips.load(std::memory_order_relaxed);
+    bus.recorderAttached = recording_.attached() != nullptr;
     for (int i = 0; i < std::min(nCh, kMaxChannels); ++i) {
         const auto& s = strips_[i];
         auto& d = chans[i];
@@ -330,6 +366,9 @@ void MixerEngine::snapshot(mixer::MixerBusDiag& bus,
         d.highDb = (float)s.eq().gainDb(2);
         d.filterPos = s.filter().position();
         d.filterRes = (float)s.filter().resonance();
+        d.filterType = (int)s.filter().type();
+        d.eqMode = (int)s.eq().mode();
+        d.pan = s.pan();
         d.fader = s.fader();
         d.sendA = s.sendLevel(0); d.sendB = s.sendLevel(1);
         d.xfAssign = (int)s.xfAssign();

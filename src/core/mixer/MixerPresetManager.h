@@ -82,6 +82,31 @@ public:
             s.deckMode = 2;
             v.push_back({ "Two Deck", s });
         }
+        // ---- Phase-24 spec names ------------------------------------
+        { // "Default" — the spec's neutral preset (same values as Flat,
+          // kept as a separate entry so both names resolve).
+            MixerScene s;
+            v.push_back({ "Default", s });
+        }
+        { // "Classic" — traditional DJ console feel: equal-power xf,
+          // standard EQ, linear faders, limiter off, booth follows.
+            MixerScene s;
+            s.xfCurve = (float)(int)XfCurve::EqualPower;
+            v.push_back({ "Classic", s });
+        }
+        { // "Modern" — performance feel: cut xf, audio-taper faders,
+          // isolator EQ voicing on the deck channels, limiter guard on.
+            MixerScene s;
+            s.xfCurve = (float)(int)XfCurve::Cut;
+            s.limiterOn = 1.0f;
+            for (int i = 0; i < 4; ++i) {
+                s.ch[(size_t)i].faderCurve = (float)(int)FaderCurve::AudioTaper;
+                s.ch[(size_t)i].eqMode = (float)(int)EqMode::Isolator;
+            }
+            v.push_back({ "Modern", s });
+        }
+        // "Custom" isn't a factory entry — it's whatever scene the user
+        // stores through MixerController/preset store() at runtime.
         return v;
     }
 

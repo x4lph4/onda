@@ -18,6 +18,8 @@ struct MixerChannelDiag {
     float gain       { 1.0f };
     float lowDb      { 0.0f }, midDb { 0.0f }, highDb { 0.0f };
     float filterPos  { 0.0f }, filterRes { 0.707f };
+    int   filterType { 0 }, eqMode { 0 };
+    float pan        { 0.0f };
     float fader      { 1.0f };
     float sendA      { 0.0f }, sendB { 0.0f };
     int   xfAssign   { (int)XfAssign::Thru };
@@ -47,6 +49,10 @@ struct MixerBusDiag {
     int   deckMode { 4 };
     int   activeChannels { 0 };
     int   masterLatencySamples { 0 }; // master FX rack latency
+    float boothGain { 1.0f };
+    float boothPeakL { 0.0f }, boothPeakR { 0.0f };
+    uint64_t boothClips { 0 };
+    bool  recorderAttached { false };
 };
 
 /// Human-readable report — same style as fx::diagnosticReport.
@@ -71,6 +77,10 @@ inline std::string mixerReport(const MixerBusDiag& d,
        + "  pfl=" + std::to_string(d.cueCount)
        + " solo=" + std::to_string(d.soloCount)
        + "  cuePeak=" + num(d.cuePeakL) + "/" + num(d.cuePeakR) + "\n";
+    s += "booth: gain=" + num(d.boothGain)
+       + "  peak=" + num(d.boothPeakL) + "/" + num(d.boothPeakR)
+       + "  clips=" + std::to_string(d.boothClips)
+       + (d.recorderAttached ? "  REC" : "") + "\n";
     for (int i = 0; i < nCh; ++i) {
         const auto& c = ch[i];
         if (!c.active) continue;
@@ -79,6 +89,8 @@ inline std::string mixerReport(const MixerBusDiag& d,
            + " g=" + num(c.gain)
            + " eq[" + num(c.lowDb) + "/" + num(c.midDb) + "/" + num(c.highDb) + "]"
            + " flt=" + num(c.filterPos) + " q=" + num(c.filterRes)
+           + " pan=" + num(c.pan)
+           + (c.eqMode == 1 ? " ISO" : "")
            + " f=" + num(c.fader)
            + (c.cue ? " CUE" : "") + (c.mute ? " MUTE" : "")
            + (c.solo ? " SOLO" : "") + (c.phase ? " Ø" : "")
