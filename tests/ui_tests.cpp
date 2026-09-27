@@ -83,6 +83,14 @@ TEST_CASE("EngineCommands: play toggle pushes transport; toggles read "
     stats[0].keylock = false;
 
     PerformanceEngine perf;
+    // Phase 28 — perf-routed commands emit through the engine's sink;
+    // the rig wires it to the queue exactly like the app does.
+    perf.setCommandSink([&q](const rt::Command& c) { q.tryPush(c); });
+    // Same binding the app performs: deck stats reach the perf layer
+    // so transport toggles read the real playing state.
+    std::atomic<const BeatGrid*> pend[4]{}, ret[4]{};
+    for (int d = 0; d < 4; ++d)
+        perf.setGridSlot(d, &pend[d], &ret[d], &stats[d]);
     CommandManager cm;
     EnginePorts p;
     p.queue = &q;
@@ -117,9 +125,12 @@ TEST_CASE("EngineCommands: play toggle pushes transport; toggles read "
     stats[0].keylock = true;
     REQUIRE(cm.state(cmd::forDeck(cmd::DeckKeyLockTgl, 0)) == 1);
 
-    // quantize state reports through perf engine
+    // quantize state reports through perf engine; the toggle also
+    // emits a real SetQuantize to the rt queue (perf-routed, §45).
     REQUIRE(cm.invoke("decka.quantizeToggle", CommandSource::Ui));
     REQUIRE(cm.state(cm.idFor("decka.quantizeToggle")) == 1);
+    REQUIRE(q.tryPop(c));
+    REQUIRE(std::get_if<rt::SetQuantize>(&c) != nullptr);
 
     // bend is momentary: value 1 → -4%, value 0 → 0
     REQUIRE(cm.invoke(cmd::forDeck(cmd::DeckBendDown, 0),

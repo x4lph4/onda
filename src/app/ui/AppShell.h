@@ -78,8 +78,10 @@ public:
             decks_[(size_t)d]->onPitch = [this, d](float v) {
                 perf_->onUserPitch(d, v);
             };
-            decks_[(size_t)d]->onPitchRange = [q, d](float v) {
-                q->tryPush(rt::SetPitchRange{(uint8_t)d, v});
+            // Phase 28 §35 — range changes go through the perf pitch
+            // engine so the pref persists and every input path agrees.
+            decks_[(size_t)d]->onPitchRange = [this, d](float v) {
+                perf_->setPitchRange(d, v);
             };
             decks_[(size_t)d]->bindPitch();
         }

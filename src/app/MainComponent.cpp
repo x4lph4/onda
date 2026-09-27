@@ -97,15 +97,14 @@ MainComponent::MainComponent(audio::AudioEngine& engine,
             return commands_.idFor(n);
         };
         p.setParam = [&engine, &perf](uint16_t id, float v) {
-            // deck params (0x8000 space) ride the lock-free rt queue;
-            // mixer params go through MixerController as before
+            // deck params (0x8000 space) ride the perf layer; mixer
+            // params go through MixerController as before
             if (ctrl::isDeckParam(id)) {
                 const auto deck = (uint8_t)ctrl::deckParamDeck(id);
                 if (ctrl::deckParamKind(id) == ctrl::kDeckParamPitch)
                     perf.onUserPitch(deck, v);   // §26 pitch policy
                 else
-                    engine.commands().tryPush(
-                        rt::SetPitchRange{deck, v});
+                    perf.setPitchRange(deck, v); // §35 pitch engine
                 return;
             }
             engine.mixerCtl().setParam(id, v);
@@ -119,21 +118,11 @@ MainComponent::MainComponent(audio::AudioEngine& engine,
             }
             return engine.mixerCtl().value(id);
         };
-        // jog → same rt queue the UI waveforms use
-        p.jog = [&engine](int deck, int mode, double delta) {
-            auto* q = &engine.commands();
-            if (mode == (int)ctrl::JogMode::JogPitchBend) {
-                q->tryPush(rt::SetPitchBend{
-                    (uint8_t)deck,
-                    (float)juce::jlimit(-8.0, 8.0, delta * 0.25)});
-            } else { // JogSeek / JogScratch: nudge position
-                const auto& ds = engine.deckStats(deck);
-                const double cur = ds.positionSec.load();
-                const double scale =
-                    mode == (int)ctrl::JogMode::JogScratch ? 0.10 : 0.04;
-                q->tryPush(rt::DeckSeek{
-                    (uint8_t)deck, cur + delta * scale});
-            }
+        // Phase 28 §38-40 — jog decisions live in the performance
+        // layer's JogEngine (seek vs bend vs scratch vs browse),
+        // slip-aware and shared with every other input path.
+        p.jog = [&perf](int deck, int mode, double delta) {
+            perf.jog(deck, mode, delta);
         };
         p.notify = [this](const std::string& t,
                           const std::string& d, int lvl) {

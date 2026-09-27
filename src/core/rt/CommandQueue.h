@@ -43,6 +43,7 @@ struct SyncSetMode    { uint8_t deck; uint8_t mode; };   // SyncMode
 struct SlipBegin      { uint8_t deck; };
 struct SlipEnd        { uint8_t deck; };
 struct SlipReanchor   { uint8_t deck; };  // shadow := displayed pos (Phase 20)
+struct DeckBrake      { uint8_t deck; uint8_t on; float sec; }; // Phase 28 — vinyl brake
 
 // ---- stems commands (Phase 21) ----
 struct SetStemMode    { uint8_t deck; uint8_t mode; };   // 0 orig, 1 stems
@@ -74,7 +75,7 @@ using Command = std::variant<
     SetQuantize, SetLoop, SetLoopOn, SetLoopSize,
     SetEqBand, SetFilter,
     DeckSeekFrame, SetLoopFrames, SyncSetMaster, SyncSetMode,
-    SlipBegin, SlipEnd, SlipReanchor, SetParam, ParamEvent,
+    SlipBegin, SlipEnd, SlipReanchor, DeckBrake, SetParam, ParamEvent,
     SetStemMode, SetStemParam,
     SampleTrigger, SampleRelease, SampleStop,
     SampleSlotParam, SamplerParam>;

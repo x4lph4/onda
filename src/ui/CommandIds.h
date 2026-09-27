@@ -56,6 +56,11 @@ enum Id : uint32_t {
     DeckJumpSizeUp   = 0x008C,  // step beat-jump size up (1…64 bt)
     DeckJumpSizeDn   = 0x008D,  // step beat-jump size down
     DeckRevHold      = 0x008E,  // momentary reverse (press/release)
+    DeckPitchReset   = 0x008F,  // tempo reset → 0% (Phase 28 §36)
+
+    // ---- Phase 28: transport/cue extensions: +deck*0x400 ----
+    DeckBrakeTgl     = 0x0094,  // vinyl brake toggle (spin-down/up)
+    DeckCueMode      = 0x0095,  // cycle cue behaviour Hold/Start/LastCue
 
     // ---- stems surface: +deck*0x400 (Phase 21) ----
     DeckStemModeTgl  = 0x0090,  // toggle original ↔ stems render

@@ -65,6 +65,13 @@ public:
     void setReverse(bool on) noexcept;
     bool isPlaying() const noexcept { return playing_; }
 
+    // ---- brake (RT, Phase 28 §3) ----
+    /// Vinyl brake: `on` engages a smoothstep spin-down that ends with
+    /// the deck paused; `off` spins back up and resumes playback. The
+    /// ramp is block-counted on the RT timeline — no timers involved.
+    void setBrake(bool on, float sec) noexcept;
+    bool brakeActive() const noexcept { return brakeDir_ != 0; }
+
     // ---- slip (RT) ----
     /// Slip: the musical shadow position keeps advancing while the user
     /// performs temporary actions (roll, hot cue hold, scratch). On
@@ -76,6 +83,9 @@ public:
     /// jump back to the pre-action timeline.
     void reanchorSlip() noexcept;
     bool slipActive() const noexcept { return slipActive_; }
+    /// §22 — SlipReturnPosition echo for the control side (sec, -1 off).
+    double slipReturnSec() const noexcept {
+        return slipActive_ ? slipShadow_ / deviceRate_ : -1.0; }
 
     // ---- sync (RT) ----
     /// mode: 0 off, 1 bpm, 2 beat, 3 phrase (2/3 handled identically on
@@ -179,6 +189,8 @@ private:
     void advanceDisp(int produced) noexcept; // keylock transport clock
     int64_t clampPos(double p) const noexcept;
     void   advanceSlip(int produced) noexcept;
+    void   advanceBrake(int n) noexcept;
+    double brakeFactor() const noexcept;
 
     // ---- stems (RT helpers, Phase 21) ----
     void adoptPendingStems() noexcept;
@@ -241,6 +253,12 @@ private:
     bool   syncLimited_  { false };
     bool   slipActive_   { false };
     double slipShadow_   { 0.0 };           // where the track "would be"
+
+    // ---- brake (Phase 28) ----
+    int      brakeDir_    { 0 };            // 0 off, +1 spin-down, -1 spin-up
+    int64_t  brakeT_      { 0 };            // frames into the ramp
+    int64_t  brakeFrames_ { 26400 };        // 0.55 s @48k default
+    bool     brakeStopped_{ false };        // latch: halt came from brake
 
     // ---- stems (RT-owned, Phase 21) ----
     const DeckStemBuffers* stems_ { nullptr }; // borrowed, owned upstream

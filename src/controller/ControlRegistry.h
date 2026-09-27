@@ -143,6 +143,46 @@ private:
               ControlKind::Momentary,"reverseToggle");
             D("load",      "Load Track",  cmd::DeckLoad,
               ControlKind::Button,   "load");
+            // ---- Phase 28 §45 — performance deck controls ----
+            D("slip",      "Slip",        cmd::DeckSlipToggle,
+              ControlKind::Toggle,   "slipToggle");
+            D("restart",   "Instant Restart", cmd::DeckInstantRestart,
+              ControlKind::Button,   "instantRestart");
+            D("pitch.reset","Tempo Reset",cmd::DeckPitchReset,
+              ControlKind::Button,   "pitchReset");
+            D("brake",     "Brake",       cmd::DeckBrakeTgl,
+              ControlKind::Button,   "brake");
+            D("cueMode",   "Cue Mode",    cmd::DeckCueMode,
+              ControlKind::Switch,   "cueMode");
+            D("cueSet",    "Set Cue Point",cmd::DeckCueSet,
+              ControlKind::Button,   "cueSet");
+            D("roll",      "Loop Roll",   cmd::DeckRollGate,
+              ControlKind::Momentary,"roll");
+            D("revHold",   "Reverse Hold",cmd::DeckRevHold,
+              ControlKind::Momentary,"revHold");
+            D("loop.size", "Loop Size",   cmd::DeckLoopSizeTrig,
+              ControlKind::Button,   "loopSized");
+            D("loop.moveL","Loop Move ←", cmd::DeckLoopMoveL,
+              ControlKind::Button,   "loopMoveLeft");
+            D("loop.moveR","Loop Move →", cmd::DeckLoopMoveR,
+              ControlKind::Button,   "loopMoveRight");
+            D("bend.down", "Pitch Bend -",cmd::DeckBendDown,
+              ControlKind::Momentary,"bendDown");
+            D("bend.up",   "Pitch Bend +",cmd::DeckBendUp,
+              ControlKind::Momentary,"bendUp");
+
+            // hot/memory cue slots — real command ids (forHotCue/
+            // forMemCue), named hotcue.N / memcue.N (1-based).
+            for (int s = 0; s < 8; ++s) {
+                cmd_(dn + ".hotcue." + std::to_string(s + 1),
+                     lb + " Hot Cue " + std::to_string(s + 1),
+                     cmd::forHotCue(d, s, 0), ControlKind::Pad,
+                     dn + ".hotcue" + std::to_string(s) + ".trigger");
+                cmd_(dn + ".memcue." + std::to_string(s + 1),
+                     lb + " Memory Cue " + std::to_string(s + 1),
+                     cmd::forMemCue(d, s, 0), ControlKind::Button,
+                     dn + ".memcue" + std::to_string(s) + ".goto");
+            }
 
             par_(dn + ".pitch", lb + " Tempo",
                  deckParamId(d, kDeckParamPitch), ControlKind::Fader);

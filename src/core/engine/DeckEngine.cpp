@@ -216,6 +216,7 @@ void DeckEngine::setPlaying(bool playing) noexcept {
     if (playing && (track_ == nullptr || pastEnd()))
         playing = false;
     playing_ = playing;
+    brakeStopped_ = false;                    // explicit transport wins
     if (stats_ && track_ != nullptr)
         stats_->state.store(playing ? (int)DeckState::Playing
                                     : (int)DeckState::Paused);
@@ -454,8 +455,45 @@ double DeckEngine::resolvedRate() const noexcept {
     // per-block phase correction injected by applySyncCorrection).
     const double base = (syncMode_ >= 1 ? syncMulSm_
                                         : 1.0 + (double)pitchPct_ / 100.0);
-    const double r = base * (1.0 + (double)bendPct_ / 100.0) + blockCorr_;
+    const double r = (base * (1.0 + (double)bendPct_ / 100.0)
+                      + blockCorr_) * brakeFactor();
     return reverse_ ? -r : r;
+}
+
+void DeckEngine::setBrake(bool on, float sec) noexcept {
+    if (sec > 0.01f)
+        brakeFrames_ = (int64_t)((double)sec * deviceRate_);
+    const bool active = brakeDir_ != 0;
+    if (on) {
+        if (active) return;                   // already ramping
+        brakeStopped_ = false;
+        brakeDir_ = 1; brakeT_ = 0;          // spin-down begins
+    } else {
+        // Turntable start/stop latch: a release after the ramp already
+        // completed still spins back up — the stop was ours.
+        if (!active && !brakeStopped_) return;
+        brakeStopped_ = false;
+        brakeDir_ = -1; brakeT_ = 0;         // spin-up: resume playback
+        playing_ = true;
+        trackEnded_ = false;
+    }
+    fade_ = 0.0f;                             // soften the edge
+}
+
+double DeckEngine::brakeFactor() const noexcept {
+    if (brakeDir_ == 0 || brakeFrames_ <= 0) return 1.0;
+    const double u = std::min((double)brakeT_ / (double)brakeFrames_, 1.0);
+    const double e = u * u * (3.0 - 2.0 * u);  // smoothstep ease
+    return brakeDir_ > 0 ? 1.0 - e : e;
+}
+
+void DeckEngine::advanceBrake(int n) noexcept {
+    brakeT_ += n;
+    if (brakeT_ < brakeFrames_) return;
+    if (brakeDir_ > 0) { playing_ = false;    // spun down to a halt
+                         brakeStopped_ = true; } // latch: release resumes
+    brakeDir_ = 0;
+    brakeT_ = 0;
 }
 
 int64_t DeckEngine::framesToBoundary() const noexcept {
@@ -518,6 +556,11 @@ void DeckEngine::renderPcm(float* l, float* r, int n) noexcept {
         renderStretch(l, r, n);
     else
         renderVarispeed(l, r, n);
+
+    // Brake ramp is block-counted on the RT timeline — advances even
+    // when the ramp hits rate≈0 early (render breaks out, the brake
+    // still has wall-clock frames to consume).
+    if (brakeDir_ != 0) advanceBrake(n);
 
     blockCorr_ = 0.0; // one-shot: consumed this block
     applyPostChain(l, r, n);
@@ -690,6 +733,11 @@ void DeckEngine::publishStats() noexcept {
     stats_->loopOutSec.store(loopOut_ / deviceRate_, std::memory_order_relaxed);
     // ---- performance echoes ----
     stats_->slip.store(slipActive_, std::memory_order_relaxed);
+    stats_->slipShadowSec.store(slipActive_ ? slipShadow_ / deviceRate_
+                                            : -1.0,
+                                std::memory_order_relaxed);
+    stats_->brake.store(brakeDir_ != 0 || brakeStopped_,
+                        std::memory_order_relaxed);
     stats_->syncMode.store(syncMode_, std::memory_order_relaxed);
     stats_->syncErrMs.store((float)(syncErrFrames_ / deviceRate_ * 1000.0),
                             std::memory_order_relaxed);

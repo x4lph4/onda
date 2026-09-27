@@ -826,15 +826,26 @@ TEST_CASE("quantize: resolution cycle + per-cue opt-out (§22)", "[p20]") {
     rig.perf.setQuantizeResolution(0, Quantize::Bar);
     REQUIRE(rig.perf.quantizeBeatsFor(0) == Approx(4.0)); // bpb=4
 
-    // quantized=false cue ignores snapping entirely
+    // Phase 28 §10 — create-time snap applies when quantize is ON at
+    // write time; quantized=false opts out of TRIGGER-time snapping.
     const int64_t fpb = Rig::fpb(120.0);
     const int64_t off = fpb * 6 + fpb / 2;
+    // authored off-grid while quantize is OFF → stored frame kept
+    rig.perf.setQuantize(0, false);
     rig.perf.setCue(0, 1, CueType::Hot, off);
+    rig.perf.setCue(0, 2, CueType::Hot, off);
+    rig.perf.setQuantize(0, true);
+    // quantized=false cue ignores trigger snapping entirely
     rig.perf.setCueQuantized(0, 1, false);
     rig.decks[0].setPlaying(true);
     rig.perf.triggerCue(0, 1);
     rig.block(2);
     REQUIRE(rig.pos(0) == Approx(off).margin(1500));
+    // a quantized cue with the same authored frame snaps on trigger
+    // (Bar resolution → nearest 4-beat boundary: beat 8)
+    rig.perf.triggerCue(0, 2);
+    rig.block(2);
+    REQUIRE(rig.pos(0) == Approx(fpb * 8).margin(1500));
 }
 
 // ======================= slip + reverse (§27-28) ======================

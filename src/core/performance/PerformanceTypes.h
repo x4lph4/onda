@@ -20,11 +20,36 @@ enum class SyncStatus {
 
 enum class CueType : int { Hot = 0, Memory = 1, Loop = 2 };
 
-/// Hot-cue sub-kind (Phase 20 §3). Only meaningful when
-/// type == CueType::Hot: Instant triggers jump+play immediately;
-/// Cue performs cue-behaviour (seek and stay cued when stopped).
+/// Hot-cue sub-kind (Phase 20 §3 + Phase 28 §9). Only meaningful when
+/// type == CueType::Hot:
+///   Instant — jump + play immediately (the classic hot cue);
+///   Cue     — cue behaviour: seek and stay cued when stopped;
+///   Marker  — logical MARKER living in pad space: triggering seeks to
+///             the point and PRESERVES the transport (playing stays
+///             playing, stopped stays stopped) — never auto-plays.
 /// Loop-style cues use CueType::Loop, not a kind.
-enum class HotKind : int { Instant = 0, Cue = 1 };
+enum class HotKind : int { Instant = 0, Cue = 1, Marker = 2 };
+
+/// §7 — what the deck's cue button does (configurable per deck, never
+/// one universal behaviour):
+///   Hold      — press while playing returns to the cue point and
+///               pauses; press while paused DEFINES the point and
+///               previews while held (classic CDJ hold).
+///   ToStart   — the cue point is fixed (only setCuePoint moves it);
+///               press while playing returns + pauses; press while
+///               paused jumps to it and previews while held.
+///   ToLastCue — like ToStart but the cue point FOLLOWS the last cue
+///               action: triggering a hot cue or setting the point
+///               re-anchors it (cue-to-last-cue semantics).
+enum class CueBehavior : int { Hold = 0, ToStart = 1, ToLastCue = 2 };
+
+/// §6 — the deck's primary cue point: a durable session marker, not a
+/// hot cue. `beat` is kept for grid re-resolution after beatgrid edits.
+struct PrimaryCuePoint {
+    int64_t  frame     { -1 };
+    double   beat      { -1.0 };
+    int64_t  createdAt { 0 };
+};
 
 /// §5 — what a hot-cue trigger does when the deck is stopped.
 /// JumpPlay: seek + start playing (default, hardware-like).
@@ -63,12 +88,16 @@ struct SavedLoop {
     std::string label;
 };
 
-/// Quantize resolution in beats (§17). `Bar` resolves against the
-/// grid's beatsPerBar — pass a real bpb when available.
+/// Quantize resolution in beats (§17 + Phase 28 §27). `Bar` resolves
+/// against the grid's beatsPerBar — pass a real bpb when available.
+/// `Custom` uses the deck's configured custom quantum (Phase 28 §27 —
+/// "prepare CUSTOM"); quantizeBeatsFor() supplies it.
 enum class Quantize : int {
-    Beat1 = 0, Half, Quarter, Eighth, Sixteenth, ThirtySecond, Bar
+    Beat1 = 0, Half, Quarter, Eighth, Sixteenth, ThirtySecond, Bar,
+    Custom
 };
-inline double quantizeBeats(Quantize q, int beatsPerBar = 4) noexcept {
+inline double quantizeBeats(Quantize q, int beatsPerBar = 4,
+                            double custom = 1.0) noexcept {
     switch (q) {
         case Quantize::Half:         return 0.5;
         case Quantize::Quarter:      return 0.25;
@@ -76,6 +105,7 @@ inline double quantizeBeats(Quantize q, int beatsPerBar = 4) noexcept {
         case Quantize::Sixteenth:    return 0.0625;
         case Quantize::ThirtySecond: return 0.03125;
         case Quantize::Bar:          return beatsPerBar > 0 ? beatsPerBar : 4.0;
+        case Quantize::Custom:       return custom > 0.0 ? custom : 1.0;
         default:                     return 1.0;
     }
 }
@@ -89,7 +119,11 @@ enum class PerfEventType {
     // ---- Phase 20 ----
     LoopRollStarted, LoopRollEnded, ReverseChanged,
     CuePointChanged,      // §24 — temporary cue point moved
-    ActionRejected        // §43 — value = SyncStatus-like reason code
+    ActionRejected,       // §43 — value = SyncStatus-like reason code
+    // ---- Phase 28 ----
+    ActionStateChanged,   // §44 — value = PerfAction, slot = state
+    TransportChanged,     // play/pause/stop/brake edges
+    KeyLockChanged
 };
 
 /// §43 — deterministic rejection reasons for performance actions.

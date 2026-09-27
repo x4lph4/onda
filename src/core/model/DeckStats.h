@@ -50,6 +50,11 @@ struct DeckStats {
     std::atomic<float>    syncErrMs{0.0f}; // phase error to master, ms
     std::atomic<bool>     syncLimited{false}; // sync tempo out of pitch range
     std::atomic<bool>     slip{false};
+    /// Phase 28 §22 — SlipReturnPosition: where the track would resume
+    /// when the last slip ref releases; -1 when slip is off.
+    std::atomic<double>   slipShadowSec{-1.0};
+    /// Phase 28 — vinyl brake engaged (spin-down/up ramp running).
+    std::atomic<bool>     brake{false};
 
     // ---- stems (Phase 21) ----
     std::atomic<int>      stemMode{0};        // 0 original, 1 stems

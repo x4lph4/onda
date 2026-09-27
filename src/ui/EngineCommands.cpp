@@ -55,6 +55,10 @@ void registerEngineCommands(CommandManager& cm,
         cm.add(mk(cmd::forDeck(cmd::DeckPlayToggle, d),
             "deck" + dn + ".playToggle", cat,
             [p, d](float, CommandSource) {
+                // §3 — the unified transport engine owns play/pause;
+                // direct push only when the perf layer isn't wired.
+                if (p.perf) { p.perf->transport(d, Transport::Toggle);
+                              return; }
                 DeckStats* s = p.deckStats ? p.deckStats(d) : nullptr;
                 const bool playing =
                     s && s->state.load() == (int)DeckState::Playing;
@@ -68,7 +72,8 @@ void registerEngineCommands(CommandManager& cm,
         cm.add(mk(cmd::forDeck(cmd::DeckStop, d),
             "deck" + dn + ".stop", cat,
             [p, d](float, CommandSource) {
-                push(p.queue, rt::DeckTransport{(uint8_t)d, 2});
+                if (p.perf) p.perf->transport(d, Transport::Stop);
+                else push(p.queue, rt::DeckTransport{(uint8_t)d, 2});
             }));
 
         cm.add(mk(cmd::forDeck(cmd::DeckCueTrigger, d),
@@ -108,6 +113,13 @@ void registerEngineCommands(CommandManager& cm,
         cm.add(mk(cmd::forDeck(cmd::DeckKeyLockTgl, d),
             "deck" + dn + ".keyLockToggle", cat,
             [p, d, ds](float, CommandSource) {
+                // §29 — key lock lives in the perf layer (state +
+                // pref persistence); RT echo stays the source of truth
+                // for the button state.
+                if (p.perf) {
+                    p.perf->setKeyLock(d, !p.perf->keyLockOn(d));
+                    return;
+                }
                 DeckStats* s = ds();
                 const bool on = s && s->keylock.load();
                 push(p.queue, rt::SetKeyLock{(uint8_t)d, !on});
@@ -231,14 +243,17 @@ void registerEngineCommands(CommandManager& cm,
         cm.add(mk(cmd::forDeck(cmd::DeckBendDown, d),
             "deck" + dn + ".bendDown", cat,
             [p, d](float v, CommandSource) {
-                push(p.queue, rt::SetPitchBend{(uint8_t)d,
-                     v > 0.5f ? -4.0f : 0.0f});
+                // §37 — temporary bend through the pitch engine.
+                const float b = v > 0.5f ? -4.0f : 0.0f;
+                if (p.perf) p.perf->pitchBend(d, b);
+                else push(p.queue, rt::SetPitchBend{(uint8_t)d, b});
             }));
         cm.add(mk(cmd::forDeck(cmd::DeckBendUp, d),
             "deck" + dn + ".bendUp", cat,
             [p, d](float v, CommandSource) {
-                push(p.queue, rt::SetPitchBend{(uint8_t)d,
-                     v > 0.5f ? 4.0f : 0.0f});
+                const float b = v > 0.5f ? 4.0f : 0.0f;
+                if (p.perf) p.perf->pitchBend(d, b);
+                else push(p.queue, rt::SetPitchBend{(uint8_t)d, b});
             }));
 
         cm.add(mk(cmd::forDeck(cmd::DeckLoad, d),
@@ -508,6 +523,32 @@ void registerEngineCommands(CommandManager& cm,
                 if (p.perf) p.perf->reverseMomentary(d, v > 0.5f);
             }));
 
+        // ---- Phase 28: tempo reset / brake / cue-behaviour cycle ----
+        cm.add(mk(cmd::forDeck(cmd::DeckPitchReset, d),
+            "deck" + dn + ".pitchReset", cat,
+            [p, d](float, CommandSource) {
+                if (p.perf) p.perf->pitchReset(d);
+            }));
+        cm.add(mk(cmd::forDeck(cmd::DeckBrakeTgl, d),
+            "deck" + dn + ".brake", cat,
+            [p, d](float, CommandSource) {
+                if (p.perf) p.perf->transport(d, Transport::Brake);
+            },
+            [p, d]() {
+                return p.perf && p.perf->brakeOn(d) ? 1 : 0;
+            }));
+        cm.add(mk(cmd::forDeck(cmd::DeckCueMode, d),
+            "deck" + dn + ".cueMode", cat,
+            [p, d](float, CommandSource) {
+                if (p.perf)
+                    p.perf->setCueBehavior(d,
+                        (CueBehavior)(((int)p.perf->cueBehavior(d) + 1)
+                                      % 3));
+            },
+            [p, d]() {
+                return p.perf ? (int)p.perf->cueBehavior(d) : 0;
+            }));
+
         // ---- Phase 21: stems surface -------------------------------
         cm.add(mk(cmd::forDeck(cmd::DeckStemModeTgl, d),
             "deck" + dn + ".stemsMode", cat,
@@ -664,8 +705,10 @@ void registerEngineCommands(CommandManager& cm,
     // panic: stop all decks + center crossfader
     cm.add(mk(cmd::AppPanic, "app.panic", "App",
         [p](float, CommandSource) {
-            for (int d = 0; d < 4; ++d)
-                push(p.queue, rt::DeckTransport{(uint8_t)d, 0});
+            for (int d = 0; d < 4; ++d) {
+                if (p.perf) p.perf->transport(d, Transport::Pause);
+                else push(p.queue, rt::DeckTransport{(uint8_t)d, 0});
+            }
             if (p.mixer) p.mixer->crossfader(0.0f);
         }));
 

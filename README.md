@@ -2,6 +2,58 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 28 (performance deck engine completion)
+
+Completed the performance deck layer on top of the Phase-4/9/20/25
+foundation (`docs/decks/performance-deck-engine.md`,
+`docs/adr/0028-performance-deck-engine.md`) — audit showed ~80% of
+the spec already existed; this phase unified and closed the real
+gaps. UI, MIDI, HID, controller plugins and automation share one
+implementation per action.
+
+- **Unified transport** (§3): `PerformanceEngine::transport()` is the
+  single entry point — Play/Pause/Stop/Cue/Restart/**Brake**.
+  `rt::DeckBrake` + RT smoothstep ramp in `DeckEngine`; turntable
+  start/stop latch (`brakeStopped_`) resumes playback even when the
+  release arrives after the spin-down completed; `stats.brake` echo
+  + `poll()` reconcile keep both sides honest.
+- **`DeckPerfState` snapshot** (§2): one POD aggregate combining RT
+  echoes + control truth — transport/pitch/key-lock/slip/quantize/
+  sync/cues/loop/roll/grid/actions — via `deckState()` and the
+  per-deck `PerformanceDeckEngine` facade (§1 architecture).
+- **Cue system** (§5-13): `PrimaryCuePoint{frame,beat,createdAt}`,
+  `CueBehavior` Hold/ToStart/ToLastCue, hot-cue snap-on-create to the
+  configured quantum, `HotKind::Marker`, memory cues as free-form
+  persistent markers.
+- **Loops/roll/jump/quantize** (§14-28): loop in/out snap to the
+  *configured* quantum (incl. `Quantize::Custom` beats — kept out of
+  the hardware cycle); `LoopRollEngine` arm/resize/release; beat
+  jumps land on tempo-map positions and preserve play state; named
+  `QuantizeEngine::snapToBeat/Bar/Subdivision`.
+- **Slip return exposed** (§21-22): `stats.slipShadowSec` publishes
+  the shadow resume point (-1 idle); roll/scratch/reverse refs
+  compose; `SlipReanchor` stays un-coalesced.
+- **Key lock/pitch/jog** (§29-40): `KeyLockEngine` state + algo slot,
+  `PitchEngine` range cycle 6/10/16/WIDE + `pitchReset` + momentary
+  bend, `JogEngine` Seek/PitchBend/Scratch/Browse — UI and controller
+  jog now route through `perf.jog()` (Browse never moves the
+  playhead; scratch denied while rolling).
+- **Action model** (§42-44): `PerformanceAction` table with
+  Idle→Armed→Active→Releasing→Completed states, injected timestamp
+  clock, and pure `PerformanceActionResolver` — roll-resize,
+  scratch↔roll exclusion, documented priorities, `ActionRejected`
+  on denial.
+- **Persistence** (§54): per-deck prefs — quantize, quantum, custom
+  beats, slip, key lock, pitch range, cue behavior — via
+  `PerformanceStore` kv; transient state never stored.
+- **19 new `[perf28]` tests**: unified transport + brake latch,
+  deckState snapshot, primary cue point, all three cue behaviors,
+  snap-on-create, Marker kind, loop quantum, roll resize + resolver
+  deny both ways, slip shadow echo, jump state preservation, custom
+  quantum, key lock, pitch range/reset/bend, jog routing + browse
+  safety, action lifecycle + injected clock, four-deck independence,
+  pure resolver + transport-edge tables.
+
 ## Status — Phase 27 (controller engine completion)
 
 Completed the controller layer on top of the Phase-9/10 foundation

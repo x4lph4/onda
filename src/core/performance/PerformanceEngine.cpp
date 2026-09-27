@@ -12,6 +12,12 @@ void PerformanceEngine::setCommandSink(
     sched_.setSink(sink_);               // scheduler owns the tap now
 }
 
+void PerformanceEngine::setStore(PerformanceStore* store) noexcept {
+    store_ = store;
+    if (store_)
+        for (int d = 0; d < kMaxDecks; ++d) restorePrefs(d);
+}
+
 void PerformanceEngine::setGridSlot(
     int deck, std::atomic<const BeatGrid*>* pending,
     std::atomic<const BeatGrid*>* retired, const DeckStats* stats) {
@@ -79,16 +85,16 @@ void PerformanceEngine::attachGrid(int deck,
     // §24/§32: a different track's grid arriving while synced —
     // sync lock keeps the mode (new grid re-locks to the session
     // clock); without it the deck drops to manual.
-    const bool trackChanged = trackId >= 0 && d.trackId != trackId;
+    const bool trackChanged = trackId >= 0 && d.gridCtl.trackId != trackId;
     if (trackChanged && d.mode != SyncMode::Off && !d.syncLock)
         setSyncMode(deck, SyncMode::Off);
-    if (d.grid && d.grid != g)
-        d.retiring.push_back(d.grid);   // freed once RT retires it
-    d.grid = std::move(g);
-    d.trackId = trackId;
-    d.gridConf = std::clamp(confidence, 0.0f, 1.0f);
+    if (d.gridCtl.grid && d.gridCtl.grid != g)
+        d.retiring.push_back(d.gridCtl.grid); // freed once RT retires it
+    d.gridCtl.grid = std::move(g);
+    d.gridCtl.trackId = trackId;
+    d.gridCtl.confidence = std::clamp(confidence, 0.0f, 1.0f);
     if (d.pending)
-        d.pending->store(d.grid.get(), std::memory_order_release);
+        d.pending->store(d.gridCtl.grid.get(), std::memory_order_release);
     if (d.mode != SyncMode::Off)
         emit(PerfEventType::SyncStateChanged, deck); // re-anchored
 
@@ -99,16 +105,15 @@ void PerformanceEngine::attachGrid(int deck,
     }
     // §24 — the temporary cue point belongs to the track; a new grid
     // starts it at the beginning (hot cues came from the store).
-    if (trackChanged) { d.cuePoint = -1; d.cuePreview = false; }
+    if (trackChanged) { d.cuePoint = {}; d.cuePreview = false; }
     emit(PerfEventType::GridAttached, deck);
 }
 
 void PerformanceEngine::detachDeck(int deck) {
     if (deck < 0 || deck >= kMaxDecks) return;
     auto& d = ctx(deck);
-    if (d.grid) d.retiring.push_back(d.grid);
-    d.grid.reset();
-    d.trackId = -1;
+    if (d.gridCtl.grid) d.retiring.push_back(d.gridCtl.grid);
+    d.gridCtl = {};
     d.cues.clearAll();
     d.loops.clear();
     d.mode = SyncMode::Off;
@@ -117,14 +122,21 @@ void PerformanceEngine::detachDeck(int deck) {
     if (d.slip.active()) send(rt::SlipEnd{ (uint8_t)deck });
     d.slip.clear();
     d.rev.clear();
-    d.cuePoint = -1; d.cuePreview = false;
+    d.roll.clear();
+    d.jog.clear();
+    d.transport.clear();
+    d.keyLock.clear();
+    d.pitch.clear();
+    for (auto& a : d.actions) a.state = ActionState::Idle;
+    d.cuePoint = {}; d.cuePreview = false;
+    d.activeHotCue = d.activeMemCue = -1;
     d.lastErr = PerfError::Ok;
     commit();
 }
 
 const BeatGrid* PerformanceEngine::grid(int deck) const {
     if (deck < 0 || deck >= kMaxDecks) return nullptr;
-    return ctx(deck).grid.get();
+    return ctx(deck).gridCtl.raw();
 }
 
 // ================================ sync ================================
@@ -297,13 +309,18 @@ void PerformanceEngine::setQuantize(int deck, bool on) {
     d.quantizeOn = on;
     send(rt::SetQuantize{ (uint8_t)deck, on });
     emit(PerfEventType::QuantizeChanged, deck, -1, on ? 1.0 : 0.0);
-    if (store_ && d.trackId >= 0)
+    if (store_ && d.gridCtl.trackId >= 0)
         store_->setKv("quantize.deck" + std::to_string(deck), on ? "1" : "0");
     commit();
 }
 
 void PerformanceEngine::setQuantizeResolution(int deck, Quantize q) {
-    if (deck >= 0 && deck < kMaxDecks) ctx(deck).quantum = q;
+    if (deck >= 0 && deck < kMaxDecks) {
+        ctx(deck).quantum = q;
+        if (store_)
+            store_->setKv("pref.quantumRes.deck" + std::to_string(deck),
+                          std::to_string((int)q));
+    }
 }
 
 bool PerformanceEngine::quantizeOn(int deck) const {
@@ -313,14 +330,21 @@ bool PerformanceEngine::quantizeOn(int deck) const {
 double PerformanceEngine::quantizeBeatsFor(int deck) const {
     if (deck < 0 || deck >= kMaxDecks) return 1.0;
     const auto& d = ctx(deck);
-    const int bpb = d.grid ? d.grid->beatsPerBar : 4;
-    return quantizeBeats(d.quantum, bpb);
+    const int bpb = d.gridCtl.beatsPerBar();
+    return quantizeBeats(d.quantum, bpb, d.customQuantum);
 }
 
 void PerformanceEngine::cycleQuantize(int deck) {
     if (deck < 0 || deck >= kMaxDecks) return;
     auto& d = ctx(deck);
-    d.quantum = (Quantize)(((int)d.quantum + 1) % ((int)Quantize::Bar + 1));
+    // §27 — the hardware-style cycle steps through the seven named
+    // resolutions only; Custom is reached by explicit selection
+    // (encoder/config), not by cycling.
+    d.quantum = (Quantize)(((int)d.quantum + 1)
+                           % ((int)Quantize::Bar + 1));
+    if (store_)
+        store_->setKv("pref.quantumRes.deck" + std::to_string(deck),
+                      std::to_string((int)d.quantum));
     emit(PerfEventType::QuantizeChanged, deck, -1, (double)d.quantum);
 }
 
@@ -340,6 +364,16 @@ Cue PerformanceEngine::setCue(int deck, int slot, CueType type,
                               uint32_t argb, std::string label) {
     auto& d = ctx(deck);
     if (frame < 0) frame = curFrame(deck);
+    // §10 — when Quantize is ON a newly created hot/loop cue snaps to
+    // the deck's configured grid. Memory cues are free-form markers:
+    // they keep their authored position. Without a grid nothing snaps
+    // (the cue still stores its frame; §41 fallback).
+    if (d.quantizeOn && type != CueType::Memory && d.gridCtl.has()) {
+        const double q = quantizeBeatsFor(deck);
+        frame = d.gridCtl.snap(frame, q);
+        if (frame2 >= 0) frame2 = d.gridCtl.snap(frame2, q);
+        diag_.deck(deck).quantizeSnaps++;
+    }
     Cue c = d.cues.setCue(slot, type, frame, grid(deck), frame2, argb,
                           std::move(label), (int64_t)std::time(nullptr));
     persistCue(d, c);
@@ -354,8 +388,8 @@ bool PerformanceEngine::deleteCue(int deck, int slot) {
     if (!c) return false;
     const int type = (int)c->type;
     const bool ok = d.cues.deleteCue(slot);
-    if (ok && store_ && d.trackId >= 0)
-        store_->deleteCue(d.trackId, slot, type);
+    if (ok && store_ && d.gridCtl.trackId >= 0)
+        store_->deleteCue(d.gridCtl.trackId, slot, type);
     if (ok) { diag_.deck(deck).cuesDeleted++;
               emit(PerfEventType::CueDeleted, deck, slot); }
     else reject(deck, PerfError::EmptySlot, slot);
@@ -374,7 +408,7 @@ bool PerformanceEngine::updateCue(int deck, int slot, uint32_t argb,
 void PerformanceEngine::clearAllCues(int deck) {
     auto& d = ctx(deck);
     d.cues.clearAll();
-    if (store_ && d.trackId >= 0) store_->deleteAllCues(d.trackId);
+    if (store_ && d.gridCtl.trackId >= 0) store_->deleteAllCues(d.gridCtl.trackId);
     emit(PerfEventType::CueDeleted, deck, -2); // -2 = all
 }
 
@@ -388,7 +422,7 @@ bool PerformanceEngine::triggerCue(int deck, int slot) {
 
     int64_t loopOut = -1;
     const auto target = d.cues.trigger(slot, grid(deck), d.quantizeOn,
-                                       quantizeBeats(ctx(deck).quantum),
+                                       quantizeBeats(ctx(deck).quantum, ctx(deck).gridCtl.beatsPerBar(), ctx(deck).customQuantum),
                                        &loopOut);
     if (!target) { reject(deck, PerfError::EmptySlot, slot); return false; }
     if (d.quantizeOn && c->quantized && hasGrid(deck))
@@ -407,9 +441,25 @@ bool PerformanceEngine::triggerCue(int deck, int slot) {
         send(rt::SetLoopFrames{ (uint8_t)deck, *target, loopOut });
     // §5 stopped-deck behaviour: JumpPlay (default) starts playback;
     // JumpCue stays cued. HotKind::Cue forces the cued path.
+    // §9 HotKind::Marker NEVER auto-plays — it preserves the current
+    // transport (playing stays playing, stopped stays stopped).
     if (c->type == CueType::Hot && !playing &&
         c->kind == HotKind::Instant && d.hotMode == HotCueMode::JumpPlay)
         send(rt::DeckTransport{ (uint8_t)deck, 1 }); // play
+    // §7 ToLastCue — the cue point follows the last cue action.
+    if (d.cueBehavior == CueBehavior::ToLastCue) {
+        d.cuePoint.frame = *target;
+        d.cuePoint.beat = d.gridCtl.frameToBeat(*target);
+        d.cuePoint.createdAt = (int64_t)std::time(nullptr);
+        emit(PerfEventType::CuePointChanged, deck, -1,
+             (double)d.cuePoint.frame);
+    }
+    if (c->type == CueType::Memory) d.activeMemCue = slot;
+    else                          d.activeHotCue = slot;
+    actionTransition(deck, PerfAction::HotCue, ActionState::Armed,
+                     slot, (double)*target);
+    actionTransition(deck, PerfAction::HotCue, ActionState::Completed,
+                     slot, (double)*target);
     diag_.deck(deck).cuesTriggered++;
     emit(PerfEventType::CueTriggered, deck, slot);
     commit();
@@ -525,11 +575,32 @@ HotCueMode PerformanceEngine::hotCueMode(int deck) const {
 void PerformanceEngine::setCuePoint(int deck, int64_t frame) {
     if (deck < 0 || deck >= kMaxDecks) return;
     auto& d = ctx(deck);
-    d.cuePoint = frame >= 0 ? frame : curFrame(deck);
-    emit(PerfEventType::CuePointChanged, deck, -1, (double)d.cuePoint);
+    d.cuePoint.frame = frame >= 0 ? frame : curFrame(deck);
+    d.cuePoint.beat = d.gridCtl.frameToBeat(d.cuePoint.frame);
+    d.cuePoint.createdAt = (int64_t)std::time(nullptr);
+    emit(PerfEventType::CuePointChanged, deck, -1,
+         (double)d.cuePoint.frame);
 }
 int64_t PerformanceEngine::cuePoint(int deck) const {
-    return deck >= 0 && deck < kMaxDecks ? ctx(deck).cuePoint : -1;
+    return deck >= 0 && deck < kMaxDecks ? ctx(deck).cuePoint.frame : -1;
+}
+
+PrimaryCuePoint PerformanceEngine::primaryCuePoint(int deck) const {
+    return deck >= 0 && deck < kMaxDecks ? ctx(deck).cuePoint
+                                         : PrimaryCuePoint{};
+}
+
+void PerformanceEngine::setCueBehavior(int deck, CueBehavior b) {
+    if (deck >= 0 && deck < kMaxDecks) {
+        ctx(deck).cueBehavior = b;
+        if (store_)
+            store_->setKv("pref.cueBehavior.deck" + std::to_string(deck),
+                          std::to_string((int)b));
+    }
+}
+CueBehavior PerformanceEngine::cueBehavior(int deck) const {
+    return deck >= 0 && deck < kMaxDecks ? ctx(deck).cueBehavior
+                                         : CueBehavior::Hold;
 }
 
 void PerformanceEngine::cueButton(int deck, CuePhase ph) {
@@ -541,23 +612,29 @@ void PerformanceEngine::cueButton(int deck, CuePhase ph) {
     if (ph == CuePhase::Press) {
         diag_.deck(deck).cueButtonPress++;
         if (playing) {
-            // CUE while playing = return to the cue point + pause.
-            const int64_t cp = d.cuePoint >= 0 ? d.cuePoint : 0;
+            // §7 — all behaviours: CUE while playing returns to the
+            // cue point and pauses.
+            const int64_t cp = d.cuePoint.frame >= 0 ? d.cuePoint.frame : 0;
             send(rt::DeckSeekFrame{ (uint8_t)deck, cp });
             send(rt::DeckTransport{ (uint8_t)deck, 0 }); // pause
             d.cuePreview = false;
-        } else {
+        } else if (d.cueBehavior == CueBehavior::Hold) {
             // CUE while paused = the press DEFINES the cue point and
             // previews from it while held (classic hold behaviour).
-            d.cuePoint = curFrame(deck);
+            setCuePoint(deck, -1);
             send(rt::DeckTransport{ (uint8_t)deck, 1 }); // preview play
             d.cuePreview = true;
-            emit(PerfEventType::CuePointChanged, deck, -1,
-                 (double)d.cuePoint);
+        } else {
+            // §7 ToStart / ToLastCue — the cue point is NOT redefined
+            // here; the press seeks to it and previews while held.
+            const int64_t cp = d.cuePoint.frame >= 0 ? d.cuePoint.frame : 0;
+            send(rt::DeckSeekFrame{ (uint8_t)deck, cp });
+            send(rt::DeckTransport{ (uint8_t)deck, 1 }); // preview play
+            d.cuePreview = true;
         }
     } else { // Release
         if (d.cuePreview) {
-            const int64_t cp = d.cuePoint >= 0 ? d.cuePoint : 0;
+            const int64_t cp = d.cuePoint.frame >= 0 ? d.cuePoint.frame : 0;
             send(rt::DeckTransport{ (uint8_t)deck, 0 }); // stop
             send(rt::DeckSeekFrame{ (uint8_t)deck, cp }); // return
             d.cuePreview = false;
@@ -587,7 +664,7 @@ void PerformanceEngine::restoreLoop(int deck, const SavedLoop& l) {
     for (auto& e : d.loops) if (e.slot == l.slot) { e = l; goto saved; }
     d.loops.push_back(l);
 saved:
-    if (store_ && d.trackId >= 0) store_->saveLoop(d.trackId, l);
+    if (store_ && d.gridCtl.trackId >= 0) store_->saveLoop(d.gridCtl.trackId, l);
     emit(PerfEventType::LoopSaved, deck, l.slot);
 }
 
@@ -617,7 +694,7 @@ void PerformanceEngine::instantRestart(int deck) {
     auto& d = ctx(deck);
     if (!hasTrack(deck)) { reject(deck, PerfError::NoTrack); return; }
     // §26 — restart from cue WITHOUT touching sync/master state.
-    const int64_t cp = d.cuePoint >= 0 ? d.cuePoint : 0;
+    const int64_t cp = d.cuePoint.frame >= 0 ? d.cuePoint.frame : 0;
     send(rt::DeckSeekFrame{ (uint8_t)deck, cp });
     if (d.slip.active()) send(rt::SlipReanchor{ (uint8_t)deck });
     send(rt::DeckTransport{ (uint8_t)deck, 1 }); // play
@@ -672,9 +749,12 @@ void PerformanceEngine::loopOut(int deck) {
     auto& d = ctx(deck);
     if (d.pendingLoopIn < 0) return;
     int64_t in = d.pendingLoopIn, out = curFrame(deck);
+    // §17 — with Quantize ON, loop-in/out align to the deck's
+    // configured quantum (1/4…1/32…CUSTOM), not a fixed beat.
     if (const auto* g = grid(deck); g && d.quantizeOn) {
-        in  = QuantizeEngine::snap(*g, in, 1.0);
-        out = QuantizeEngine::snap(*g, out, 1.0);
+        const double q = quantizeBeatsFor(deck);
+        in  = QuantizeEngine::snapToSubdivision(*g, in, q);
+        out = QuantizeEngine::snapToSubdivision(*g, out, q);
         diag_.deck(deck).quantizeSnaps += 2;
     }
     d.pendingLoopIn = -1;
@@ -782,8 +862,13 @@ void PerformanceEngine::exitLoop(int deck) {
     send(rt::SetLoopOn{ (uint8_t)deck, false });
     // §15/§17 — exiting during a roll releases the ROLL ref only;
     // a user-armed slip keeps its shadow running.
-    if (d.slip.rolling() && d.slip.set(SlipEngine::Roll, false))
-        send(rt::SlipEnd{ (uint8_t)deck });
+    if (d.roll.armed) {
+        d.roll.release();
+        actionTransition(deck, PerfAction::LoopRoll,
+                         ActionState::Completed);
+        if (d.slip.set(SlipEngine::Roll, false))
+            send(rt::SlipEnd{ (uint8_t)deck });
+    }
     diag_.deck(deck).loopsExited++;
     emit(PerfEventType::LoopExited, deck);
     commit();
@@ -793,7 +878,29 @@ void PerformanceEngine::loopRoll(int deck, double beats) {
     auto& d = ctx(deck);
     const auto* g = grid(deck);
     if (!g) { reject(deck, PerfError::NoGrid); return; }
-    if (d.slip.rolling()) return;      // one roll at a time
+    // §43-44 — resolver: a second roll while armed RESIZES the running
+    // one (live size change, §18); rolling while scratching is denied.
+    switch (PerformanceActionResolver::resolve(d.actions,
+                                               PerfAction::LoopRoll)) {
+        case PerformanceActionResolver::Decision::Deny:
+            reject(deck, PerfError::BadRange);
+            return;
+        case PerformanceActionResolver::Decision::Resize: {
+            const auto l = SmartLoopEngine::resizeBeats(
+                *g, {d.roll.inFrame, d.roll.outFrame}, beats);
+            if (l.out > l.in) {
+                send(rt::SetLoopFrames{ (uint8_t)deck, l.in, l.out });
+                d.roll.resize(beats, l.out);
+            }
+            diag_.deck(deck).loopsResized++;
+            emit(PerfEventType::LoopRollStarted, deck, -1, beats);
+            commit();
+            return;
+        }
+        case PerformanceActionResolver::Decision::Allow:
+        default:
+            break;
+    }
     // §15-16 — the roll holds a slip ref so releasing it resumes the
     // musical position the track "would have reached".
     if (d.slip.set(SlipEngine::Roll, true)) {
@@ -801,8 +908,13 @@ void PerformanceEngine::loopRoll(int deck, double beats) {
         diag_.deck(deck).slipBegins++;
     }
     const auto l = SmartLoopEngine::beatLoop(*g, curFrame(deck), beats, true);
-    if (l.out > l.in)
+    if (l.out > l.in) {
         send(rt::SetLoopFrames{ (uint8_t)deck, l.in, l.out });
+        d.roll.arm(beats, l.in, l.out);
+    }
+    actionTransition(deck, PerfAction::LoopRoll, ActionState::Armed);
+    actionTransition(deck, PerfAction::LoopRoll, ActionState::Active,
+                     -1, beats);
     diag_.deck(deck).loopRolls++;
     emit(PerfEventType::LoopRollStarted, deck, -1, beats);
     commit();
@@ -814,12 +926,15 @@ void PerformanceEngine::loopRollIdx(int deck, int idx) {
 
 void PerformanceEngine::loopRollEnd(int deck) {
     auto& d = ctx(deck);
-    if (!d.slip.rolling()) return;
+    if (!d.roll.armed) return;
+    actionTransition(deck, PerfAction::LoopRoll, ActionState::Releasing);
+    d.roll.release();
     send(rt::SetLoopOn{ (uint8_t)deck, false });
     if (d.slip.set(SlipEngine::Roll, false)) {
         send(rt::SlipEnd{ (uint8_t)deck });
         diag_.deck(deck).slipEnds++;
     }
+    actionTransition(deck, PerfAction::LoopRoll, ActionState::Completed);
     emit(PerfEventType::LoopRollEnded, deck);
     emit(PerfEventType::LoopExited, deck);
     commit();
@@ -843,7 +958,7 @@ void PerformanceEngine::saveLoop(int deck, int slot) {
     for (auto& e : d.loops) if (e.slot == slot) { e = l; goto saved; }
     d.loops.push_back(l);
 saved:
-    if (store_ && d.trackId >= 0) store_->saveLoop(d.trackId, l);
+    if (store_ && d.gridCtl.trackId >= 0) store_->saveLoop(d.gridCtl.trackId, l);
     emit(PerfEventType::LoopSaved, deck, slot);
 }
 
@@ -888,7 +1003,12 @@ void PerformanceEngine::setSlip(int deck, bool on) {
         else    { send(rt::SlipEnd{ (uint8_t)deck });
                   diag_.deck(deck).slipEnds++; }
     }
+    actionTransition(deck, PerfAction::Slip,
+                     on ? ActionState::Active : ActionState::Completed);
     emit(PerfEventType::SlipModeChanged, deck, -1, on ? 1.0 : 0.0);
+    if (store_)
+        store_->setKv("pref.slip.deck" + std::to_string(deck),
+                      on ? "1" : "0");
     commit();
 }
 
@@ -917,6 +1037,9 @@ void PerformanceEngine::reverseMomentary(int deck, bool held) {
     auto& d = ctx(deck);
     if (d.rev.setMomentary(held)) {
         send(rt::SetReverse{ (uint8_t)deck, d.rev.effective() });
+        actionTransition(deck, PerfAction::Reverse,
+                         held ? ActionState::Active
+                              : ActionState::Completed);
         diag_.deck(deck).reverses++;
         emit(PerfEventType::ReverseChanged, deck, -1,
              d.rev.effective() ? 1.0 : 0.0);
@@ -925,6 +1048,309 @@ void PerformanceEngine::reverseMomentary(int deck, bool held) {
 }
 bool PerformanceEngine::reverseEffective(int deck) const {
     return deck >= 0 && deck < kMaxDecks && ctx(deck).rev.effective();
+}
+
+// ===================== Phase 28 — unified transport (§3) ===============
+
+void PerformanceEngine::transport(int deck, Transport t) {
+    if (deck < 0 || deck >= kMaxDecks) return;
+    auto& d = ctx(deck);
+    switch (t) {
+        case Transport::Play:
+            send(rt::DeckTransport{ (uint8_t)deck, 1 });
+            break;
+        case Transport::Pause:
+            send(rt::DeckTransport{ (uint8_t)deck, 0 });
+            break;
+        case Transport::Toggle: {
+            const bool playing = d.stats &&
+                d.stats->state.load(std::memory_order_relaxed)
+                    == (int)DeckState::Playing;
+            send(rt::DeckTransport{ (uint8_t)deck,
+                                    (uint8_t)(playing ? 0 : 1) });
+            break;
+        }
+        case Transport::Stop:
+            send(rt::DeckTransport{ (uint8_t)deck, 2 });
+            break;
+        case Transport::CuePress:
+            cueButton(deck, CuePhase::Press);
+            return;   // cueButton commits + emits itself
+        case Transport::CueRelease:
+            cueButton(deck, CuePhase::Release);
+            return;
+        case Transport::Restart:
+            instantRestart(deck);
+            return;
+        case Transport::Brake:
+        case Transport::BrakeOn:
+        case Transport::BrakeOff: {
+            const int edge = d.transport.apply(t);
+            if (edge >= 0)
+                send(rt::DeckBrake{ (uint8_t)deck, (uint8_t)edge,
+                                    (float)d.transport.brakeSec });
+            break;
+        }
+    }
+    emit(PerfEventType::TransportChanged, deck, -1, (double)t);
+    commit();
+}
+
+bool PerformanceEngine::brakeOn(int deck) const {
+    return deck >= 0 && deck < kMaxDecks && ctx(deck).transport.brakeOn;
+}
+
+// ===================== Phase 28 — key lock (§29-31) =====================
+
+void PerformanceEngine::setKeyLock(int deck, bool on) {
+    if (deck < 0 || deck >= kMaxDecks) return;
+    auto& d = ctx(deck);
+    if (!d.keyLock.set(on)) return;
+    send(rt::SetKeyLock{ (uint8_t)deck, on });
+    emit(PerfEventType::KeyLockChanged, deck, -1, on ? 1.0 : 0.0);
+    if (store_)
+        store_->setKv("pref.keylock.deck" + std::to_string(deck),
+                      on ? "1" : "0");
+    commit();
+}
+bool PerformanceEngine::keyLockOn(int deck) const {
+    return deck >= 0 && deck < kMaxDecks && ctx(deck).keyLock.on;
+}
+void PerformanceEngine::setKeyLockAlgo(int deck, int algo) {
+    if (deck >= 0 && deck < kMaxDecks)
+        ctx(deck).keyLock.algo = (KeyLockEngine::Algo)algo;
+}
+
+// ===================== Phase 28 — pitch / tempo (§34-37) ===============
+
+void PerformanceEngine::setPitchRange(int deck, float pct) {
+    if (deck < 0 || deck >= kMaxDecks) return;
+    auto& d = ctx(deck);
+    d.pitch.setRange(pct);
+    send(rt::SetPitchRange{ (uint8_t)deck, d.pitch.range() });
+    if (store_)
+        store_->setKv("pref.pitchRange.deck" + std::to_string(deck),
+                      std::to_string((double)d.pitch.range()));
+    commit();
+}
+float PerformanceEngine::pitchRange(int deck) const {
+    return deck >= 0 && deck < kMaxDecks ? ctx(deck).pitch.range()
+                                         : 16.0f;
+}
+float PerformanceEngine::cyclePitchRange(int deck) {
+    if (deck < 0 || deck >= kMaxDecks) return 16.0f;
+    const float r = ctx(deck).pitch.cycle();
+    setPitchRange(deck, r);
+    return r;
+}
+void PerformanceEngine::pitchReset(int deck) {
+    if (deck < 0 || deck >= kMaxDecks) return;
+    auto& d = ctx(deck);
+    // §36 — tempo reset is a fader move to 0%, routed through the same
+    // sync-aware policy as hardware fader input.
+    if (d.mode != SyncMode::Off && deck != master_ &&
+        pitchPolicy_ == sync::PitchPolicy::Override)
+        return;   // synced deck: reset is a no-op under Override
+    send(rt::SetPitch{ (uint8_t)deck, 0.0f });
+    emit(PerfEventType::TransportChanged, deck, -1, 0.0);
+    commit();
+}
+void PerformanceEngine::pitchBend(int deck, float pct) {
+    if (deck < 0 || deck >= kMaxDecks) return;
+    auto& d = ctx(deck);
+    d.pitch.setBending(pct != 0.0f);
+    send(rt::SetPitchBend{ (uint8_t)deck, pct });
+    commit();
+}
+
+// ===================== Phase 28 — jog / scratch (§38-40) ===============
+
+bool PerformanceEngine::jog(int deck, int mode, double deltaTicks) {
+    if (deck < 0 || deck >= kMaxDecks) return false;
+    auto& d = ctx(deck);
+    const auto m = (DeckJogMode)mode;
+    // §43 — the resolver gates scratch vs. held rolls; all other modes
+    // pass through.
+    if (m == DeckJogMode::Scratch &&
+        PerformanceActionResolver::resolve(d.actions,
+                                           PerfAction::Scratch)
+            == PerformanceActionResolver::Decision::Deny) {
+        reject(deck, PerfError::BadRange);
+        return false;
+    }
+    const auto dec = d.jog.tick(m, deltaTicks);
+    switch (dec.kind) {
+        case JogDecision::Kind::SeekSec: {
+            const auto* s = d.stats;
+            if (!s) return false;
+            const double cur = s->positionSec.load(std::memory_order_relaxed);
+            send(rt::DeckSeek{ (uint8_t)deck, cur + dec.deltaSec });
+            break;
+        }
+        case JogDecision::Kind::BendPct:
+            send(rt::SetPitchBend{ (uint8_t)deck, dec.bendPct });
+            break;
+        case JogDecision::Kind::Browse:
+        case JogDecision::Kind::None:
+        default:
+            break;
+    }
+    // §44 — scratch action bookkeeping.
+    if (m == DeckJogMode::Scratch &&
+        actionState(deck, PerfAction::Scratch) != ActionState::Active)
+        actionTransition(deck, PerfAction::Scratch, ActionState::Active);
+    else if (m != DeckJogMode::Scratch &&
+             actionState(deck, PerfAction::Scratch) == ActionState::Active)
+        actionTransition(deck, PerfAction::Scratch, ActionState::Completed);
+    commit();
+    return true;
+}
+
+void PerformanceEngine::setJogMode(int deck, DeckJogMode m) {
+    if (deck >= 0 && deck < kMaxDecks) ctx(deck).jog.mode = m;
+}
+DeckJogMode PerformanceEngine::jogMode(int deck) const {
+    return deck >= 0 && deck < kMaxDecks ? ctx(deck).jog.mode
+                                         : DeckJogMode::Seek;
+}
+
+// ===================== Phase 28 — actions (§42-44) =====================
+
+const PerformanceAction& PerformanceEngine::action(int deck,
+                                                   PerfAction t) const {
+    static const PerformanceAction empty;
+    if (deck < 0 || deck >= kMaxDecks) return empty;
+    return ctx(deck).actions[(size_t)t];
+}
+ActionState PerformanceEngine::actionState(int deck, PerfAction t) const {
+    return deck >= 0 && deck < kMaxDecks
+         ? ctx(deck).actions[(size_t)t].state : ActionState::Idle;
+}
+
+void PerformanceEngine::actionTransition(int deck, PerfAction t,
+                                         ActionState s, int slot,
+                                         double value) {
+    auto& a = ctx(deck).actions[(size_t)t];
+    a.type = t; a.state = s; a.slot = slot;
+    a.timestampMs = nowMs(); a.value = value;
+    if (s == ActionState::Completed || s == ActionState::Idle)
+        a.state = ActionState::Idle;   // completed actions retire to idle
+    emit(PerfEventType::ActionStateChanged, deck, (int)s, (double)t);
+}
+
+// ===================== Phase 28 — quantize custom (§27) ================
+
+void PerformanceEngine::setQuantizeCustom(int deck, double beats) {
+    if (deck >= 0 && deck < kMaxDecks) {
+        ctx(deck).customQuantum = beats;
+        if (store_)
+            store_->setKv("pref.quantum.deck" + std::to_string(deck),
+                          std::to_string(beats));
+    }
+}
+double PerformanceEngine::quantizeCustom(int deck) const {
+    return deck >= 0 && deck < kMaxDecks ? ctx(deck).customQuantum : 1.0;
+}
+
+// ===================== Phase 28 — unified state (§2) ===================
+
+DeckPerfState PerformanceEngine::deckState(int deck) const {
+    DeckPerfState st;
+    if (deck < 0 || deck >= kMaxDecks) return st;
+    const auto& d = ctx(deck);
+    st.deck = deck;
+    st.quantize    = d.quantizeOn;
+    st.quantum     = d.quantum;
+    st.quantumBeats = quantizeBeatsFor(deck);
+    st.slipMode    = d.slip.userOn();
+    st.slipActive  = d.slip.active();
+    st.reverse     = d.rev.effective();
+    st.brake       = d.transport.brakeOn;
+    st.syncMode    = d.mode;
+    st.syncStatus  = (int)syncStatus(deck);
+    st.isMaster    = master_ == deck;
+    st.keyLock     = d.keyLock.on;
+    st.pitchRange  = d.pitch.range();
+    st.cuePointFrame = d.cuePoint.frame;
+    st.cuePointBeat  = d.cuePoint.beat;
+    st.cueBehavior = (int)d.cueBehavior;
+    st.cuePreview  = d.cuePreview;
+    st.loopInFrame  = d.lastLoopIn;
+    st.loopOutFrame = d.lastLoopOut;
+    st.loopSizeBeats = loopSizeBeats(deck);
+    st.loopInArmed  = d.pendingLoopIn >= 0;
+    st.rollActive   = d.roll.armed;
+    st.rollBeats    = d.roll.beats;
+    st.activeHotCue = d.activeHotCue;
+    st.activeMemCue = d.activeMemCue;
+    st.hasGrid     = d.gridCtl.has();
+    st.scratching  = actionState(deck, PerfAction::Scratch)
+                         == ActionState::Active;
+    st.lastError   = (int)d.lastErr;
+    for (const auto& c : d.cues.cues()) {
+        if (c.slot < 0 || c.slot >= 32) continue;
+        if (c.type == CueType::Memory) st.memoryCueMask |= 1 << c.slot;
+        else                           st.hotCueMask  |= 1 << c.slot;
+    }
+    if (const auto* s = d.stats) {
+        st.trackState  = s->state.load(std::memory_order_relaxed);
+        st.playing     = st.trackState == (int)DeckState::Playing;
+        st.paused      = st.trackState == (int)DeckState::Paused;
+        st.frame       = s->framesRead.load(std::memory_order_relaxed);
+        st.positionSec = s->positionSec.load(std::memory_order_relaxed);
+        st.durationSec = s->durationSec.load(std::memory_order_relaxed);
+        st.pitchPct    = s->pitchPct.load(std::memory_order_relaxed);
+        st.bendPct     = s->bendPct.load(std::memory_order_relaxed);
+        st.loopOn      = s->loopOn.load(std::memory_order_relaxed);
+        st.loopInSec   = s->loopInSec.load(std::memory_order_relaxed);
+        st.loopOutSec  = s->loopOutSec.load(std::memory_order_relaxed);
+        st.slipReturnSec = s->slipShadowSec.load(std::memory_order_relaxed);
+        st.beatPos     = s->beatPos.load(std::memory_order_relaxed);
+        st.barPos      = s->barPos.load(std::memory_order_relaxed);
+        st.bpm         = s->bpm.load(std::memory_order_relaxed);
+        st.effBpm      = s->effBpm.load(std::memory_order_relaxed);
+        // brake echo is the RT truth; the non-RT flag can lag a ramp.
+        st.brake       = s->brake.load(std::memory_order_relaxed)
+                         || d.transport.brakeOn;
+    }
+    const auto clk = masterClock();
+    st.targetBpm = clk.valid ? clk.bpm : 0.0;
+    return st;
+}
+
+const BeatgridController& PerformanceEngine::gridCtl(int deck) const {
+    static const BeatgridController empty;
+    return deck >= 0 && deck < kMaxDecks ? ctx(deck).gridCtl : empty;
+}
+
+// ===================== Phase 28 — persisted prefs (§54) ================
+
+void PerformanceEngine::restorePrefs(int deck) {
+    if (!store_ || deck < 0 || deck >= kMaxDecks) return;
+    auto& d = ctx(deck);
+    auto num = [&](const std::string& k, double def) {
+        const std::string v = store_->getKv(k, "");
+        return v.empty() ? def : std::stod(v);
+    };
+    d.quantizeOn   = num("pref.quantize.deck" + std::to_string(deck),
+                         d.quantizeOn ? 1.0 : 0.0) > 0.5;
+    d.quantum      = (Quantize)(int)num("pref.quantumRes.deck" +
+                        std::to_string(deck), (double)d.quantum);
+    d.customQuantum = num("pref.quantum.deck" + std::to_string(deck),
+                          d.customQuantum);
+    d.pitch.setRange((float)num("pref.pitchRange.deck" +
+                     std::to_string(deck), d.pitch.range()));
+    d.cueBehavior  = (CueBehavior)(int)num("pref.cueBehavior.deck" +
+                     std::to_string(deck), (double)d.cueBehavior);
+    // Modes that carry RT commands restore through the same setters so
+    // the deck echoes them — §54 restores durable prefs only, never
+    // transient state (scratch/roll/cuePreview are session-ephemeral).
+    setQuantize(deck, d.quantizeOn);
+    setSlip(deck, num("pref.slip.deck" + std::to_string(deck), 0.0) > 0.5);
+    setKeyLock(deck, num("pref.keylock.deck" + std::to_string(deck),
+                         0.0) > 0.5);
+    send(rt::SetPitchRange{ (uint8_t)deck, d.pitch.range() });
+    commit();
 }
 
 // ==================== sync state / confidence / lock ====================
@@ -954,8 +1380,8 @@ sync::DeckSyncState PerformanceEngine::deckSyncState(int deck) const {
 float PerformanceEngine::syncConfidence(int deck) const {
     if (deck < 0 || deck >= kMaxDecks) return 0.0f;
     const auto& d = ctx(deck);
-    if (d.mode == SyncMode::Off || !d.grid) return 0.0f;
-    float c = d.gridConf;                    // analysis-side quality
+    if (d.mode == SyncMode::Off || !d.gridCtl.has()) return 0.0f;
+    float c = d.gridCtl.confidence;                    // analysis-side quality
     if (deck == master_) return c;           // master doesn't chase
     const auto* s = d.stats;
     if (!s) return c * 0.5f;
@@ -1112,17 +1538,28 @@ void PerformanceEngine::poll() {
             d.lastSlip = slip;
             // RT-side echo only; slip toggles are already emitted on set.
         }
+        // §28 brake reconcile — the RT ramp finishing on its own (spin
+        // down → paused) is the truth; keep the non-RT flag honest.
+        d.transport.brakeOn = s->brake.load(std::memory_order_relaxed);
+        // Loop action lifecycle follows the RT loopOn edge — a loop
+        // that the RT wrapped/exited also retires the action record.
+        if (loop &&
+            actionState(i, PerfAction::Loop) != ActionState::Active)
+            actionTransition(i, PerfAction::Loop, ActionState::Active);
+        else if (!loop &&
+                 actionState(i, PerfAction::Loop) == ActionState::Active)
+            actionTransition(i, PerfAction::Loop, ActionState::Completed);
     }
 }
 
 // ============================ persistence ==============================
 
 void PerformanceEngine::persistCue(const DeckCtx& d, const Cue& c) {
-    if (store_ && d.trackId >= 0) store_->saveCue(d.trackId, c);
+    if (store_ && d.gridCtl.trackId >= 0) store_->saveCue(d.gridCtl.trackId, c);
 }
 
 void PerformanceEngine::persistLoopDelete(const DeckCtx& d, int slot) {
-    if (store_ && d.trackId >= 0) store_->deleteLoop(d.trackId, slot);
+    if (store_ && d.gridCtl.trackId >= 0) store_->deleteLoop(d.gridCtl.trackId, slot);
 }
 
 } // namespace onda

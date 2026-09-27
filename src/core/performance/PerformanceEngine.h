@@ -15,19 +15,29 @@
 #include "../sync/SyncTypes.h"
 #include "../sync/TempoMaster.h"
 #include "BeatJumpEngine.h"
+#include "BeatgridController.h"
 #include "CueEngine.h"
+#include "DeckPerfState.h"
 #include "HotCueManager.h"
+#include "JogEngine.h"
+#include "KeyLockEngine.h"
+#include "LoopRollEngine.h"
 #include "LoopSizeController.h"
 #include "MemoryCueManager.h"
+#include "PerformanceActions.h"
 #include "PerformanceDiagnostics.h"
 #include "PerformanceScheduler.h"
 #include "PerformanceTypes.h"
+#include "PitchEngine.h"
 #include "QuantizeEngine.h"
 #include "ReverseEngine.h"
 #include "SlipEngine.h"
 #include "SmartLoopEngine.h"
+#include "TransportEngine.h"
 
 namespace onda {
+
+class PerformanceDeckEngine;   // per-deck facade (Phase 28 §1)
 
 /// Non-RT performance layer between UI/controllers and the audio engine.
 /// Owns per-deck musical context (beatgrid, cues, quantize, slip, sync
@@ -55,10 +65,73 @@ public:
     void setGridSlot(int deck, std::atomic<const BeatGrid*>* pending,
                      std::atomic<const BeatGrid*>* retired,
                      const DeckStats* stats);
-    void setStore(PerformanceStore* store) noexcept { store_ = store; }
+    /// Point at the persistence store; §54 preferences for all decks
+    /// are restored immediately (per-deck restorePrefs also exists for
+    /// tests).
+    void setStore(PerformanceStore* store) noexcept;
 
     using Listener = std::function<void(const PerfEvent&)>;
     void addListener(Listener l) { listeners_.push_back(std::move(l)); }
+
+    // ---- unified transport (Phase 28 §3) ----
+    /// THE transport entry point — play/pause/stop/cue/restart/brake
+    /// for every input source. No caller may emit DeckTransport
+    /// commands directly; this is the only implementation.
+    void transport(int deck, Transport t);
+    bool brakeOn(int deck) const;
+    void setBrakeSec(int deck, double sec) {
+        if (deck >= 0 && deck < kMaxDecks) ctx(deck).transport.brakeSec = sec; }
+
+    // ---- cue behaviour (Phase 28 §7) ----
+    void setCueBehavior(int deck, CueBehavior b);
+    CueBehavior cueBehavior(int deck) const;
+    /// §6 — the primary cue point with musical metadata.
+    PrimaryCuePoint primaryCuePoint(int deck) const;
+
+    // ---- key lock (Phase 28 §29-31) ----
+    void setKeyLock(int deck, bool on);
+    bool keyLockOn(int deck) const;
+    void setKeyLockAlgo(int deck, int algo);
+
+    // ---- pitch / tempo (Phase 28 §34-37) ----
+    /// Hardware fader range (±6/±10/±16/WIDE) — persists as a pref.
+    void  setPitchRange(int deck, float pct);
+    float pitchRange(int deck) const;
+    float cyclePitchRange(int deck);
+    /// §36 — tempo reset: pitch back to 0% through the policy-safe path.
+    void  pitchReset(int deck);
+    /// §37 — temporary bend (jog nudge / ±buttons); never rewrites the
+    /// fader target.
+    void  pitchBend(int deck, float pct);
+
+    // ---- jog / scratch (Phase 28 §38-40) ----
+    /// One jog tick from any input path. `mode` = DeckJogMode (the
+    /// controller layer's JogMode shares the same numeric values).
+    /// Returns false when the resolver denies the tick (§43).
+    bool jog(int deck, int mode, double deltaTicks);
+    void setJogMode(int deck, DeckJogMode m);
+    DeckJogMode jogMode(int deck) const;
+
+    // ---- quantize (Phase 28 §27) ----
+    /// CUSTOM resolution quantum in beats (Quantize::Custom).
+    void setQuantizeCustom(int deck, double beats);
+    double quantizeCustom(int deck) const;
+
+    // ---- actions (Phase 28 §42-44) ----
+    const PerformanceAction& action(int deck, PerfAction t) const;
+    ActionState actionState(int deck, PerfAction t) const;
+    /// Injected timestamp clock for action bookkeeping (default 0 —
+    /// tests/UI may supply a real ms source; never a timing dependency).
+    void setNowFn(std::function<uint32_t()> f) { nowFn_ = std::move(f); }
+
+    // ---- unified deck state (Phase 28 §2) ----
+    DeckPerfState deckState(int deck) const;
+    /// Per-deck controller facade — the §1 PerformanceDeckEngine.
+    PerformanceDeckEngine deck(int deck);
+    /// §41 — the deck's beat-aware authority (read-only).
+    const BeatgridController& gridCtl(int deck) const;
+    /// §54 — reload this deck's persisted preferences from the store.
+    void restorePrefs(int deck);
 
     // ---- deck context ----
     /// Attach a beatgrid to a deck (handed off to the RT thread).
@@ -225,7 +298,11 @@ public:
     }
     /// §36 — roll in flight on this deck (slip Roll ref held).
     bool rollActive(int deck) const {
-        return deck >= 0 && deck < kMaxDecks && ctx(deck).slip.rolling();
+        return deck >= 0 && deck < kMaxDecks && ctx(deck).roll.armed;
+    }
+    /// Phase 28 §20 — current roll size in beats (0 when not rolling).
+    double rollBeats(int deck) const {
+        return deck >= 0 && deck < kMaxDecks ? ctx(deck).roll.beats : 0.0;
     }
 
     // ---- undo support (§41) ----
@@ -262,29 +339,38 @@ private:
         const DeckStats* stats { nullptr };
         std::atomic<const BeatGrid*>* pending { nullptr };
         std::atomic<const BeatGrid*>* retired { nullptr };
-        std::shared_ptr<const BeatGrid> grid;
+        BeatgridController gridCtl;    // §41 — musical-position authority
         std::vector<std::shared_ptr<const BeatGrid>> retiring;
-        int64_t trackId { -1 };
         CueEngine cues;
         std::vector<SavedLoop> loops;
         bool   quantizeOn { false };
         Quantize quantum  { Quantize::Beat1 };
-        SlipEngine    slip;             // §17 — refcounted sources
-        ReverseEngine rev;              // §27 — latch + momentary XOR
+        double customQuantum { 1.0 };  // §27 — Quantize::Custom value
+        SlipEngine    slip;            // §17 — refcounted sources
+        ReverseEngine rev;             // §27 — latch + momentary XOR
+        TransportEngine transport;     // §3 — brake bookkeeping
+        LoopRollEngine  roll;          // §20 — roll state
+        KeyLockEngine   keyLock;       // §29 — non-RT key-lock state
+        PitchEngine     pitch;         // §34-37 — range + bend state
+        JogEngine       jog;           // §38-40 — jog decision engine
         SyncMode mode     { SyncMode::Off };
         /// Last rejected sync request — surfaced by syncStatus so a
         /// missing/unreliable grid is never silently ignored.
         SyncStatus lastError { SyncStatus::Off };
         PerfError  lastErr   { PerfError::Ok };   // §43 perf rejections
         bool   syncLock   { true };    // sync survives track change
-        float  gridConf   { 0.7f };    // analysis confidence at attach
         int64_t pendingLoopIn { -1 };
         int64_t lastLoopIn { -1 }, lastLoopOut { -1 };
-        int64_t cuePoint  { -1 };      // §24 — temporary cue (session)
+        PrimaryCuePoint cuePoint;      // §6/§24 — primary cue (session)
         bool   cuePreview { false };   // §25 — cue-hold preview active
+        CueBehavior cueBehavior { CueBehavior::Hold }; // §7
         HotCueMode hotMode { HotCueMode::JumpPlay }; // §5
         int    loopSizeIdx { 5 };      // §11 — kLoopSizes index (1 bt)
         int    jumpSizeIdx { 2 };      // §19 — kJumpSizes index (4 bt)
+        int    activeHotCue { -1 };    // last triggered hot cue slot
+        int    activeMemCue { -1 };    // last triggered memory cue slot
+        /// §42-44 — per-action state table (indexed by PerfAction).
+        std::array<PerformanceAction, (size_t)PerfAction::Count> actions;
         // poll() edge detection
         int    lastBeatInt { -1 };
         int    lastBarInt  { -1 };
@@ -303,6 +389,10 @@ private:
     /// commands into a deck with nothing loaded.
     bool    hasTrack(int deck) const;
     int64_t curFrame(int deck) const;
+    /// §42-44 — transition an action through its lifecycle and emit.
+    void    actionTransition(int deck, PerfAction t, ActionState s,
+                             int slot = -1, double value = 0.0);
+    uint32_t nowMs() const { return nowFn_ ? nowFn_() : 0; }
     static int deckOf(const rt::Command& c);
     DeckCtx& ctx(int deck) { return decks_[(size_t)deck]; }
     const DeckCtx& ctx(int deck) const { return decks_[(size_t)deck]; }
@@ -321,6 +411,7 @@ private:
     sync::PitchPolicy pitchPolicy_ { sync::PitchPolicy::Override };
     sync::ClockSource externalClock_;             // §5 future feed
     bool rtMasterActive_ { false };               // ClockStops bookkeeping
+    std::function<uint32_t()> nowFn_;             // §42 action clock
 };
 
 } // namespace onda
