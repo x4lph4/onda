@@ -9,6 +9,16 @@
 
 namespace onda::fx {
 
+/// Parameter value type (§30). Tags drive UI/HID presentation
+/// (switch vs fader vs enumeration) without touching DSP.
+enum class FXParamType : uint8_t {
+    Float = 0,
+    Integer,
+    Boolean,
+    Enum,
+    BeatDivision   // specialized: value indexes BeatDiv
+};
+
 /// Static description of one native effect parameter.
 struct FXParamInfo {
     const char* name;
@@ -17,7 +27,19 @@ struct FXParamInfo {
     float       defV;
     const char* unit;
     float       step;    // quantization hint (0 = continuous)
+    FXParamType type { FXParamType::Float };
 };
+
+/// Type inference for tables that didn't tag explicitly: a stepped
+/// 0..1 param is Boolean, a stepped param with a wider range is an
+/// enumeration/integer, everything else is a continuous float.
+constexpr FXParamType fxParamTypeOf(const FXParamInfo& i) noexcept {
+    if (i.type != FXParamType::Float) return i.type;
+    if (i.step >= 1.0f)
+        return (i.minV == 0.0f && i.maxV == 1.0f) ? FXParamType::Boolean
+                                                : FXParamType::Enum;
+    return i.step > 0.0f ? FXParamType::Integer : FXParamType::Float;
+}
 
 /// Common interface every effect implements. The engine never sees an
 /// effect's internals — it only drives this contract.
@@ -45,6 +67,12 @@ public:
 
     virtual bool supportsSync() const noexcept = 0;
     virtual int  latencySamples() const noexcept = 0;
+
+    /// §42 — true when the effect produces a decaying tail after its
+    /// input stops (delay/echo/reverb). The slot uses this to choose
+    /// tail-drain bypass (feed silence, let the wet decay naturally)
+    /// instead of the ~10 ms crossfade cut.
+    virtual bool hasTail() const noexcept { return false; }
 
     /// Allocate worst-case resources. Non-RT only.
     virtual void prepare(double sampleRate, int maxBlock) = 0;

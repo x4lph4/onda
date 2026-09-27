@@ -8,6 +8,7 @@
 
 #include "../analysis/BeatGrid.h"
 #include "../audio/TrackAudio.h"
+#include "../fx/FXSlot.h"
 #include "../model/DeckStats.h"
 
 namespace onda {
@@ -116,6 +117,25 @@ public:
     bool stemsActive() const noexcept {
         return stems_ != nullptr && stemMode_ == 1; }
 
+    // ---- per-stem FX (Phase 25, §47) ----
+    /// One FXSlot per stem kind (stems::StemType order: Vocals, Drums,
+    /// Bass, Instruments). A stem whose slot is enabled/busy is staged
+    /// out of the inline stem mix, processed as a block, then summed —
+    /// the slot's own dry/wet handles the blend. Param space: FX ids
+    /// with target=deck, slot=4+stem (see FXTypes.h).
+    static constexpr int kStemFx = 4;
+    /// Borrowed slot access for FXEngine::bindStemSlots — the deck
+    /// keeps ownership; params reach it through the FX id space.
+    fx::FXSlot* stemFx() noexcept { return &stemFx_[0]; }
+    /// Per-block musical context for the stem slots: `ctx` carries the
+    /// deck's own tempo, `masterCtx` the sync-master deck (a stem slot
+    /// selecting MASTER tempo follows it — §22). RT only.
+    void setStemFxContext(const fx::SyncContext& ctx,
+                          const fx::SyncContext& masterCtx) noexcept {
+        stemCtx_ = ctx;
+        stemMasterCtx_ = masterCtx;
+    }
+
     /// Stats slot the deck was bound with — the mixer ChannelStrip
     /// re-uses it to publish channel meters (pre-fader level).
     DeckStats* stats() const noexcept { return stats_; }
@@ -164,7 +184,22 @@ private:
     void adoptPendingStems() noexcept;
     /// Mix all present stems at source position `pos` — cubic read +
     /// smoothed gain + pan per stem. Only called when stemsActive().
-    void stemsMixAt(double pos, float& l, float& r) noexcept;
+    /// A stem routed through its FX slot is written to that slot's
+    /// input stage at index `outIdx` instead of joining the mix; the
+    /// staged block is processed and summed by applyStemFx().
+    void stemsMixAt(double pos, float& l, float& r, int outIdx) noexcept;
+    /// True while stem `s`'s FX slot should intercept its render.
+    bool stemTakesFx(int s) const noexcept {
+        return s >= 0 && s < kStemFx
+               && (stemFx_[(size_t)s].enabled() || stemFx_[(size_t)s].busy());
+    }
+    /// Zero the input stages of every FX'd stem (pre-mix, per block).
+    void clearStemFxStage(int n) noexcept;
+    /// Process staged stem blocks and sum into (l, r) — stride=2 for
+    /// the interleaved stretcher stage (§37 keeps FX pre-stretch so the
+    /// stretched output stays time-coherent).
+    void applyStemFx(float* l, float* r, int n, int stride) noexcept;
+    bool anyStemFx() const noexcept;
     void recomputeStemMasks() noexcept;      // after param change
     void publishStemStats() noexcept;
 
@@ -218,6 +253,11 @@ private:
                     StemRtParam p; };
     std::array<StemRt, DeckStemBuffers::kMaxStems> stem_{};
     std::vector<float> stemStage_;             // stretcher feed staging
+
+    // ---- per-stem FX (Phase 25) ----
+    fx::FXSlot      stemFx_[kStemFx];
+    std::vector<float> stemFxInL_[kStemFx], stemFxInR_[kStemFx];
+    fx::SyncContext stemCtx_{}, stemMasterCtx_{};
 
     std::unique_ptr<ITimeStretcher> stretcher_;
     std::vector<float> scratch_;            // stretcher pull buffer

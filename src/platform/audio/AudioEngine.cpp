@@ -37,6 +37,9 @@ AudioEngine::AudioEngine(Config& config, DecoderFactory decoderFactory)
         loaders_[(size_t)i] = std::make_unique<TrackLoader>(
             decoderFactory, &deckStats_[(size_t)i],
             &d.pendingTrack_, &d.retiredTrack_);
+        // Phase 25: the deck's per-stem FX slots join the FX id space
+        // (target=deck, slot=4..7); the deck keeps ownership.
+        mixer_.fx().bindStemSlots(i, d.stemFx());
     }
 }
 

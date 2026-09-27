@@ -35,7 +35,8 @@ namespace onda::fx {
 /// sustained bad output auto-resets the processor after 4 bad blocks.
 class FXSlot {
 public:
-    static constexpr float kClamp = 8.0f;
+    static constexpr float kClamp   = 8.0f;
+    static constexpr int   kTailSec = 8; // max natural tail drain
 
     // ---------------- non-RT (control thread) ----------------
     void prepare(double sampleRate) {
@@ -44,6 +45,7 @@ public:
         smIn_ .prepare(sampleRate, 8.0f);  smIn_.snap(inGain_);
         smOut_.prepare(sampleRate, 8.0f);  smOut_.snap(outGain_);
         smEn_ .prepare(sampleRate, 10.0f); smEn_.snap(0.0f);
+        smEnDry_.prepare(sampleRate, 10.0f); smEnDry_.snap(0.0f);
         dryL_.assign(AudioFormat::kMaxBlockFrames, 0.0f);
         dryR_.assign(AudioFormat::kMaxBlockFrames, 0.0f);
     }
@@ -75,6 +77,13 @@ public:
     }
     FXProcessor* effect() const noexcept { return fx_; }
     bool  enabled()  const noexcept { return enabled_; }
+    /// The slot still consumes source audio (enabled, draining a tail
+    /// or mid crossfade) — used by stem inserts to decide whether a
+    /// stem renders through its FX stage or straight into the mix.
+    bool  takesInput() const noexcept {
+        return enabled_ || busy_ || tailing_; }
+    /// §42 — currently draining a natural tail after being disabled.
+    bool  tailing()  const noexcept { return tailing_; }
     float mix()      const noexcept { return mix_; }
     int   syncMode() const noexcept { return syncMode_; }
     int   division() const noexcept { return division_; }
@@ -113,7 +122,23 @@ public:
                 const bool on = v > 0.5f;
                 if (on != enabled_) {
                     enabled_ = on;
-                    smEn_.setTarget(on ? 1.0f : 0.0f);
+                    if (on) {
+                        tailing_ = false; tailDone_ = false;
+                        tailSamples_ = 0;
+                        smEn_.setTarget(1.0f);
+                        smEnDry_.setTarget(1.0f);
+                    } else {
+                        // §42: tail-capable effects drain naturally —
+                        // keep the wet gate open, feed silence, and let
+                        // the tail decay (bounded by kTailCap). The dry
+                        // path returns to unity over the same ramp so
+                        // the bypass is fully transparent underneath.
+                        tailing_ = fx_ != nullptr && fx_->hasTail()
+                                   && !tailDone_;
+                        tailSamples_ = 0;
+                        smEn_.setTarget(tailing_ ? 1.0f : 0.0f);
+                        smEnDry_.setTarget(0.0f);
+                    }
                     push(on ? FXEventType::Enabled : FXEventType::Disabled, v);
                 }
                 break;
@@ -129,7 +154,15 @@ public:
                 break;
             default: {
                 const int p = (int)k - (int)FXSlotKind::P1;
-                if (fx_ != nullptr && p >= 0 && p < fx_->paramCount()) {
+                if (p < 0 || p >= kMaxFxParams) break;
+                // Stash the normalized value: if a new processor is
+                // parked but not yet adopted, fx_ is either null or the
+                // OLD kind — the write must not be lost (a preset
+                // applied right after a type swap depends on it). The
+                // stash is replayed onto the adopted processor.
+                pendingP_[(size_t)p] = v;
+                pendingMask_ |= (1u << p);
+                if (fx_ != nullptr && p < fx_->paramCount()) {
                     fx_->setParamNormalized(p, v);
                     push(FXEventType::ParamChanged, v);
                 }
@@ -140,17 +173,23 @@ public:
 
     /// RT. Serial in-place processing. `ctx` is the rack-level sync
     /// context; the slot stamps its own sync mode/division onto it.
-    void process(float* l, float* r, int n, SyncContext ctx) noexcept {
+    /// `masterCtx` (optional) supplies the sync-master tempo when the
+    /// slot's SyncMode selects MASTER (2) as its tempo source (§22).
+    void process(float* l, float* r, int n, SyncContext ctx,
+                 const SyncContext* masterCtx = nullptr) noexcept {
         adoptPending();
 
         if (fx_ == nullptr) { busy_ = false; return; }
-        // hibernated: bypassed and the crossfade has fully settled
-        if (!enabled_ && smEn_.current() < 1e-4f) {
+        // hibernated: bypassed, no tail draining, crossfade settled
+        if (!enabled_ && !tailing_ && smEn_.current() < 1e-4f) {
             busy_ = false;
             return;
         }
 
-        ctx.synced   = syncMode_;
+        // §22 — tempo source: MANUAL(0)=free, DECK(1)=target tempo,
+        // MASTER(2)=the sync-master deck's clock.
+        if (syncMode_ == 2 && masterCtx != nullptr) ctx = *masterCtx;
+        ctx.synced   = syncMode_ != 0 ? 1 : 0;
         ctx.division = division_;
         fx_->setSyncContext(ctx);
 
@@ -175,7 +214,10 @@ public:
             for (int i = 0; i < n; ++i) {
                 g = smIn_.tick();
                 dl[i] = l[i]; dr[i] = r[i];
-                l[i] *= g;   r[i] *= g;
+                // tailing: the source keeps flowing into the dry copy
+                // but the effect is fed silence so its tail decays
+                l[i] = tailing_ ? 0.0f : l[i] * g;
+                r[i] = tailing_ ? 0.0f : r[i] * g;
             }
         }
 
@@ -189,9 +231,11 @@ public:
             cpuUs.store((float)us, std::memory_order_relaxed);
         }
 
-        // sanitize: NaN/Inf -> 0, hard-clamp; sustained badness resets
+        // sanitize: NaN/Inf -> 0, hard-clamp; sustained badness resets.
+        // The wet peak here (pre dry/wet crossfade) drives tail-drain
+        // detection — the dry signal must not count as tail energy.
         int bad = 0;
-        float outPk = 0.0f;
+        float outPk = 0.0f, wetPk = 0.0f;
         for (int i = 0; i < n; ++i) {
             if (!std::isfinite(l[i])) { l[i] = 0.0f; ++bad; }
             if (!std::isfinite(r[i])) { r[i] = 0.0f; ++bad; }
@@ -199,6 +243,17 @@ public:
             if (l[i] < -kClamp) { l[i] = -kClamp; ++bad; }
             if (r[i] > kClamp)  { r[i] = kClamp;  ++bad; }
             if (r[i] < -kClamp) { r[i] = -kClamp; ++bad; }
+            wetPk = std::max(wetPk,
+                 std::max(std::fabs(l[i]), std::fabs(r[i])));
+        }
+        if (tailing_) {
+            tailSamples_ += (int64_t)n;
+            if (wetPk < 1e-4f ||
+                tailSamples_ > (int64_t)(rate_ * kTailSec)) {
+                tailing_ = false;
+                tailDone_ = true;   // next off goes straight to bypass
+                smEn_.setTarget(0.0f);
+            }
         }
         if (bad > 0 || badIn > 0) {
             sanitized.fetch_add((uint64_t)(bad + badIn), std::memory_order_relaxed);
@@ -212,21 +267,25 @@ public:
             badBlocks_ = 0;
         }
 
-        // dry/wet crossfade: w = mix * bypass ramp; plus output gain
+        // dry/wet crossfade with separate dry gate:
+        //   enabled:   out = dry*(1-mix) + wet*mix
+        //   tailing:   out = dry*1      + wet*mix   (dry returns to unity,
+        //                                        the tail rings on top)
+        //   bypassed:  out = dry*1      + wet*0
         {
-            float w = smMix_.current() * smEn_.current();
-            float g = smOut_.current();
+            float m = smMix_.current(), e = smEn_.current();
+            float ed = smEnDry_.current(), g = smOut_.current();
             for (int i = 0; i < n; ++i) {
-                w = smMix_.tick() * smEn_.tick();
-                g = smOut_.tick();
-                l[i] = dl[i] * (1.0f - w) + l[i] * g * w;
-                r[i] = dr[i] * (1.0f - w) + r[i] * g * w;
+                m = smMix_.tick(); e = smEn_.tick();
+                ed = smEnDry_.tick(); g = smOut_.tick();
+                l[i] = dl[i] * (1.0f - m * ed) + l[i] * g * m * e;
+                r[i] = dr[i] * (1.0f - m * ed) + r[i] * g * m * e;
                 outPk = std::max(outPk,
                      std::max(std::fabs(l[i]), std::fabs(r[i])));
             }
         }
         outPeak.store(outPk, std::memory_order_relaxed);
-        busy_ = enabled_ || smEn_.current() > 1e-4f;
+        busy_ = enabled_ || tailing_ || smEn_.current() > 1e-4f;
     }
 
     /// CPU metering on/off (read once per block).
@@ -241,8 +300,18 @@ private:
                 trash_.store(fx_, std::memory_order_release);
             fx_ = p;
             fx_->reset();
+            // Replay param writes that arrived while the object was
+            // parked (type swap + preset applied in the same gesture).
+            if (pendingMask_ != 0) {
+                const int n = std::min(fx_->paramCount(), kMaxFxParams);
+                for (int i = 0; i < n; ++i)
+                    if (pendingMask_ & (1u << i))
+                        fx_->setParamNormalized(i, pendingP_[(size_t)i]);
+                pendingMask_ = 0;
+            }
             smEn_.snap(0.0f); // quick clickless fade-in on the new DSP
             smEn_.setTarget(enabled_ ? 1.0f : 0.0f);
+            smEnDry_.setTarget(enabled_ ? 1.0f : 0.0f);
             push(FXEventType::TypeChanged, (float)(int)fx_->kind());
         }
     }
@@ -276,8 +345,11 @@ private:
     int   syncMode_ { 1 };
     int   division_ { (int)BeatDiv::D_1_4 };
     int   wantType_ { 0 };
+    /// P1..P8 writes parked until the next processor adoption.
+    float    pendingP_[kMaxFxParams] {};
+    uint32_t pendingMask_ { 0 };
 
-    mixer::GainSmoother smMix_, smIn_, smOut_, smEn_;
+    mixer::GainSmoother smMix_, smIn_, smOut_, smEn_, smEnDry_;
     std::vector<float> dryL_, dryR_;
 
     rt::SpscRingBuffer<FXEvent, 256>* events_ { nullptr };
@@ -285,8 +357,11 @@ private:
     int slot_   { -1 };
 
     std::atomic<float> cpuMeter_ { 1.0f };
-    int  badBlocks_ { 0 };
-    bool busy_      { false };
+    int     badBlocks_   { 0 };
+    bool    busy_        { false };
+    bool    tailing_     { false };  // draining a natural tail (§42)
+    bool    tailDone_    { false };  // tail already drained once
+    int64_t tailSamples_ { 0 };
 };
 
 } // namespace onda::fx

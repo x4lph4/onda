@@ -125,31 +125,36 @@ private:
     Knob mix_, p1_, p2_, p3_;
 };
 
-/// FX strip — deck A insert rack, deck B insert rack, master rack.
-/// Send racks get a compact pair of return-level knobs. The number of
-/// slots per rack comes from the engine (kSlotsPerRack).
+/// FX strip — every rack target: the four deck inserts (each with a
+/// per-stem slot row, Phase 25), the sampler insert (Spare), send A/B
+/// returns and the master rack. The slot count per group comes from
+/// the engine (kSlotsPerRack for racks, +4 stem slots on decks).
 class FXView : public juce::Component {
 public:
     FXView(const ThemeEngine& te, mixer::MixerController& mc)
         : theme_(&te),
           retA_(te, "RET A", 0.0, 1.0, 1.0),
           retB_(te, "RET B", 0.0, 1.0, 1.0) {
-        struct R { int target; const char* name; };
-        const R racks[] = {
-            { (int)fx::FXTarget::DeckA, "DECK A" },
-            { (int)fx::FXTarget::DeckB, "DECK B" },
-            { (int)fx::FXTarget::SendA, "SEND A" },
-            { (int)fx::FXTarget::SendB, "SEND B" },
-            { (int)fx::FXTarget::Master, "MASTER" },
+        struct G { int target; const char* name; bool stems; };
+        const G groups[] = {
+            { (int)fx::FXTarget::DeckA,  "DECK A",  true  },
+            { (int)fx::FXTarget::DeckB,  "DECK B",  true  },
+            { (int)fx::FXTarget::DeckC,  "DECK C",  true  },
+            { (int)fx::FXTarget::DeckD,  "DECK D",  true  },
+            { (int)fx::FXTarget::Spare,  "SAMPLER", false },
+            { (int)fx::FXTarget::SendA,  "SEND A",  false },
+            { (int)fx::FXTarget::SendB,  "SEND B",  false },
+            { (int)fx::FXTarget::Master, "MASTER",  false },
         };
-        for (int r = 0; r < 5; ++r) {
-            for (int s = 0; s < kSlots; ++s) {
+        for (const auto& gr : groups) {
+            const int n = kSlots + (gr.stems ? kSlots : 0);
+            for (int s = 0; s < n; ++s) {
                 auto v = std::make_unique<FxSlotView>(te, mc,
-                                                      racks[r].target, s);
+                                                      gr.target, s);
                 addAndMakeVisible(*v);
-                slots_.push_back({ racks[r].target, std::move(v) });
+                slots_.push_back({ gr.target, s, std::move(v) });
             }
-            rackNames_.push_back(racks[r].name);
+            rackNames_.push_back(gr.name);
         }
         retA_.onValue = [&mc](double v) { mc.fxReturn(0, (float)v); };
         retB_.onValue = [&mc](double v) { mc.fxReturn(1, (float)v); };
@@ -158,15 +163,24 @@ public:
     }
 
     void setSnapshot(const UiSnapshot& s) {
-        // slots_ order = racks × slots — map by construction order
-        int idx = 0;
-        const FxSlotSnapshot* byRack[5] = {
-            s.fxDeck[0], s.fxDeck[1], s.fxSend[0], s.fxSend[1],
-            s.fxMaster
-        };
-        for (int r = 0; r < 5; ++r)
-            for (int sl = 0; sl < kSlots; ++sl)
-                slots_[(size_t)idx++].view->setSnapshot(byRack[r][sl]);
+        for (auto& ref : slots_) {
+            const FxSlotSnapshot* f = nullptr;
+            const int t = ref.target, sl = ref.slot;
+            if (sl >= fx::FXEngine::kStemSlotBase) {
+                f = &s.fxStem[t][sl - fx::FXEngine::kStemSlotBase];
+            } else if (t <= (int)fx::FXTarget::DeckD) {
+                f = &s.fxDeck[t][sl];
+            } else if (t == (int)fx::FXTarget::SendA) {
+                f = &s.fxSend[0][sl];
+            } else if (t == (int)fx::FXTarget::SendB) {
+                f = &s.fxSend[1][sl];
+            } else if (t == (int)fx::FXTarget::Master) {
+                f = &s.fxMaster[sl];
+            } else if (t == (int)fx::FXTarget::Spare) {
+                f = &s.fxSampler[sl];
+            }
+            if (f != nullptr) ref.view->setSnapshot(*f);
+        }
         retA_.setValue(s.fxReturn[0]);
         retB_.setValue(s.fxReturn[1]);
     }
@@ -186,18 +200,23 @@ public:
         auto b = getLocalBounds().reduced(3);
         b.removeFromTop(12); // rack label strip
         rackX_.clear();
-        const int groups = 5;
         const int retsW = 96;
         auto rets = b.removeFromRight(retsW);
-        const int gw = b.getWidth() / groups;
+        const int gw = b.getWidth() / (int)rackNames_.size();
         int idx = 0;
-        for (int r = 0; r < groups; ++r) {
+        for (size_t r = 0; r < rackNames_.size(); ++r) {
             auto gr = b.removeFromLeft(gw).reduced(2);
             rackX_.push_back(gr.getX());
-            const int sw = gr.getWidth() / kSlots;
-            for (int s = 0; s < kSlots; ++s)
+            const int nSlots = groupSlotCount((int)r);
+            const int rows = nSlots > kSlots ? 2 : 1;
+            const int rh = gr.getHeight() / rows;
+            for (int s = 0; s < nSlots; ++s) {
+                const int row = s / kSlots, col = s % kSlots;
                 slots_[(size_t)idx++].view->setBounds(
-                    gr.removeFromLeft(sw).reduced(1));
+                    gr.getX() + col * (gr.getWidth() / kSlots),
+                    gr.getY() + row * rh,
+                    gr.getWidth() / kSlots - 2, rh - 2);
+            }
         }
         retA_.setBounds(rets.removeFromLeft(retsW / 2).reduced(1));
         retB_.setBounds(rets.reduced(1));
@@ -205,7 +224,12 @@ public:
 
 private:
     static constexpr int kSlots = 4;
-    struct SlotRef { int target; std::unique_ptr<FxSlotView> view; };
+    struct SlotRef { int target; int slot; std::unique_ptr<FxSlotView> view; };
+
+    int groupSlotCount(int r) const {
+        // deck groups carry 4 rack + 4 stem slots; the rest have 4
+        return r <= 3 ? kSlots * 2 : kSlots;
+    }
 
     const ThemeEngine* theme_;
     std::vector<SlotRef> slots_;

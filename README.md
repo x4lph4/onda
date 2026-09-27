@@ -2,6 +2,50 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 25 (FX engine completion)
+
+Completed the professional FX semantics on top of the Phase-16 engine
+(`docs/audio/fx-engine.md`, `docs/adr/0025-fx-engine.md`) — the audit
+showed most of the spec already existed; this phase closed the five
+real gaps.
+
+- **Tail-aware bypass (§42)**: disabling a Delay/Echo/Reverb no longer
+  cuts the tail — the slot keeps the wet gate open, feeds zeros, and a
+  new dry gate (`smEnDry_`) returns the dry path to unity over the same
+  10 ms ramp: output becomes `dry + wet·mix` (a true "echo out"), then
+  the slot drains (wet peak < −80 dBFS or 8 s cap) and hibernates.
+  `FXProcessor::hasTail()` drives the decision generically; `busy()`
+  covers enabled-or-draining everywhere.
+- **Real per-stem FX (§47)**: each deck owns `FXSlot stemFx_[4]`; a
+  stem with an active slot is staged into a preallocated block buffer,
+  processed, and summed — in both render paths (varispeed per block;
+  keylock in source-domain chunks pre-stretch so the WSOLA output
+  stays coherent). `FXEngine::bindStemSlots` maps them into the FX id
+  space as `target=deck, slot=4..7` → same params/presets/MIDI/
+  diagnostics as any rack slot.
+- **Sampler insert routing fix**: `channelFxTarget` maps the sampler
+  strip to `FXTarget::Spare` — previously it aliased `SendA` and
+  processed that rack twice per block.
+- **Tempo source select (§22)**: `SyncMode` 0/1/2 = MANUAL/DECK/MASTER;
+  every block the slot stamps either its target ctx or the
+  sync-master-deck ctx into the processor — tempo changes retarget
+  smoothers, no steps (§23). Sends/master always follow the sync
+  master.
+- **Pending-param preservation**: P1..P8 writes that land between
+  `loadEffect` and adoption are stashed and replayed on the new
+  processor — fixes preset loads and controller writes racing the
+  type swap.
+- **Metadata + effect**: `FXParamType` tags on `FXParamInfo`
+  (Float/Int/Bool/Enum/BeatDiv/Freq/Time/Ms/Db/Percent) for correct
+  UI/controller rendering; `NoiseFX` added (registry param `Noise`).
+- Diagnostics carry a per-deck `stems[4]` row; FXView shows Deck C/D,
+  the Sampler rack and per-deck stem rows.
+- 14 new `[fx25]` tests: tail drain at slot + stem level, the
+  Vocals→Echo/Drums→HP/Bass→Phaser/Inst→Reverb simultaneous matrix,
+  sampler→Spare (no SendA double-process), MANUAL/DECK/MASTER timing,
+  pending-param stash, preset round-trip/duplicate, registry coverage,
+  and a 4-deck + stems + sends + master stress run.
+
 ## Status — Phase 24 (mixer engine completion)
 
 Completed the central mixer architecture (`docs/audio/mixer-engine.md`,

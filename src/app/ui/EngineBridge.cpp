@@ -424,10 +424,26 @@ void EngineBridge::snapshot(UiSnapshot& o) {
         for (int s = 0; s < 4; ++s)
             o.fxDeck[d][s].busy =
                 engine_.fxEngine().rack(t).slot(s).busy();
+        // per-stem FX slots: param ids live under the deck target at
+        // slots 4..7 (Phase 25); busy comes off the bound deck slot.
+        for (int s = 0; s < 4; ++s) {
+            FxSlotSnapshot& f = o.fxStem[d][s];
+            const int slot = fx::FXEngine::kStemSlotBase + s;
+            f.kind     = (int)m.value(R::fxType(t, slot));
+            f.enabled  = m.value(R::fxEnabled(t, slot)) >= 0.5f;
+            f.mix      = m.value(R::fxMix(t, slot));
+            f.synced   = m.value(R::fxSyncMode(t, slot)) >= 0.5f;
+            f.division = (int)m.value(R::fxDivision(t, slot));
+            for (int pp = 0; pp < 8; ++pp)
+                f.params[pp] = m.value(R::fxParam(t, slot, pp));
+            if (const auto* st = engine_.fxEngine().stemSlot(t, s))
+                f.busy = st->busy();
+        }
     }
     readFx((int)fx::FXTarget::SendA, o.fxSend[0], 4);
     readFx((int)fx::FXTarget::SendB, o.fxSend[1], 4);
     readFx((int)fx::FXTarget::Master, o.fxMaster, 4);
+    readFx((int)fx::FXTarget::Spare, o.fxSampler, 4);
     o.fxReturn[0] = engine_.fxEngine().sendReturn(0);
     o.fxReturn[1] = engine_.fxEngine().sendReturn(1);
 

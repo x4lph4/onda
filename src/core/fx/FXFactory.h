@@ -14,6 +14,7 @@
 #include "FlangerFX.h"
 #include "FXProcessor.h"
 #include "GateFX.h"
+#include "NoiseFX.h"
 #include "PhaserFX.h"
 #include "ReverbFX.h"
 
@@ -36,6 +37,7 @@ inline std::unique_ptr<FXProcessor> createFX(FXKind kind) noexcept {
         case FXKind::Compressor:return std::make_unique<CompressorFX>();
         case FXKind::BeatRepeat:return std::make_unique<BeatRepeatFX>();
         case FXKind::BeatRoll:  return std::make_unique<BeatRollFX>();
+        case FXKind::Noise:     return std::make_unique<NoiseFX>();
         default:              return nullptr;
     }
 }
@@ -55,6 +57,7 @@ inline const char* fxKindName(FXKind k) noexcept {
         case FXKind::Compressor:return "Compressor";
         case FXKind::BeatRepeat:return "Beat Repeat";
         case FXKind::BeatRoll:  return "Beat Roll";
+        case FXKind::Noise:     return "Noise";
         default:              return "None";
     }
 }

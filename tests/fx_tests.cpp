@@ -492,7 +492,8 @@ TEST_CASE("FXSlot: bypass crossfades without clicks", "[fx][slot]") {
     g.load(fx::FXKind::Reverb, 0.8f);
     for (int i = 0; i < 10; ++i) { g.sine(440.0, 0.5f); g.run(); }
 
-    // disable mid-tail: output must ramp to dry, not jump
+    // disable mid-tail: output must not jump; §42 — the wet tail keeps
+    // draining underneath while the dry path returns to unity
     g.slot.setParam(fx::FXSlotKind::Enabled, 0.0f);
     g.sine(440.0, 0.5f);
     auto b = g.run();
@@ -501,8 +502,8 @@ TEST_CASE("FXSlot: bypass crossfades without clicks", "[fx][slot]") {
         maxStep = std::max(maxStep, std::fabs(b[i] - b[i - 1]));
     REQUIRE(maxStep < 0.5f); // a hard cut would jump by the tail level
 
-    // after settle, output == dry input
-    for (int i = 0; i < 30; ++i) { g.sine(440.0, 0.5f); g.run(); }
+    // after the tail drains (bounded ~8 s at 48 kHz), output == dry
+    for (int i = 0; i < 450; ++i) { g.sine(440.0, 0.5f); g.run(); }
     g.sine(440.0, 0.5f);
     b = g.run();
     REQUIRE(peak(b) == Approx(0.5f).margin(0.1f));

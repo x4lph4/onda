@@ -206,7 +206,7 @@ private:
     static constexpr ParamDef kFxMix      { 2, "FxMix",      0.5f, 0.0f, 1.0f,  0.001f, 10.0f };
     static constexpr ParamDef kFxInGain   { 3, "FxInGain",   1.0f, 0.0f, 2.0f,  0.001f, 8.0f  };
     static constexpr ParamDef kFxOutGain  { 4, "FxOutGain",  1.0f, 0.0f, 2.0f,  0.001f, 8.0f  };
-    static constexpr ParamDef kFxSync     { 5, "FxSyncMode", 1.0f, 0.0f, 1.0f,  1.0f,   0.0f  };
+    static constexpr ParamDef kFxSync     { 5, "FxSyncMode", 1.0f, 0.0f, 2.0f,  1.0f,   0.0f  };
     static constexpr ParamDef kFxDiv      { 6, "FxDivision", 3.0f, 0.0f,
         (float)(fx::beatDivCount() - 1),                      1.0f,   0.0f  };
     static constexpr ParamDef kFxPn       { 7, "FxParam",    0.5f, 0.0f, 1.0f,  0.001f, 10.0f };

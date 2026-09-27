@@ -13,8 +13,10 @@ namespace onda::fx {
 /// parameters and native effect parameters. No pointers, no object
 /// references — the blob survives sessions and machines.
 struct FXPreset {
+    static constexpr int kCurrentVersion = 1;
     std::string name;
     bool  factory  { false };
+    int   version  { kCurrentVersion }; // schema version (§36)
     int   effectKind { (int)FXKind::None };
     int   syncMode   { 1 };
     int   division   { (int)BeatDiv::D_1_4 };
@@ -36,7 +38,7 @@ inline std::vector<uint8_t> serializePreset(const FXPreset& p) {
     };
     const char magic[4] = { 'O', 'N', 'F', 'X' };
     put(magic, 4);
-    const uint8_t ver = 1, kind = (uint8_t)p.effectKind,
+    const uint8_t ver = (uint8_t)p.version, kind = (uint8_t)p.effectKind,
                   sync = (uint8_t)p.syncMode, div = (uint8_t)p.division;
     put(&ver, 1); put(&kind, 1); put(&sync, 1); put(&div, 1);
     put(&p.mix, 4); put(&p.inGain, 4); put(&p.outGain, 4);
@@ -50,7 +52,9 @@ inline std::vector<uint8_t> serializePreset(const FXPreset& p) {
 inline bool deserializePreset(const uint8_t* d, size_t n, FXPreset& p) {
     if (d == nullptr || n < 4 + 4 + 12 + sizeof(p.params) + 2) return false;
     if (std::memcmp(d, "ONFX", 4) != 0) return false;
-    if (d[4] != 1) return false; // version
+    if (d[4] < 1 || d[4] > FXPreset::kCurrentVersion)
+        return false; // newer-than-known schema — no safe migration
+    p.version = d[4]; // migration point: future versions upgrade here
     p.effectKind = d[5];
     p.syncMode   = d[6];
     p.division   = d[7];

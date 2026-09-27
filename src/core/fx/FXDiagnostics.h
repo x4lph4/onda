@@ -40,6 +40,9 @@ struct FXRackDiag {
     uint64_t totalFaults { 0 };
     uint64_t totalSanitized { 0 };
     std::array<FXSlotDiag, 4> slots {};
+    /// Per-stem FX slots (deck targets only; §47) — empty kinds when
+    /// the deck didn't bind its stem slots.
+    std::array<FXSlotDiag, 4> stems {};
 };
 
 /// Format a rack snapshot as a human-readable report (allocates —

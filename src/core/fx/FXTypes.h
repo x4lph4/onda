@@ -9,8 +9,12 @@ namespace onda::fx {
 /// FX params live in their own id space, above the mixer ranges:
 ///   id = 0x1000 | (target << 8) | (slot << 4) | kind
 ///   target: 0..3 = deck insert racks, 4/5 = send A/B return racks,
-///           6 = master rack, 7..15 reserved (sampler/ext/record)
-///   slot:   0..15 (kSlotsPerRack = 4 used today)
+///           6 = master rack, 7 = sampler insert (Spare),
+///           8..15 reserved (external/record/stem buses)
+///   slot:   0..15 — 0..3 = rack chain slots; on deck targets 4..7
+///           address the per-stem FX slots inside the deck
+///           (stem s = slot 4+s; stems::StemType order Vocals/Drums/
+///           Bass/Instruments)
 ///   kind:   FXSlotKind below (0..15)
 ///
 /// Values themselves travel through rt::SetParam like every other
@@ -22,7 +26,8 @@ enum class FXSlotKind : uint8_t {
     Mix,         // 0..1 dry/wet
     InGain,      // 0..2 into the effect
     OutGain,     // 0..2 out of the effect
-    SyncMode,    // 0 = free, 1 = synced to the target's tempo
+    SyncMode,    // tempo source: 0 = MANUAL (free), 1 = DECK (target tempo),
+                 // 2 = MASTER (sync-master deck tempo)
     Division,    // BeatDiv value (used by synced effects)
     P1, P2, P3, P4, P5, P6, P7, P8, // normalized 0..1 effect params
     kCount
@@ -44,6 +49,8 @@ enum class FXKind : int {
     Compressor,
     BeatRepeat,
     BeatRoll,
+    // Phase 25 additions — appended so persisted kind values stay valid
+    Noise,
     kCount
 };
 

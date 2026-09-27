@@ -158,6 +158,8 @@ struct UiSnapshot {
     FxSlotSnapshot  fxDeck[4][4];        // [deck][slot]
     FxSlotSnapshot  fxSend[2][4];
     FxSlotSnapshot  fxMaster[4];
+    FxSlotSnapshot  fxSampler[4];        // sampler insert rack (Spare)
+    FxSlotSnapshot  fxStem[4][4];        // [deck][stem 0..3] Phase 25
     float           fxReturn[2] = { 1.0f, 1.0f };
     uint32_t        frame = 0;           // snapshot generation counter
 };

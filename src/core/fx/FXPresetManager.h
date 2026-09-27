@@ -50,6 +50,26 @@ public:
         return true;
     }
 
+    /// Copy any preset (factory included) into a new user preset.
+    /// Returns the new index or -1.
+    int duplicate(int i) {
+        if (i < 0 || i >= (int)presets_.size()) return -1;
+        FXPreset p = presets_[(size_t)i];
+        p.factory = false;
+        if (find(p.name) >= 0) {
+            // free name: "X copy", "X copy 2", ...
+            std::string base = p.name;
+            int n = 0;
+            do {
+                p.name = base + (n == 0 ? " copy"
+                                        : " copy " + std::to_string(n + 1));
+                ++n;
+            } while (find(p.name) >= 0 && n < 100);
+        }
+        presets_.push_back(std::move(p));
+        return (int)presets_.size() - 1;
+    }
+
     /// Whole-manager blob: 'ONFP' | ver u8 | count u16 | preset blobs.
     std::vector<uint8_t> serializeAll() const {
         uint16_t userCount = 0;
@@ -146,6 +166,21 @@ private:
             { 1.0f, 1.0f, 0.0f, 12000.0f });
         add("Stutter",       FXKind::BeatRepeat,1,(int)BeatDiv::D_1_8,1.0f,
             { 0.0f, 1.0f, 0.0f, 1.0f });
+        // Phase 25 — spec-named collection (§35)
+        add("Clean Filter",  FXKind::Filter,0, (int)BeatDiv::D_1_4, 1.0f,
+            { 1600.0f, 0.25f, 0.0f, 0.0f, 0.5f });
+        add("Short Echo",    FXKind::Echo,  1, (int)BeatDiv::D_1_8, 0.40f,
+            { 0.35f, 9000.0f, 1.0f, 0.0f });
+        add("Long Echo",     FXKind::Echo,  1, (int)BeatDiv::D_1_1, 0.55f,
+            { 0.65f, 3500.0f, 1.0f, 0.0f });
+        add("Room Reverb",   FXKind::Reverb,0, (int)BeatDiv::D_1_4, 0.30f,
+            { 0.45f, 0.45f, 0.45f, 8.0f,  0.85f });
+        add("Hall Reverb",   FXKind::Reverb,0, (int)BeatDiv::D_1_4, 0.45f,
+            { 0.90f, 0.80f, 0.30f, 24.0f, 1.0f });
+        add("Classic Flanger",FXKind::Flanger,0,(int)BeatDiv::D_1_1, 0.5f,
+            { 0.25f, 0.70f, 0.40f, 0.25f });
+        add("Classic Phaser",FXKind::Phaser,0, (int)BeatDiv::D_2Bar,0.5f,
+            { 0.30f, 0.65f, 0.30f, 6.0f, 900.0f });
     }
 
     std::vector<FXPreset> presets_;

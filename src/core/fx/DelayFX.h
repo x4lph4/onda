@@ -22,6 +22,7 @@ public:
     FXKind      kind() const noexcept override { return FXKind::Delay; }
     const char* name() const noexcept override { return "Delay"; }
     bool supportsSync() const noexcept override { return true; }
+    bool hasTail()      const noexcept override { return true; }
 
     FXParamInfo paramInfo(int i) const noexcept override {
         static constexpr FXParamInfo k[] = {

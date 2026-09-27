@@ -33,6 +33,11 @@ public:
     static constexpr int kNumTargets   = (int)FXTarget::kCount;
     static constexpr int kSendBuses    = 2;
     static constexpr int kDeckRacks    = 4;
+    /// Per-stem FX slots live inside the decks (they must intercept
+    /// the stem render before it joins the deck mix). Param space:
+    /// target = deck, slot = 4..7 → stem 0..3 (§47).
+    static constexpr int kStemSlots    = 4;
+    static constexpr int kStemSlotBase = 4; // slot ids 4..7 on decks
 
     void prepare(double sampleRate) noexcept {
         rate_ = sampleRate;
@@ -48,14 +53,42 @@ public:
 
     // ---------------- non-RT ----------------
     /// Park a new effect for (target, slot). ALLOCATES — control thread.
+    /// Deck slots 4..7 route to the bound deck's per-stem slots (§47).
     void loadEffect(int target, int slot, FXKind kind) {
+        if (FXSlot* st = stemSlotFor(target, slot)) {
+            st->loadEffect(kind);
+            return;
+        }
         racks_[(size_t)(target & 0xF)].slot(slot).loadEffect(kind);
     }
     /// Free retired processors. Call periodically from a control
     /// thread (the MixerController loader lambda does it per swap).
     void collectTrash() noexcept {
         for (auto& r : racks_) r.collectTrash();
+        for (auto& row : stemSlots_)
+            for (auto* s : row)
+                if (s != nullptr) s->collectTrash();
     }
+
+    /// Register a deck's per-stem FX slots (control thread, once at
+    /// startup — the deck owns a contiguous FXSlot[kStemSlots] and
+    /// keeps ownership). Also binds their event queue as target=deck,
+    /// slot=4..7.
+    void bindStemSlots(int deck, FXSlot* slots) noexcept {
+        if (deck < 0 || deck >= kDeckRacks || slots == nullptr) return;
+        for (int s = 0; s < kStemSlots; ++s) {
+            stemSlots_[(size_t)deck][(size_t)s] = &slots[s];
+            slots[s].bindEvents(&events_, deck, kStemSlotBase + s);
+        }
+    }
+
+    /// Bound per-stem slot for (deck target, slot id 4..7), or nullptr.
+    FXSlot* stemSlot(int deck, int stem) noexcept {
+        return (deck >= 0 && deck < kDeckRacks && stem >= 0 && stem < kStemSlots)
+             ? stemSlots_[(size_t)deck][(size_t)stem] : nullptr; }
+    const FXSlot* stemSlot(int deck, int stem) const noexcept {
+        return (deck >= 0 && deck < kDeckRacks && stem >= 0 && stem < kStemSlots)
+             ? stemSlots_[(size_t)deck][(size_t)stem] : nullptr; }
 
     FXRack&       rack(int t) noexcept       { return racks_[(size_t)(t & 0xF)]; }
     const FXRack& rack(int t) const noexcept { return racks_[(size_t)(t & 0xF)]; }
@@ -101,6 +134,24 @@ public:
             d.totalFaults += out.faults;
             d.totalSanitized += out.sanitized;
         }
+        for (int s = 0; s < kStemSlots; ++s) {
+            const FXSlot* st = stemSlot(t, s);
+            if (st == nullptr) continue;
+            auto& out = d.stems[(size_t)s];
+            out.kind = (int)st->activeKind();
+            out.enabled = st->enabled();
+            out.busy = st->busy();
+            out.pending = st->hasPending();
+            out.mix = st->mix();
+            out.syncMode = st->syncMode();
+            out.division = st->division();
+            out.inPeak  = st->inPeak.load(std::memory_order_relaxed);
+            out.outPeak = st->outPeak.load(std::memory_order_relaxed);
+            out.cpuUs   = st->cpuUs.load(std::memory_order_relaxed);
+            out.sanitized = st->sanitized.load(std::memory_order_relaxed);
+            out.faults = st->faults.load(std::memory_order_relaxed);
+            out.latency = st->latencySamples();
+        }
     }
 
     /// Full report across every target (allocates — control thread).
@@ -120,6 +171,7 @@ public:
         const int t = fxTarget(id);
         const int s = fxSlot(id);
         const auto k = fxKindOf(id);
+        if (FXSlot* st = stemSlotFor(t, s)) { st->setParam(k, v); return; }
         if (t < 0 || t >= kNumTargets || s < 0 || s >= FXRack::kSlotsPerRack)
             return;
         racks_[(size_t)t].slot(s).setParam(k, v);
@@ -143,11 +195,18 @@ public:
     void setSyncMaster(int deck) noexcept { fxSyncMaster_ = deck; }
     int  syncMaster() const noexcept { return fxSyncMaster_; }
 
+    /// Target sync context (deck/sampler/master tempo feed).
+    const SyncContext& context(int t) const noexcept {
+        return ctx_[(size_t)(t < 0 ? 0 : (t >= kNumTargets ? 0 : t))]; }
+    /// Sync-master context — the tempo source MASTER slots follow (§22).
+    const SyncContext& masterContext() const noexcept {
+        return ctx_[(size_t)masterIdx()]; }
+
     /// Insert rack for channel `d` — applied to the strip input.
     void processDeckInsert(int d, float* l, float* r, int n) noexcept {
         auto& rk = racks_[(size_t)d];
         if (!rk.busy()) return;
-        rk.process(l, r, n, ctx_[(size_t)d]);
+        rk.process(l, r, n, ctx_[(size_t)d], &ctx_[(size_t)masterIdx()]);
     }
 
     /// Clear + accumulate one channel's post-fader signal into send b.
@@ -172,9 +231,8 @@ public:
         float* sl = sendL_[(size_t)b].data();
         float* sr = sendR_[(size_t)b].data();
         if (rk.busy()) {
-            const int m = fxSyncMaster_ >= 0 && fxSyncMaster_ < kDeckRacks
-                          ? fxSyncMaster_ : 0;
-            rk.process(sl, sr, n, ctx_[(size_t)m]);
+            const int m = masterIdx();
+            rk.process(sl, sr, n, ctx_[(size_t)m], &ctx_[(size_t)m]);
         } else {
             std::memset(sl, 0, (size_t)n * sizeof(float));
             std::memset(sr, 0, (size_t)n * sizeof(float));
@@ -192,9 +250,8 @@ public:
     void processMaster(float* l, float* r, int n) noexcept {
         auto& rk = racks_[(size_t)FXTarget::Master];
         if (!rk.busy()) return;
-        const int m = fxSyncMaster_ >= 0 && fxSyncMaster_ < kDeckRacks
-                      ? fxSyncMaster_ : 0;
-        rk.process(l, r, n, ctx_[(size_t)m]);
+        const int m = masterIdx();
+        rk.process(l, r, n, ctx_[(size_t)m], &ctx_[(size_t)m]);
     }
 
     // ---------------- latency / cpu / events ----------------
@@ -226,12 +283,26 @@ public:
     bool pollEvent(FXEvent& e) noexcept { return events_.tryPop(e); }
 
 private:
+    int masterIdx() const noexcept {
+        return fxSyncMaster_ >= 0 && fxSyncMaster_ < kDeckRacks
+               ? fxSyncMaster_ : 0; }
+    /// Slot routing helper: deck slots 4..7 address the bound deck's
+    /// per-stem FX slots; everything else stays on the rack.
+    FXSlot* stemSlotFor(int t, int s) noexcept {
+        return (t >= 0 && t < kDeckRacks && s >= kStemSlotBase
+                && s < kStemSlotBase + kStemSlots)
+               ? stemSlots_[(size_t)t][(size_t)(s - kStemSlotBase)]
+               : nullptr; }
+
     double rate_ { 48000.0 };
     std::array<FXRack, kNumTargets> racks_;
     std::array<SyncContext, kNumTargets> ctx_;
     int fxSyncMaster_ { 0 };
 
     std::array<std::vector<float>, kSendBuses> sendL_, sendR_;
+    /// Borrowed deck stem FX slots (owned by DeckEngine, bound at
+    /// startup by bindStemSlots). [deck][stem 0..3]
+    FXSlot* stemSlots_[kDeckRacks][kStemSlots] {};
     float ret_[kSendBuses] { 1.0f, 1.0f };
     mixer::GainSmoother smRet_[kSendBuses];
 

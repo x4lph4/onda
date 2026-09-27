@@ -27,6 +27,11 @@ void DeckEngine::setStretcher(std::unique_ptr<ITimeStretcher> s) noexcept {
 void DeckEngine::prepareDsp(double rate) noexcept {
     if (stretcher_) stretcher_->prepare(rate, AudioFormat::kMaxBlockFrames);
     stemStage_.assign((size_t)kFeedChunk * 2, 0.0f); // non-RT: prealloc
+    for (int s = 0; s < kStemFx; ++s) {              // Phase 25 stem FX
+        stemFx_[s].prepare(rate);
+        stemFxInL_[s].assign(AudioFormat::kMaxBlockFrames, 0.0f);
+        stemFxInR_[s].assign(AudioFormat::kMaxBlockFrames, 0.0f);
+    }
 }
 
 // ============================ track lifecycle ============================
@@ -142,7 +147,8 @@ void DeckEngine::recomputeStemMasks() noexcept {
     }
 }
 
-void DeckEngine::stemsMixAt(double pos, float& l, float& r) noexcept {
+void DeckEngine::stemsMixAt(double pos, float& l, float& r,
+                            int outIdx) noexcept {
     constexpr float kSmooth = 0.001f;   // same one-pole as smGain_
     l = 0.0f; r = 0.0f;
     for (int i = 0; i < DeckStemBuffers::kMaxStems; ++i) {
@@ -153,8 +159,44 @@ void DeckEngine::stemsMixAt(double pos, float& l, float& r) noexcept {
         StemRt& t = stem_[i];
         t.smL += kSmooth * (t.gL - t.smL);
         t.smR += kSmooth * (t.gR - t.smR);
-        l += sl * t.smL;
-        r += sr * t.smR;
+        sl *= t.smL; sr *= t.smR;
+        // Phase 25: a stem with an active FX slot renders into that
+        // slot's input stage instead of the mix — the slot's own
+        // dry/wet blend produces its contribution afterwards.
+        if (stemTakesFx(i)) {
+            stemFxInL_[(size_t)i][(size_t)outIdx] = sl;
+            stemFxInR_[(size_t)i][(size_t)outIdx] = sr;
+        } else {
+            l += sl; r += sr;
+        }
+    }
+}
+
+bool DeckEngine::anyStemFx() const noexcept {
+    for (int s = 0; s < kStemFx; ++s)
+        if (stemTakesFx(s)) return true;
+    return false;
+}
+
+void DeckEngine::clearStemFxStage(int n) noexcept {
+    for (int s = 0; s < kStemFx; ++s) {
+        if (!stemTakesFx(s)) continue;
+        std::memset(stemFxInL_[s].data(), 0, (size_t)n * sizeof(float));
+        std::memset(stemFxInR_[s].data(), 0, (size_t)n * sizeof(float));
+    }
+}
+
+void DeckEngine::applyStemFx(float* l, float* r, int n,
+                             int stride) noexcept {
+    for (int s = 0; s < kStemFx; ++s) {
+        if (!stemTakesFx(s)) continue;
+        float* il = stemFxInL_[s].data();
+        float* ir = stemFxInR_[s].data();
+        stemFx_[s].process(il, ir, n, stemCtx_, &stemMasterCtx_);
+        for (int i = 0; i < n; ++i) {
+            l[(size_t)i * (size_t)stride] += il[i];
+            r[(size_t)i * (size_t)stride] += ir[i];
+        }
     }
 }
 
@@ -487,6 +529,8 @@ void DeckEngine::renderVarispeed(float* l, float* r, int n) noexcept {
     const float* s = track_->samples.data();
     const int64_t frames = track_->numFrames;
     int produced = 0;
+    const bool stemFx = stemsActive() && anyStemFx();
+    if (stemFx) clearStemFxStage(n);
 
     while (produced < n) {
         const double rate = resolvedRate();
@@ -504,7 +548,7 @@ void DeckEngine::renderVarispeed(float* l, float* r, int n) noexcept {
         for (int i = 0; i < step; ++i) {
             float sl, sr;
             if (stemsActive())                      // Phase 21 stems
-                stemsMixAt(pos_, sl, sr);
+                stemsMixAt(pos_, sl, sr, produced + i);
             else
                 readCubicStereo(s, frames, pos_, sl, sr);
             const float f = fade_ < 1.0f ? (fade_ = std::min(1.0f, fade_ + 1.0f/256.0f)) : 1.0f;
@@ -517,6 +561,7 @@ void DeckEngine::renderVarispeed(float* l, float* r, int n) noexcept {
         if (loopOn_ && framesToBoundary() <= 0)
             wrapLoop();
     }
+    if (stemFx) applyStemFx(l, r, produced, 1);
     std::memset(l + produced, 0, (size_t)(n - produced) * sizeof(float));
     std::memset(r + produced, 0, (size_t)(n - produced) * sizeof(float));
     advanceSlip(produced);
@@ -574,10 +619,18 @@ void DeckEngine::renderStretch(float* l, float* r, int n) noexcept {
             // Phase 21: stage the stem mix — the stretcher is
             // content-agnostic, so the same WSOLA path stretches all
             // stems identically (§37).
+            const bool stemFx = anyStemFx();
+            if (stemFx) clearStemFxStage((int)chunk);
             for (int64_t i = 0; i < chunk; ++i)
                 stemsMixAt((double)(ipos + i),
                            stemStage_[(size_t)i * 2],
-                           stemStage_[(size_t)i * 2 + 1]);
+                           stemStage_[(size_t)i * 2 + 1],
+                           (int)i);
+            // Phase 25: stem FX runs on the staged (source-domain)
+            // block so the stretcher still sees coherent audio.
+            if (stemFx)
+                applyStemFx(stemStage_.data(), stemStage_.data() + 1,
+                            (int)chunk, 2);
             feed = stemStage_.data();
         }
         pushed_ += stretcher_->push(feed, (size_t)chunk);

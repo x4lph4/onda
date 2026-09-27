@@ -79,13 +79,15 @@ public:
     }
 
     /// RT. Process the whole chain in place; ctx applies to every slot
-    /// (each stamps its own sync mode/division onto it).
-    void process(float* l, float* r, int n, const SyncContext& ctx) noexcept {
+    /// (each stamps its own sync mode/division onto it). `masterCtx`
+    /// is forwarded to slots whose SyncMode selects MASTER tempo (§22).
+    void process(float* l, float* r, int n, const SyncContext& ctx,
+                 const SyncContext* masterCtx = nullptr) noexcept {
         const uint32_t o = order_.load(std::memory_order_relaxed);
         for (int p = 0; p < kSlotsPerRack; ++p) {
             FXSlot& s = slots_[(size_t)((o >> (p * 2)) & 0x3u)];
             if (s.busy() || s.enabled() || s.hasPending())
-                s.process(l, r, n, ctx);
+                s.process(l, r, n, ctx, masterCtx);
         }
     }
 

@@ -167,6 +167,16 @@ void MixerEngine::setParam(uint16_t id, float v) noexcept {
     }
 }
 
+/// Channel -> FX target mapping (§8/§9): channels 0..3 are the deck
+/// insert racks, channel 4 is the sampler insert (FXTarget::Spare —
+/// previously it aliased SendA, double-processing that rack),
+/// channels 5..7 (external/future) have no rack yet.
+static int channelFxTarget(int ch) noexcept {
+    if (ch <= 3) return ch;
+    return ch == MixerEngine::kSamplerChannel ? (int)fx::FXTarget::Spare
+                                              : -1;
+}
+
 void MixerEngine::render(float* const* out, int numOut, int n,
                          DeckEngine* decks, int numDecks,
                          rt::AudioStats& stats,
@@ -181,22 +191,34 @@ void MixerEngine::render(float* const* out, int numOut, int n,
     for (int d = 0; d < chans; ++d) {
         const auto src = mixer::unpackSource(
             chSource_[(size_t)d].load(std::memory_order_relaxed));
+        // Channel -> FX target: channels 0..3 map to the deck insert
+        // racks; the sampler channel maps to FXTarget::Spare (the
+        // SamplerInsert seam) so it never aliases the send racks.
+        const int fxTgt = channelFxTarget(d);
         bool live = true;
         switch (src.type) {
             case mixer::ChSourceType::Deck:
-                if (src.index >= 0 && src.index < numDecks)
+                if (src.index >= 0 && src.index < numDecks) {
+                    const float bpm = (float)decks[src.index].effBpm();
+                    fx_.setTempo(fxTgt >= 0 ? fxTgt : d, bpm);
+                    // deck-origin ctx: the sync master may read this
+                    // deck's tempo, and the deck's per-stem FX slots
+                    // are addressed by deck index — keep both fresh.
+                    if (src.index != d) fx_.setTempo(src.index, bpm);
+                    decks[src.index].setStemFxContext(
+                        fx_.context(src.index), fx_.masterContext());
                     decks[src.index].renderPcm(strips_[d].inL(),
-                                               strips_[d].inR(), n),
-                    fx_.setTempo(d, (float)decks[src.index].effBpm());
-                else live = false;
+                                               strips_[d].inR(), n);
+                } else live = false;
                 break;
             case mixer::ChSourceType::Sampler:
                 if (sampler != nullptr) {
                     // SamplerRt sums into the buffers — start from zero
                     std::memset(strips_[d].inL(), 0, (size_t)n * sizeof(float));
                     std::memset(strips_[d].inR(), 0, (size_t)n * sizeof(float));
+                    fx_.setTempo(fxTgt >= 0 ? fxTgt : d,
+                                 (float)sampler->clockBpm());
                     sampler->renderPcm(strips_[d].inL(), strips_[d].inR(), n);
-                    fx_.setTempo(d, (float)sampler->clockBpm());
                 } else live = false;
                 break;
             case mixer::ChSourceType::External:
@@ -212,7 +234,9 @@ void MixerEngine::render(float* const* out, int numOut, int n,
             std::memset(strips_[d].inR(), 0, (size_t)n * sizeof(float));
             continue;
         }
-        fx_.processDeckInsert(d, strips_[d].inL(), strips_[d].inR(), n);
+        if (fxTgt >= 0)
+            fx_.processDeckInsert(fxTgt, strips_[d].inL(),
+                                  strips_[d].inR(), n);
     }
 
     // 2) advance xf smoothing across the block, then process strips
