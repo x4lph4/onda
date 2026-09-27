@@ -94,7 +94,10 @@ struct SavedLoop {
 /// "prepare CUSTOM"); quantizeBeatsFor() supplies it.
 enum class Quantize : int {
     Beat1 = 0, Half, Quarter, Eighth, Sixteenth, ThirtySecond, Bar,
-    Custom
+    Custom,
+    // Phase 35 §3 — multi-beat quanta, appended after Custom so
+    // persisted resolution indices stay valid.
+    Beat2, Beat4, Beat8
 };
 inline double quantizeBeats(Quantize q, int beatsPerBar = 4,
                             double custom = 1.0) noexcept {
@@ -106,6 +109,9 @@ inline double quantizeBeats(Quantize q, int beatsPerBar = 4,
         case Quantize::ThirtySecond: return 0.03125;
         case Quantize::Bar:          return beatsPerBar > 0 ? beatsPerBar : 4.0;
         case Quantize::Custom:       return custom > 0.0 ? custom : 1.0;
+        case Quantize::Beat2:        return 2.0;
+        case Quantize::Beat4:        return 4.0;
+        case Quantize::Beat8:        return 8.0;
         default:                     return 1.0;
     }
 }

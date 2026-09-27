@@ -17,6 +17,7 @@
 #include "BeatJumpEngine.h"
 #include "BeatgridController.h"
 #include "CueEngine.h"
+#include "CueJumpEngine.h"
 #include "DeckPerfState.h"
 #include "HotCueManager.h"
 #include "JogEngine.h"
@@ -26,7 +27,9 @@
 #include "MemoryCueManager.h"
 #include "PerformanceActions.h"
 #include "PerformanceDiagnostics.h"
+#include "PerformanceParams.h"
 #include "PerformanceScheduler.h"
+#include "PerformanceState.h"
 #include "PerformanceTypes.h"
 #include "PitchEngine.h"
 #include "QuantizeEngine.h"
@@ -305,6 +308,16 @@ public:
         return deck >= 0 && deck < kMaxDecks ? ctx(deck).roll.beats : 0.0;
     }
 
+    // ---- Phase 35 spec-shaped snapshots (§2/§8/§23) ----
+    /// Live loop as one POD — view over DeckCtx + DeckStats echoes.
+    LoopState loopState(int deck) const;
+    /// Slip bookkeeping snapshot — shadow echo + activation anchors.
+    SlipState slipState(int deck) const;
+    /// §2 — session BeatClock repacked for performance actions.
+    PerformanceClock perfClock() const;
+    /// §56 — track end in frames (0 = unknown) for end-safe actions.
+    int64_t trackEndFrame(int deck) const;
+
     // ---- undo support (§41) ----
     /// Verbatim re-insert of a captured cue (undo of delete/set).
     void restoreCue(int deck, const Cue& c);
@@ -369,6 +382,10 @@ private:
         int    jumpSizeIdx { 2 };      // §19 — kJumpSizes index (4 bt)
         int    activeHotCue { -1 };    // last triggered hot cue slot
         int    activeMemCue { -1 };    // last triggered memory cue slot
+        // Phase 35 §23 — slip activation anchors for SlipState.
+        int64_t  slipEntryFrame { -1 };
+        uint32_t slipStartMs    { 0 };
+        bool     loopQuantized  { false }; // last loop made under Q
         /// §42-44 — per-action state table (indexed by PerfAction).
         std::array<PerformanceAction, (size_t)PerfAction::Count> actions;
         // poll() edge detection

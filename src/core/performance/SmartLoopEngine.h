@@ -55,6 +55,37 @@ struct SmartLoopEngine {
         const int64_t out = g.beatToFrame(outBeat + beats);
         return out > in ? Loop{in, out} : l;
     }
+
+    // ---- Phase 35 §56 — end-of-track safety. maxF <= 0 disables. ----
+    /// Clamp `out` into [in+1, maxF]; returns an empty Loop (in==out)
+    /// when even `in` lies at/past the end so callers can reject.
+    static Loop clampOut(Loop l, int64_t maxF) noexcept {
+        if (maxF <= 0) return l;
+        if (l.in >= maxF - 1) return { l.in, l.in };
+        if (l.out > maxF) l.out = maxF;
+        return l;
+    }
+    /// move() that keeps the WHOLE loop inside [0, maxF) — works on
+    /// the BEAT axis so negative/past-end requests clamp before the
+    /// frame conversion (beatToFrame(<0) → -1, which would corrupt a
+    /// frame-space clamp). Length is preserved; returns the input
+    /// loop when no valid placement exists.
+    static Loop boundedMove(const BeatGrid& g, Loop l, double beats,
+                            int64_t maxF) noexcept {
+        if (g.empty() || l.out <= l.in) return l;
+        const double len = g.frameToBeat(l.out) - g.frameToBeat(l.in);
+        if (len <= 0.0) return l;
+        double nb = g.frameToBeat(l.in) + beats;
+        if (maxF > 0) {
+            const double endB = g.frameToBeat(maxF);
+            if (endB > 0.0 && nb + len > endB) nb = endB - len;
+        }
+        if (nb < 0.0) nb = 0.0;
+        const int64_t in  = g.beatToFrame(nb);
+        const int64_t out = g.beatToFrame(nb + len);
+        return (out > in && (maxF <= 0 || out <= maxF))
+            ? Loop{in, out} : l;
+    }
 };
 
 } // namespace onda

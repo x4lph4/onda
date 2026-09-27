@@ -26,10 +26,32 @@ struct QuantizeEngine {
     /// "quantize forward" semantics).
     static int64_t nextBoundary(const BeatGrid& g, int64_t frame,
                                 double quantumBeats) noexcept {
-        if (g.empty()) return frame;
+        if (g.empty() || quantumBeats <= 0.0) return frame;
         const double b = g.frameToBeat(frame);
         const double q = (std::floor(b / quantumBeats) + 1.0) * quantumBeats;
         return g.beatToFrame(q);
+    }
+
+    // ---- Phase 35 §6 — the third quantize mode: Previous. ----
+    /// Previous quantum boundary strictly before `frame` ("quantize
+    /// backward" — e.g. pulling a loop-in point down to the grid).
+    static int64_t previousBoundary(const BeatGrid& g, int64_t frame,
+                                    double quantumBeats) noexcept {
+        if (g.empty() || quantumBeats <= 0.0) return frame;
+        const double b = g.frameToBeat(frame);
+        const double q = (std::ceil(b / quantumBeats) - 1.0) * quantumBeats;
+        const int64_t f = g.beatToFrame(std::max(q, 0.0));
+        return f >= 0 ? f : frame;
+    }
+    /// Quantum boundary at-or-before `frame` (non-strict floor — the
+    /// natural grid anchor for auto-loop starts).
+    static int64_t boundaryAtOrBefore(const BeatGrid& g, int64_t frame,
+                                      double quantumBeats) noexcept {
+        if (g.empty() || quantumBeats <= 0.0) return frame;
+        const double b = g.frameToBeat(frame);
+        const double q = std::floor(b / quantumBeats) * quantumBeats;
+        const int64_t f = g.beatToFrame(std::max(q, 0.0));
+        return f >= 0 ? f : frame;
     }
 
     // ---- Phase 28 §26 — named quantize sources. These are the same

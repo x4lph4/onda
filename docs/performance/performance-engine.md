@@ -1,239 +1,144 @@
-# Performance engine — hot cues, memory cues, loops, rolls, jumps, quantize, slip, reverse
+# Performance Engine (Phase 35)
 
-Phase 20 (`docs/adr/0020-performance-engine.md`). The musical
-performance layer sits between every input source (UI, keyboard,
-MIDI, DDJ-FLX4) and the audio thread. It translates musical actions
-into resolved `rt::Command` values through a deterministic scheduler —
-the audio callback only ever receives frame-accurate, POD commands.
+Advanced musical time/rhythm manipulation for live performance:
+loops, beat jump, beat roll / loop roll, slip, quantize, cue jump —
+one deterministic façade over the deck engines.
 
-```
-UI / keyboard / MIDI / DDJ-FLX4 / automation
-        │  shared command ids (ui::cmd)
-        ▼
-CommandManager ── PadLayer / PadModeManager (pad semantics)
-        │
-        ▼
-PerformanceEngine                     (non-RT, caller thread)
- ├── CueEngine                        cue storage + trigger math
- ├── HotCueManager                    typed facade (pad-space cues)
- ├── MemoryCueManager                 typed facade (nav markers)
- ├── SmartLoopEngine                  grid-aware loop math
- ├── LoopSizeController               canonical size tables
- ├── BeatJumpEngine                   signed beat targets
- ├── QuantizeEngine                   grid snapping
- ├── SlipEngine                       refcounted shadow sources
- ├── ReverseEngine                    latch + momentary XOR
- ├── PerformanceScheduler             priority + coalescing
- └── PerformanceDiagnostics           counters + last-error
-        │
-        ▼  POD commands only
-rt::CommandQueue ──► audio callback ──► DeckEngine
-```
-
-## Hot cues
-
-`Cue` (`PerformanceTypes.h`) carries: `slot`, `type` (Hot/Memory/Loop),
-`kind` (`HotKind::Instant|Cue`), `frame`, `frame2` (loop-out),
-`beat`/`beat2` (musical positions, re-resolved after grid edits),
-`argb`, `label`, `comment`, `enabled`, `quantized`, `createdAt`.
-
-- Storage is unbounded — 8 pads is a display convention, not a cap.
-- Actions: `setCue`, `triggerCue`, `deleteCue`, `moveCue`, `renameCue`,
-  `recolorCue`, `setCueEnabled`, `setCueKind`, `setCueQuantized`,
-  `setCueComment`. Command ids `forHotCue(deck, slot, action)` cover
-  trigger/set/delete; field edits flow through `deck.*` handlers.
-- Trigger semantics (§5): while playing → jump + keep playing. While
-  stopped → `HotCueMode::JumpPlay` (default, seek+play) or `JumpCue`
-  (seek, stay cued). `HotKind::Cue` always takes the cued path.
-- A disabled cue rejects with `PerfError::Disabled`; an empty slot
-  with `EmptySlot`. Both emit `ActionRejected` and preserve state.
-
-## Memory cues
-
-`CueType::Memory` — permanent navigation markers. Never auto-play on
-trigger (seek only). Carry `label`/`comment`/`argb`. Rendered as
-hollow flags in the waveform (type=1 markers) and as a dedicated
-strip in `PerformancePanel` — left click = goto, right = set,
-ctrl+right = delete (`forMemCue(deck, slot, 0|1|2)`). The
-`MemoryCueManager` facade forces `type == Memory` so the two cue
-families can never silently collide in a slot.
-
-## Loops
-
-`SmartLoopEngine` does all math on the `BeatGrid` (beat-aligned even
-under tempo maps). Live range tracked per deck (`loopRange`).
-
-- Manual: `loopIn` (arms), `loopOut` (commits; quantize snaps both
-  boundaries to beats when on). `out ≤ in` rejects `BadRange`.
-- Auto: `loopBeatsIdx(deck, idx)` through the canonical table —
-  1/32, 1/16, 1/8, 1/4, 1/2, 1, 2, 4, 8, 16, 32 beats.
-- Adjust: `loopHalve`, `loopDouble`, `loopMove(±beats)` — all keep the
-  in-anchor and grid alignment. `reloop`, `exitLoop`, `loopToggle`.
-- Saved loops persist per track (`saveLoop`/`triggerSavedLoop`/
-  `deleteSavedLoop`, `saved_loops` table).
-- `LoopSizeController` is the single size table every surface shares —
-  UI steppers, pad sizes, roll sizes (1/32…1 in-table, extended
-  beyond), and jump magnitudes (1…64 beats, signed at the call site).
-
-## Loop roll
-
-`loopRollIdx(deck, idx)` / `loopRollEnd(deck)`. The roll holds a
-`SlipEngine::Roll` reference — `SlipBegin` anchors the shadow, a
-beat-quantized temporary loop plays, and releasing ends the loop and
-returns to where the track *would have been* (no rewind, no click —
-the recovery is a faded seek inside `DeckEngine::endSlip`).
-
-## Slip
-
-`SlipEngine` is **reference-counted**: `UserMode` (the toggle),
-`Roll`, `Momentary` each hold a ref; the shadow runs until the last
-releases. Releasing a roll while user-slip is armed keeps slipping —
-the ordering hazard a boolean flag can't express.
-
-`DeckEngine` owns two positions: the heard playhead and
-`slipShadow_` (advanced at the resolved rate every block). Permanent
-navigation under slip (hot cue, beat jump, instant restart) posts
-`SlipReanchor` **after** the seek so `slipShadow_ = displayedPos()`
-snapshots the new position — slip-off continues from the cue/jump
-timeline instead of snapping back.
-
-## Reverse
-
-`ReverseEngine`: effective = latch XOR momentary. Latched ON +
-momentary press = temporary *forward* (hardware semantic); release
-restores the latch. `DeckEngine::setReverse` resets the fade ramp so
-direction flips don't click. Under slip the shadow keeps advancing
-forward — slip-off lands past the anchor, not where reverse left it.
-
-## Cue point + cue button
-
-`cuePoint` is the session's temporary CUE (distinct from hot cues —
-`DeckCueSet`/`setCuePoint`). `cueButton(deck, CuePhase)`:
-
-- press while playing → return to cue point + pause;
-- press while paused → *define* the point at the playhead and preview
-  while held;
-- release → stop + return to the point.
-
-`instantRestart` seeks to the cue point + plays without touching the
-sync mode, master deck, or session clock.
-
-## Beat jump
-
-`beatJumpIdx(deck, idx, dir)` — 1/2/4/8/16/32/64 beats, signed by
-`dir`. Targets resolve through the grid (never seconds): unquantized
-jumps preserve beat phase exactly; quantized jumps land on
-boundaries. Playback state is untouched — only a faded seek posts.
-
-## Quantize
-
-Per deck (`setQuantize`, `rt::SetQuantize` echo). Resolutions
-`Quantize::Beat1…ThirtySecond,Bar` (`cycleQuantize`,
-`setQuantizeResolution`). `QuantizeEngine::snap` recomputes the
-*target position* onto the grid and seeks immediately — quantize
-means "the target is musical", never "wait". Per-cue `quantized=false`
-opts a cue out of snapping. `quantizeSnaps` counts snapped actions.
-
-## Performance scheduler
-
-Every public mutator posts through `PerformanceScheduler` and flushes
-at return (`commit()`). Priority (lower emits first):
-
-| Prio | Class     | Contents                                    |
-|-----:|-----------|---------------------------------------------|
-| 0    | SlipEnd   | release shadow before repositioning         |
-| 1    | SlipBegin | anchor before the action that needs it      |
-| 2    | LoopExit  | `SetLoopOn(false)` before re-arming         |
-| 3    | Seek      | `DeckSeek`/`DeckSeekFrame`; `SlipReanchor`  |
-|      |           | rides here (same prio, seq-ordered after    |
-|      |           | its seek, never coalesced)                  |
-| 4    | LoopArm   | `SetLoopFrames`/`SetLoop`/`SetLoopOn(true)` |
-| 5    | Transport | play/pause/stop                             |
-| 6    | State     | reverse, quantize, sync, pitch…             |
-
-Same-class same-deck commands coalesce (newest wins) — two seeks in
-one action emit only the final target. Queue overflow reports
-`PerfError::SchedulerFull` and keeps prior valid state (bounded
-64-entry pending list, zero allocation on flush).
-
-## Diagnostics + failure recovery
-
-`PerformanceDiagnostics` per-deck counters: cues set/deleted/
-triggered, cue presses, instant restarts, loops entered/exited,
-rolls, resizes, beat jumps, quantize snaps, slip begin/end, reverses,
-commands posted/dropped/sent, rejections. `lastError(deck)` reports
-the last `PerfError` (`Ok`, `NoDeck`, `NoTrack`, `NoGrid`,
-`EmptySlot`, `Disabled`, `BadRange`, `SchedulerFull`) and every
-rejection emits `ActionRejected` with the reason in `value`. An
-action on an empty deck rejects `NoTrack` — commands are never
-emitted into a deck with nothing loaded.
-
-## MIDI architecture
+## Architecture
 
 ```
-MIDI → ControllerEngine → MappingEngine → CommandManager
-          → (pads) PadLayer → PadModeManager → deck.* commands
-          → PerformanceEngine → scheduler → rt queue
+ControllerEngine / UI / FLX4 / keyboard / MIDI learn
+  → PadLayer → PadModeManager / CommandManager
+  → PerformanceEngine                    (control thread, never RT)
+  → PerformanceScheduler                 (priority + coalescing)
+  → rt::CommandQueue                     (bounded POD commands)
+  → DeckEngine ×4                        (audio thread)
+  → MixerEngine / FXEngine / SamplerEngine
 ```
 
-Hardware carries zero semantics: the FLX4 emits `pad.press`/
-`pad.mode`; `PadModeManager::resolve` maps (deck, pad, shift, press)
-to an action per mode — HotCue (press=trig, shift+press=del), Sampler,
-BeatJump (pads 1-4 back, 5-8 fwd), Loop (1-4 halve/double/in/out,
-5-8 sized loops `arg=10+idx`), Roll (gated, `arg=idx+1` press /
-0 release). `kDecks = 4` — all four decks resolve independently.
-`PadFeedbackEngine` produces per-pad light states
-(Off/Dim/Set/Selected/Playing) + `flx4LedValue` intensity levels;
-AppShell feeds it from the snapshot each tick, and the UI pad row +
-hardware LEDs share the same model.
+`PerformanceEngine` owns per-deck `DeckCtx`: grid controller, cues,
+saved loops, quantize config, `SlipEngine` (refcounted), `ReverseEngine`,
+`LoopRollEngine`, action table — and translates musical intent into
+`rt::Command`s. No DB / file I/O / locks / allocation on the audio path.
 
-## Persistence + relocation
+## Sub-engines (`src/core/performance/`)
 
-Schema v6 adds `kind`, `enabled`, `quantized`, `comment` to the `cues`
-table; `saved_loops` unchanged. Everything persists write-through
-against `track_id` — never the file path. `MissingFileManager::
-relinkVerified` keeps the same `track_id` row on move (verified
-content hash), so cues/loops survive relocation. `attachGrid` reloads
-the track's cues+loops on track change.
+| file | role |
+|---|---|
+| `QuantizeEngine` | grid snap: `snap` (Nearest), `nextBoundary` (Next), `previousBoundary` / `boundaryAtOrBefore` (Phase 35 §6) |
+| `SmartLoopEngine` | pure loop math: `beatLoop`, `resizeBeats`, `halve`, `double_`, `move`, `clampOut`, `boundedMove` (§56) |
+| `BeatJumpEngine` | jump target — phase-preserving raw, beat-aligned quantized |
+| `LoopRollEngine` | temporary-loop state: arm / live-resize / release |
+| `SlipEngine` | refcounted slip sources: UserMode / Roll / Momentary |
+| `CueEngine` + `CueJumpEngine` | cue storage + the §52-53 named jump-target seam (beat re-resolve → snap) |
+| `BeatgridController` | per-deck frame↔beat authority, deterministic fallback without a grid |
+| `LoopSizeController` | canonical size tables (loop 1/32…32, roll 1/32…1+, jump 1…64) |
+| `PerformanceScheduler` | command ordering: SlipEnd→SlipBegin→LoopExit→Seek→LoopArm→Transport→State, per-class coalescing |
+| `PerformanceActions` | `PerfAction` + `ActionState` lifecycle + resolver priority table |
+| `PerformanceParams` | §46 registry — `loop.size`, `loop.active`, `loop.quantize`, `beatJump.size`, `slip.active`, `quantize.mode`, `beatRoll.size` |
+| `PerformanceState` | spec-shaped snapshots: `LoopState`, `SlipState`, `PerformanceClock`, `PerfCmd`, `PerformanceCommand` |
 
-## Undo
+## Clock (§2)
 
-`EngineCommands` wraps cue/loop/grid mutators in `UndoManager::record`
-entries that capture before/after state (`restoreCue`,
-`restoreLoopRange`, `gridRestore` port → `AnalysisService::
-saveUserGrid` + re-attach). `perf.undo`/`perf.redo` walk the stacks.
-Continuous drag-style ops record once per command invocation — one
-logical undo step, never one-per-frame.
+`PerformanceEngine::perfClock()` returns `PerformanceClock` — a
+repack of `masterClockView().sample` (`sync::ClockSample`: bpm,
+beatPos, bar, phase, beatsPerBar). One session clock, fed by the
+master deck (or an external `ClockSource`); no parallel BPM source.
 
-## Timing
+## Quantize (§3-6)
 
-All target math is frame-exact f64 on the `BeatGrid` (tempo-map safe:
-`frameToBeat`/`beatToFrame` through `TempoSegment`s). Verified at
-90/120/128/140 BPM: quantized cue triggers emit seek targets exactly
-on beat boundaries; auto-loops span the requested beats to within
-one render block; roll recovery lands within ~0.04 s of the
-uninterrupted-timeline position.
+- Resolutions: Off (flag), 1/32…1/2 subdivisions, 1 beat, Bar,
+  **2/4/8 beats** (Phase 35, appended to `Quantize`), Custom.
+- Targets: hot cues (`c->quantized` per-cue opt-out), loop in/out,
+  beat jump, loop roll, cue jumps, seeks.
+- Modes: Nearest (`snap`), Next (`nextBoundary`), Previous
+  (`previousBoundary`), at-or-before (`boundaryAtOrBefore`).
+- Quantize = **destination snapping**, not "wait for the beat" —
+  the seek executes immediately on a grid-aligned frame.
 
-## Limits
+## Loops (§7-20)
 
-- `PerformancePanel` is compact (pad row + loop/jump clusters + memory
-  strip); a dedicated large pad grid is future UI work.
-- Slip sources beyond UserMode/Roll/Momentary (scratch, cue-hold
-  performance) are enum slots, not yet wired.
-- `Phrase` sync mode resolves to bar boundaries (Phase 15 contract).
-- FLX4 pads are single-intensity LEDs — `flx4LedValue` maps the five
-  states to levels; per-pad RGB remains a UI-only extra.
-- Undo covers cue/loop/grid edits; transport and mode toggles are
-  intentionally not undoable (they're performance, not edits).
+- `loopBeats`/`loopBeatsIdx` auto-loop over the size table;
+  quantized start anchors at-or-before the grid.
+- `loopIn`/`loopOut` manual loop with armed-state tracking;
+  `loopOut < loopIn` → deterministic `BadRange` rejection.
+- `loopHalve`/`loopDouble`/`loopMove` preserve the in-anchor and
+  musical phase through the grid (tempo-map safe).
+- `reloop` re-enters the last range; `exitLoop` never jumps —
+  playback continues through the out point.
+- `loopState(deck)` → `LoopState{active,start,end,length,
+  quantized,beatLength,mode}` (mode: 0 auto, 1 manual armed,
+  2 roll active).
 
-## Verification
+## Slip (§21-27)
 
-`tests/performance_phase20_tests.cpp` — 36 cases covering the full
-matrix: component units (size tables, slip refcount, reverse XOR,
-scheduler priority/coalescing, pad modes, pad feedback, command-id
-encodings), engine behavior (trigger modes, memory cues, cue button,
-instant restart, sized/manual/roll loops, beat jumps, quantize at
-4 BPMs, slip layering + reanchor, reverse latched/momentary/slip),
-undo restore APIs, schema-v6 persistence round-trip, verified-relink
-relocation, failure recovery, 4-deck stress (160 mixed actions in
-~10 ms), and feedback-state honesty. Full suite: 393 tests green.
+Refcounted: `UserMode` toggle, `Roll` (loop roll), `Momentary` —
+the shadow runs until the last ref releases. The RT deck keeps a
+virtual timeline (`DeckStats::slipShadowSec`); releasing slip
+resumes exactly where the track "would have been".
+`slipState(deck)` → `SlipState{active, originalFrame, virtualSec,
+slipStartMs}` — anchors are recorded on every `SlipBegin` edge
+(Phase 35 §23). Cue triggers and beat jumps under slip **re-anchor**
+the shadow (`SlipReanchor`) — a permanent move, never a surprise
+rewind. Scratch-under-slip is the documented Phase-36 seam.
+
+## Beat jump (§28-34)
+
+`beatJump(deck, ±beats)` — any size including fractions
+(1/32…64 via `kJumpSizes` presets + arbitrary doubles). Without
+quantize the beat phase is preserved; with quantize the landing
+snaps to the deck quantum. During a loop: the seek repositions, the
+armed range survives (re-entry on return). During slip: shadow
+re-anchored (§34). Clamped into `[0, trackEnd)` (Phase 35 §56).
+
+## Beat roll / loop roll (§35-40)
+
+`loopRoll(deck, beats)` — temporary loop that holds a `SlipEngine::Roll`
+ref: the displayed position repeats the region while the shadow
+keeps advancing; release (`loopRollEnd` / `exitLoop`) resumes the
+musical timeline. A second arm **resizes** the running roll
+(resolver `Decision::Resize`); rolling during scratch is denied.
+Permanent loop vs roll state is strictly separated
+(`LoopRollEngine` vs `lastLoopIn/Out`).
+
+## End of track (§56)
+
+Every positioning path clamps to `trackEndFrame` =
+`durationSec × fileSampleRate`, now published by `DeckEngine` at
+track adoption (covers async loader **and** direct `pendingTrack_`
+handoffs). Auto loops clamp `out`; `in` past the end rejects
+`BadRange`. Beat jumps clamp to `end-1`. `boundedMove` keeps the
+whole loop inside `[0, end)` preserving length — evaluated on the
+beat axis so negative beats clamp before frame conversion.
+
+## Safety (§55/§69)
+
+- `out <= in` → `PerfError::BadRange`; no track → `NoTrack`;
+  no grid → `NoGrid`; empty cue → `EmptySlot`; disabled → `Disabled`;
+  full scheduler → `SchedulerFull`. `lastError(deck)` surfaces it.
+- `detachDeck` clears grid, cues, loops, slip refs, roll, reverse,
+  jog, transport, cue point, action table, slip anchors — no
+  incompatible state survives a track/deck change.
+- Loop/jump math is tempo-map safe (resolves through `BeatGrid`,
+  never assumes constant BPM → tempo changes stay musical, §58).
+
+## Controller integration (§43-45)
+
+Every action is reachable from pads (`PadModeManager` resolves
+Loop/BeatJump/Sampler/HotCue/… modes), `CommandManager` ids, MIDI
+learn (`MappingEngine`) and the FLX4 map — all funnel into the same
+façade methods; hardware never emits `rt::Command` directly.
+
+## Limitations
+
+- `kJumpSizes` presets start at 1 beat — fractional jumps work via
+  `beatJump(deck, double)`; extending the preset table would shift
+  persisted `jumpSizeIdx`.
+- `previousBoundary` is exposed at engine level; no façade consumer
+  yet (future quantize-mode UI).
+- Scratch + slip DSP is Phase 36 scope — the slip ref seam
+  (`SlipEngine::Momentary`) is already in place.
+- `LoopState::active` is the RT `loopOn` echo — one render block of
+  latency behind `SetLoopOn` (normal echo semantics).
+- Saved loops are stored per-track via `trackId`; the live range is
+  session-only until `saveLoop` is invoked.

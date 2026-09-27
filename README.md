@@ -2,6 +2,42 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 35 (performance rhythm engine)
+
+Closed the remaining performance gaps on top of the Phase-20/28
+engine (`docs/performance/performance-engine.md`,
+`docs/adr/0035-professional-performance-rhythm-engine.md`).
+
+- **Quantize modes** (§6): `QuantizeEngine::previousBoundary`
+  (strict) + `boundaryAtOrBefore` join `snap`/`nextBoundary` —
+  Nearest/Next/Previous complete on the same pure grid math.
+- **Multi-beat quanta** (§3): `Quantize::Beat2/Beat4/Beat8`
+  appended after `Custom` — persisted indices unchanged; loop
+  in/out snap to 2/4/8-beat grids when selected.
+- **Spec-shaped snapshots** (§8/§23/§2/§41): `LoopState`
+  (active/start/end/length/quantized/beatLength/mode), `SlipState`
+  (active/originalFrame/virtualSec/slipStartMs — new anchors on
+  every `SlipBegin` edge), `PerformanceClock` (repack of the
+  session `ClockSample`), `PerfCmd`/`PerformanceCommand`
+  vocabulary with injected timestamps.
+- **`CueJumpEngine`** (§52-53): named pure seam — beat re-resolve
+  → quantum snap — shared math for cue jumps from any source.
+- **Performance parameter registry** (§46): `PerformanceParams.h` —
+  `loop.size`, `loop.active`, `loop.quantize`, `beatJump.size`,
+  `slip.active`, `quantize.mode`, `beatRoll.size`; per-deck ids
+  (16/deck), defs + `sanitizePerfParam`.
+- **End-of-track safety** (§56): `trackEndFrame` clamps beat jumps
+  (end−1), auto/manual loops (`clampOut`, in-past-end → `BadRange`),
+  rolls, and `boundedMove` keeps moved loops inside `[0,end)`
+  preserving length on the beat axis. `DeckEngine::adoptPendingTrack`
+  now publishes `durationSec`/`fileSampleRate` so the guards see
+  every track handoff, not only the async loader path.
+- **13 new `[perf35]` tests** (85 assertions): quantize modes +
+  snap-error bound, multi-beat quanta through the façade, cue-jump
+  math, LoopState/SlipState/perfClock, registry table + sanitize,
+  end clamps on jump/loop/move, command vocabulary, slip re-anchor
+  on beat jump, manual-loop quantization.
+
 ## Status — Phase 34 (professional sampler)
 
 Closed the remaining sampler gaps on top of the Phase-11 engine

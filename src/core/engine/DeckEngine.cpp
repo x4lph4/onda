@@ -50,6 +50,18 @@ void DeckEngine::adoptPendingTrack() noexcept {
         retiredTrack_.store(track_, std::memory_order_release);
 
     track_        = pending;
+    // Phase 35 §56 — publish duration + file rate at adoption so the
+    // perf layer's end-of-track guards see every handoff, not only
+    // the async loader path (TrackLoader sets the same values — a
+    // rewrite is harmless).
+    if (stats_) {
+        stats_->fileSampleRate.store(
+            pending->fileSampleRate > 0.0 ? pending->fileSampleRate
+                                          : pending->deviceRate,
+            std::memory_order_relaxed);
+        stats_->durationSec.store(pending->durationSec(),
+                                  std::memory_order_relaxed);
+    }
     pos_          = 0.0;
     dispPos_      = 0.0;
     trackEnded_   = false;

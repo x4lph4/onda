@@ -130,6 +130,8 @@ void PerformanceEngine::detachDeck(int deck) {
     for (auto& a : d.actions) a.state = ActionState::Idle;
     d.cuePoint = {}; d.cuePreview = false;
     d.activeHotCue = d.activeMemCue = -1;
+    d.slipEntryFrame = -1; d.slipStartMs = 0;   // §23 anchors
+    d.loopQuantized = false;
     d.lastErr = PerfError::Ok;
     commit();
 }
@@ -713,8 +715,12 @@ void PerformanceEngine::beatJump(int deck, double beats) {
     if (!hasTrack(deck)) { reject(deck, PerfError::NoTrack); return; }
     // §20 — the target is a beat offset resolved through the grid;
     // playback continues because only a faded seek is posted.
-    const int64_t t = BeatJumpEngine::target(*g, curFrame(deck), beats,
-                                             d.quantizeOn);
+    int64_t t = BeatJumpEngine::target(*g, curFrame(deck), beats,
+                                       d.quantizeOn);
+    // §56 — never seek past the track end (or before the start).
+    const int64_t durF = trackEndFrame(deck);
+    if (durF > 0 && t >= durF) t = durF - 1;
+    if (t < 0) t = 0;
     if (d.quantizeOn) diag_.deck(deck).quantizeSnaps++;
     send(rt::DeckSeekFrame{ (uint8_t)deck, t });
     if (d.slip.active()) send(rt::SlipReanchor{ (uint8_t)deck });
@@ -758,6 +764,9 @@ void PerformanceEngine::loopOut(int deck) {
         diag_.deck(deck).quantizeSnaps += 2;
     }
     d.pendingLoopIn = -1;
+    // §56 — a loop-out past the track end clamps to it.
+    const int64_t durF = trackEndFrame(deck);
+    if (durF > 0 && out > durF) out = durF;
     if (out <= in) { reject(deck, PerfError::BadRange); return; }
     storeLoopRange(d, in, out);
     send(rt::SetLoopFrames{ (uint8_t)deck, in, out });
@@ -770,8 +779,11 @@ void PerformanceEngine::loopBeats(int deck, double beats) {
     auto& d = ctx(deck);
     const auto* g = grid(deck);
     if (!g) { reject(deck, PerfError::NoGrid); return; }
-    const auto l = SmartLoopEngine::beatLoop(*g, curFrame(deck), beats,
-                                             d.quantizeOn);
+    auto l = SmartLoopEngine::beatLoop(*g, curFrame(deck), beats,
+                                       d.quantizeOn);
+    // §56 — clamp the out-point into the track; in at/past the end
+    // is a deterministic rejection, not a corrupt loop.
+    l = SmartLoopEngine::clampOut(l, trackEndFrame(deck));
     if (l.out <= l.in) { reject(deck, PerfError::BadRange); return; }
     storeLoopRange(d, l.in, l.out);
     send(rt::SetLoopFrames{ (uint8_t)deck, l.in, l.out });
@@ -848,8 +860,10 @@ void PerformanceEngine::loopMove(int deck, double beats) {
     const auto* g = grid(deck);
     if (!g || d.lastLoopOut <= d.lastLoopIn) {
         reject(deck, PerfError::BadRange); return; }
-    const auto l = SmartLoopEngine::move(*g, {d.lastLoopIn, d.lastLoopOut},
-                                         beats);
+    // §56 — a move that would push the loop past the track end shifts
+    // it back, preserving length; nothing leaves [0, end).
+    const auto l = SmartLoopEngine::boundedMove(
+        *g, {d.lastLoopIn, d.lastLoopOut}, beats, trackEndFrame(deck));
     storeLoopRange(d, l.in, l.out);
     send(rt::SetLoopFrames{ (uint8_t)deck, l.in, l.out });
     send(rt::DeckSeekFrame{ (uint8_t)deck, l.in });
@@ -886,8 +900,10 @@ void PerformanceEngine::loopRoll(int deck, double beats) {
             reject(deck, PerfError::BadRange);
             return;
         case PerformanceActionResolver::Decision::Resize: {
-            const auto l = SmartLoopEngine::resizeBeats(
-                *g, {d.roll.inFrame, d.roll.outFrame}, beats);
+            const auto l = SmartLoopEngine::clampOut(
+                SmartLoopEngine::resizeBeats(
+                    *g, {d.roll.inFrame, d.roll.outFrame}, beats),
+                trackEndFrame(deck));
             if (l.out > l.in) {
                 send(rt::SetLoopFrames{ (uint8_t)deck, l.in, l.out });
                 d.roll.resize(beats, l.out);
@@ -905,9 +921,13 @@ void PerformanceEngine::loopRoll(int deck, double beats) {
     // musical position the track "would have reached".
     if (d.slip.set(SlipEngine::Roll, true)) {
         send(rt::SlipBegin{ (uint8_t)deck });
+        d.slipEntryFrame = curFrame(deck);      // §23 anchors
+        d.slipStartMs    = nowMs();
         diag_.deck(deck).slipBegins++;
     }
-    const auto l = SmartLoopEngine::beatLoop(*g, curFrame(deck), beats, true);
+    const auto l = SmartLoopEngine::clampOut(
+        SmartLoopEngine::beatLoop(*g, curFrame(deck), beats, true),
+        trackEndFrame(deck));                   // §56
     if (l.out > l.in) {
         send(rt::SetLoopFrames{ (uint8_t)deck, l.in, l.out });
         d.roll.arm(beats, l.in, l.out);
@@ -942,6 +962,7 @@ void PerformanceEngine::loopRollEnd(int deck) {
 
 void PerformanceEngine::storeLoopRange(DeckCtx& d, int64_t in, int64_t out) {
     d.lastLoopIn = in; d.lastLoopOut = out;
+    d.loopQuantized = d.quantizeOn;   // Phase 35 §8 snapshot
 }
 
 // ---------------------------- saved loops -----------------------------
@@ -999,6 +1020,8 @@ void PerformanceEngine::setSlip(int deck, bool on) {
     // ref is the last one standing.
     if (d.slip.set(SlipEngine::UserMode, on)) {
         if (on) { send(rt::SlipBegin{ (uint8_t)deck });
+                  d.slipEntryFrame = curFrame(deck);  // §23 anchors
+                  d.slipStartMs    = nowMs();
                   diag_.deck(deck).slipBegins++; }
         else    { send(rt::SlipEnd{ (uint8_t)deck });
                   diag_.deck(deck).slipEnds++; }
@@ -1017,6 +1040,60 @@ bool PerformanceEngine::slipOn(int deck) const {
 }
 bool PerformanceEngine::slipActive(int deck) const {
     return deck >= 0 && deck < kMaxDecks && ctx(deck).slip.active();
+}
+
+// ============ Phase 35 — spec-shaped snapshots (§2/§8/§23/§56) =====
+
+int64_t PerformanceEngine::trackEndFrame(int deck) const {
+    if (deck < 0 || deck >= kMaxDecks) return 0;
+    const auto* s = ctx(deck).stats;
+    if (!s) return 0;
+    const double dur = s->durationSec.load(std::memory_order_relaxed);
+    const double sr  = s->fileSampleRate.load(
+        std::memory_order_relaxed);
+    return (dur > 0.0 && sr > 0.0) ? (int64_t)(dur * sr) : 0;
+}
+
+LoopState PerformanceEngine::loopState(int deck) const {
+    LoopState st;
+    if (deck < 0 || deck >= kMaxDecks) return st;
+    const auto& d = ctx(deck);
+    st.start = d.lastLoopIn;
+    st.end   = d.lastLoopOut;
+    st.length = st.end > st.start ? st.end - st.start : 0;
+    st.quantized = d.loopQuantized;
+    st.mode = d.roll.armed ? 2 : (d.pendingLoopIn >= 0 ? 1 : 0);
+    if (const auto* g = d.gridCtl.raw(); g && st.length > 0)
+        st.beatLength = g->frameToBeat(st.end) - g->frameToBeat(st.start);
+    if (const auto* s = d.stats)
+        st.active = s->loopOn.load(std::memory_order_relaxed);
+    return st;
+}
+
+SlipState PerformanceEngine::slipState(int deck) const {
+    SlipState st;
+    if (deck < 0 || deck >= kMaxDecks) return st;
+    const auto& d = ctx(deck);
+    st.active        = d.slip.active();
+    st.originalFrame = d.slipEntryFrame;
+    st.slipStartMs   = d.slipStartMs;
+    if (const auto* s = d.stats)
+        st.virtualSec = s->slipShadowSec.load(
+            std::memory_order_relaxed);
+    return st;
+}
+
+PerformanceClock PerformanceEngine::perfClock() const {
+    const auto v = masterClockView();
+    PerformanceClock c;
+    const auto& s = v.sample;
+    c.valid       = s.valid;
+    c.bpm         = s.bpm;
+    c.beatPos     = s.beatPos;
+    c.bar         = s.bar;
+    c.phase       = s.phase;
+    c.beatsPerBar = s.beatsPerBar;
+    return c;
 }
 
 void PerformanceEngine::setReverse(int deck, bool on) {
