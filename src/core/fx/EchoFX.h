@@ -31,7 +31,7 @@ public:
     FXParamInfo paramInfo(int i) const noexcept override {
         static constexpr FXParamInfo k[] = {
             { "Feedback", 0.0f,   1.0f,      0.5f,     "",   0.0f },
-            { "Tone",     200.0f, 18000.0f,  8000.0f,  "Hz", 0.0f },
+            { "Tone",     200.0f, 18000.0f,  8000.0f,  "Hz", 0.0f, FXParamType::Float, FXParamCurve::Log },
             { "PingPong", 0.0f,   1.0f,      1.0f,     "",   1.0f },
             { "Freeze",   0.0f,   1.0f,      0.0f,     "",   1.0f },
         };

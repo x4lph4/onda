@@ -99,6 +99,16 @@ public:
         racks_[(size_t)target].moveSlot(from, to);
     }
 
+    /// §55 — quality tier for one slot's processor. Control thread;
+    /// applies to live + pending processors via FXSlot::setQuality.
+    void setQuality(int target, int slot, FXQuality q) noexcept {
+        if (target < 0 || target >= kNumTargets) return;
+        if (FXSlot* st = stemSlotFor(target, slot))
+            st->setQuality(q);
+        else if (slot >= 0 && slot < FXRack::kSlotsPerRack)
+            racks_[(size_t)target].slot(slot).setQuality(q);
+    }
+
     /// Routing descriptor for a target (declarative table, §9).
     FXRouting routing(int t) const noexcept {
         return routingFor((FXTarget)(t < 0 || t >= kNumTargets

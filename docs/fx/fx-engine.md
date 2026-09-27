@@ -1,11 +1,14 @@
-# Onda — Professional FX Engine (Phase 16)
+# Onda — Professional FX Engine (Phases 6, 16, 25, 33)
 
 Modular, realtime-safe effects architecture. Phase 6 laid the
 foundation (slot/rack/engine, dry/wet, lock-free effect swaps,
 sanitization); Phase 16 completes it with six new processors, a
 canonical FX clock with triplet divisions, declarative routing,
 reorderable chains, macros, automation seams, presets and
-diagnostics.
+diagnostics. Phase 25 adds Noise FX, tail-drain bypass and
+SyncMode tempo-source selection. Phase 33 closes the remaining
+spec gaps: parameter curves, automation modes, quality tiers and
+the BeatClock view.
 
 ## Architecture
 
@@ -108,6 +111,12 @@ Verified at 120/128/140 BPM for every division.
 the deck's BeatGrid effBpm (tempo-map aware) or the sync master for
 send/master racks, i.e. it *is* the MasterClock value upstream.
 
+`BeatClock` (§33, Phase 33) is the read-only consultable view every
+synced processor may hold: `BeatClock::from(ctx, rate)` exposes
+`bpm`, `beatPhase`, `div()`, `divBeats()`, `divFrames()`, `divMs()`,
+`barPhase()` — so effect code never re-derives beat math nor reaches
+into deck/mixer internals.
+
 ## Chains and reordering (§7)
 
 `FXRack` holds 4 slots and a packed order table (`uint32` — four
@@ -159,7 +168,29 @@ selected. Curves: linear / square / sqrt; every destination keeps its
 own min/max bounds. `FXSurface` ships a default bank: Build, Wash,
 Crush, Echo Out (+4 empty).
 
-## Automation (§25)
+## Parameter curves (§37, Phase 33)
+
+`FXParamInfo::curve` declares the normalized(0..1) → native law:
+`Linear` (default, unchanged), `Log` (`min·(max/min)^v` — equal knob
+travel per octave, requires min>0 else Linear fallback), `Exp`
+(`v²` taper) and `Custom` (reserved; `FXBase` treats it as Linear —
+the hook is overriding the normalized setters). All 13 `Hz` params
+are now Log (FilterFX.Cutoff, PostLP, Tone×5, Rate×3, Center, Color).
+Preset data is native-valued, so the curve only changes knob feel —
+persisted presets decode identically.
+
+## Quality tiers (§55, Phase 33)
+
+`FXQuality { Low, Medium, High }` + `FXProcessor::setQuality()`.
+Deliberately a *configuration* seam, not a realtime param — the slot
+kind field is a full 4 bits with no spare id, and quality is a
+session/resource choice. `FXSlot::setQuality` applies to the live
+processor, the parked pending one, and is replayed at every
+adoption; `FXEngine::setQuality(target, slot, q)` routes it.
+ReverbFX implements Low: 4 combs + 2 allpasses per side (vs 8 + 4),
+gain-compensated by tap count, click-safe mid-render.
+
+## Automation (§25, §40)
 
 `FXAutomation`/`FXAutomationLane` — data model only: breakpoint lanes
 of `(beat → normalized value)` with linear interpolation, addressed
@@ -167,6 +198,11 @@ by the same param ids everything else uses. A control-side owner
 samples lanes against the session beat and pushes SetParams — to the
 engine, automation is indistinguishable from a fader. No recorder or
 sequencer yet, deliberately.
+
+`FXAutomationMode` (§40, Phase 33) tags each lane: `Off` (evaluate
+skips it), `Manual` (default playback), and the capture policies
+`Latch`/`Touch`/`Write` that a future recorder honors — the model
+carries them now so presets/session files can express intent.
 
 ## Commands (0xA000)
 

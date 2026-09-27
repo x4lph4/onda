@@ -66,7 +66,20 @@ public:
         for (float& s : store_) s = 0.0f;
     }
 
+    /// §55 — Low trades density for CPU: 4 combs + 2 allpasses per
+    /// side instead of 8 + 4. The wet sum is gain-compensated by tap
+    /// count so the perceived level stays put. Read once per block;
+    /// switching mid-render is click-safe (delay state persists).
+    void setQuality(FXQuality q) noexcept override {
+        quality_ = q;
+        nCombs_ = q == FXQuality::Low ? 4 : 8;
+        nAllp_  = q == FXQuality::Low ? 2 : 4;
+    }
+    FXQuality quality() const noexcept override { return quality_; }
+
     void process(float* l, float* r, int n) noexcept override {
+        const int nC = nCombs_, nA = nAllp_;
+        const float tapComp = 8.0f / (float)nC; // §55 level parity
         for (int i = 0; i < n; ++i) {
             // Comb read length follows Size (0.5x..1.25x of the tuning).
             const float scale = 0.5f + 0.75f * tick(0);
@@ -81,7 +94,7 @@ public:
             const float x = pd_in * 0.75f;
 
             float accL = 0.0f, accR = 0.0f;
-            for (int c = 0; c < 8; ++c) {
+            for (int c = 0; c < nC; ++c) {
                 // L channel comb
                 {
                     auto& cl = combL_[c];
@@ -101,11 +114,12 @@ public:
                     accR += out;
                 }
             }
-            for (int a = 0; a < 4; ++a) {
+            for (int a = 0; a < nA; ++a) {
                 accL = allpass(allpL_[a], allpLenL_[a], accL);
                 accR = allpass(allpR_[a], allpLenR_[a], accR);
             }
-            const float wl = accL * 0.08f, wr = accR * 0.08f;
+            const float wl = accL * 0.08f * tapComp;
+            const float wr = accR * 0.08f * tapComp;
             l[i] = wl * (0.5f + 0.5f * width) + wr * (0.5f - 0.5f * width);
             r[i] = wr * (0.5f + 0.5f * width) + wl * (0.5f - 0.5f * width);
         }
@@ -120,6 +134,8 @@ private:
     }
 
     double rate_ { 48000.0 };
+    FXQuality quality_ { FXQuality::Medium };
+    int nCombs_ { 8 }, nAllp_ { 4 };
     DelayLine combL_[8], combR_[8];
     DelayLine allpL_[4], allpR_[4];
     DelayLine pre_;

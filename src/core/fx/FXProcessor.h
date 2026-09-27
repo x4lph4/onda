@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 
 #include "../audio/AudioFormat.h"
@@ -19,6 +20,18 @@ enum class FXParamType : uint8_t {
     BeatDivision   // specialized: value indexes BeatDiv
 };
 
+/// §37 — normalized(0..1) → native mapping law. Frequency-type
+/// parameters use Log (equal knob travel per octave); Exp eases the
+/// low end for taper-style params; Custom is reserved for processors
+/// that override the normalized setters themselves (FXBase treats it
+/// as Linear — the hook is the override).
+enum class FXParamCurve : uint8_t {
+    Linear = 0,
+    Log,
+    Exp,
+    Custom,
+};
+
 /// Static description of one native effect parameter.
 struct FXParamInfo {
     const char* name;
@@ -27,7 +40,8 @@ struct FXParamInfo {
     float       defV;
     const char* unit;
     float       step;    // quantization hint (0 = continuous)
-    FXParamType type { FXParamType::Float };
+    FXParamType type  { FXParamType::Float };
+    FXParamCurve curve { FXParamCurve::Linear };  // §37
 };
 
 /// Type inference for tables that didn't tag explicitly: a stepped
@@ -68,6 +82,14 @@ public:
     virtual bool supportsSync() const noexcept = 0;
     virtual int  latencySamples() const noexcept = 0;
 
+    /// §55 — quality/CPU tier. A processor may reduce its internal
+    /// workload on Low (e.g. ReverbFX drops to 4 combs + 2 allpasses).
+    /// Default no-op: most effects already run at negligible cost.
+    /// Call from the control thread; implementations must make the
+    /// switch click-safe (state is preserved, only tap count changes).
+    virtual void setQuality(FXQuality) noexcept {}
+    virtual FXQuality quality() const noexcept { return FXQuality::Medium; }
+
     /// §42 — true when the effect produces a decaying tail after its
     /// input stops (delay/echo/reverb). The slot uses this to choose
     /// tail-drain bypass (feed silence, let the wet decay naturally)
@@ -96,17 +118,48 @@ class FXBase : public FXProcessor {
 public:
     int paramCount() const noexcept override { return (int)N; }
 
+    /// §37 — normalized → native under the param's declared curve.
+    static float curveToNative(const FXParamInfo& d, float v) noexcept {
+        switch (d.curve) {
+            case FXParamCurve::Log:
+                if (d.minV > 0.0f && d.maxV > d.minV)
+                    return d.minV * std::pow(d.maxV / d.minV, v);
+                return d.minV + v * (d.maxV - d.minV); // degenerate range
+            case FXParamCurve::Exp:
+                return d.minV + (d.maxV - d.minV) * v * v;
+            default:
+                return d.minV + v * (d.maxV - d.minV);
+        }
+    }
+    /// Inverse of curveToNative — native → normalized.
+    static float curveToNorm(const FXParamInfo& d, float x) noexcept {
+        const float rng = d.maxV - d.minV;
+        if (rng <= 0.0f) return 0.0f;
+        switch (d.curve) {
+            case FXParamCurve::Log:
+                if (d.minV > 0.0f && d.maxV > d.minV && x > 0.0f)
+                    return std::log(x / d.minV)
+                         / std::log(d.maxV / d.minV);
+                return (x - d.minV) / rng;
+            case FXParamCurve::Exp: {
+                const float n = (x - d.minV) / rng;
+                return n > 0.0f ? std::sqrt(n) : 0.0f;
+            }
+            default:
+                return (x - d.minV) / rng;
+        }
+    }
+
     void setParamNormalized(int i, float v) noexcept override {
         if (i < 0 || i >= (int)N) return;
         const FXParamInfo& d = paramInfo(i);
         v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
-        setParamNative(i, d.minV + v * (d.maxV - d.minV));
+        setParamNative(i, curveToNative(d, v));
     }
     float paramNormalized(int i) const noexcept override {
         if (i < 0 || i >= (int)N) return 0.0f;
         const FXParamInfo& d = paramInfo(i);
-        const float rng = d.maxV - d.minV;
-        return rng > 0.0f ? (paramNative(i) - d.minV) / rng : 0.0f;
+        return curveToNorm(d, paramNative(i));
     }
     void setParamNative(int i, float v) noexcept override {
         if (i < 0 || i >= (int)N) return;

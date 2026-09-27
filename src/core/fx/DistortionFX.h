@@ -24,7 +24,7 @@ public:
     FXParamInfo paramInfo(int i) const noexcept override {
         static constexpr FXParamInfo k[] = {
             { "Drive",  1.0f,    48.0f,   6.0f,    "x",  0.0f },
-            { "Tone",   200.0f,  18000.0f,6000.0f, "Hz", 0.0f },
+            { "Tone",   200.0f,  18000.0f,6000.0f, "Hz", 0.0f, FXParamType::Float, FXParamCurve::Log },
             { "Curve",  0.0f,    1.0f,    0.25f,   "",   0.0f },
             { "Output", 0.0f,    2.0f,    1.0f,    "",   0.0f },
             { "Asym",  -0.5f,    0.5f,    0.0f,    "",   0.0f },

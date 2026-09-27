@@ -293,12 +293,27 @@ public:
         cpuMeter_.store(on ? 1.0f : 0.0f, std::memory_order_relaxed);
     }
 
+    /// §55 — quality tier (§55 is a configuration, not a realtime
+    /// param). Control thread: applies to the live processor, the
+    /// parked pending one, and is replayed onto every future adoption.
+    void setQuality(FXQuality q) noexcept {
+        quality_.store((uint8_t)q, std::memory_order_relaxed);
+        if (auto* p = pending_.load(std::memory_order_acquire))
+            p->setQuality(q);
+        if (fx_ != nullptr) fx_->setQuality(q);
+    }
+    FXQuality quality() const noexcept {
+        return (FXQuality)quality_.load(std::memory_order_relaxed);
+    }
+
 private:
     void adoptPending() noexcept {
         if (auto* p = pending_.exchange(nullptr, std::memory_order_acq_rel)) {
             if (fx_ != nullptr)
                 trash_.store(fx_, std::memory_order_release);
             fx_ = p;
+            fx_->setQuality(
+                (FXQuality)quality_.load(std::memory_order_relaxed));
             fx_->reset();
             // Replay param writes that arrived while the object was
             // parked (type swap + preset applied in the same gesture).
@@ -336,6 +351,7 @@ private:
 
     std::atomic<FXProcessor*> pending_ { nullptr };
     std::atomic<FXProcessor*> trash_   { nullptr };
+    std::atomic<uint8_t> quality_ { (uint8_t)FXQuality::Medium }; // §55
     FXProcessor* fx_ { nullptr }; // RT-owned
 
     bool  enabled_  { false };

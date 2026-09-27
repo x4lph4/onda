@@ -2,6 +2,36 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 33 (professional FX engine)
+
+Closed the remaining FX gaps on top of the Phase-6/16/25 engine
+(`docs/fx/fx-engine.md`, `docs/adr/0033-professional-fx-engine.md`).
+
+- **Parameter curves** (§37): `FXParamInfo::curve` —
+  Linear/Log/Exp/Custom via `FXBase::curveToNative/curveToNorm`.
+  All 13 `Hz` params are Log now: equal knob travel per octave
+  (FilterFX.Cutoff norm 0.5 → 632 Hz, not 10 kHz). Presets store
+  native values — persisted data unchanged, only knob feel improves.
+- **Automation modes** (§40): `FXAutomationMode` per lane —
+  `Off` (skipped by `evaluate`), `Manual` (default), and capture
+  policies `Latch`/`Touch`/`Write` carried in the model so files can
+  express intent before the recorder lands.
+- **Quality tiers** (§55): `FXQuality{Low,Medium,High}` +
+  `FXProcessor::setQuality` — a configuration seam (slot-kind ids
+  are full at 4 bits; quality isn't a performance param).
+  `FXSlot`/`FXEngine::setQuality` covers live + pending + adopted
+  processors. ReverbFX `Low` = 4 combs + 2 allpasses, gain-compensated.
+- **BeatClock view** (§33): POD view over `SyncContext` —
+  `bpm/beatPhase/div/divBeats/divFrames/divMs/barPhase`, mirrors
+  `FXClock` exactly; processors consult it without reaching into
+  deck/mixer internals.
+- **7 new `[fx33]` tests** (917 assertions): curve laws + round-trips,
+  Log enforcement on every Hz param across all 13 processors,
+  FilterFX end-to-end mapping, automation gating, ReverbFX tiers,
+  slot/engine/adoption passthrough, BeatClock≡FXClock equivalence.
+- Two `fx_tests` assertions recalibrated to the deliberate
+  linear→log change (same test intent).
+
 ## Status — Phase 32 (professional mixer engine)
 
 Closed the remaining mixer gaps on top of the Phase-5/17/24 engine

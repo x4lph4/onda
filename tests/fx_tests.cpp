@@ -537,8 +537,10 @@ TEST_CASE("FXProcessor: normalized<->native param mapping", "[fx][params]") {
     REQUIRE(g.fx->paramNative(0) == Approx(20.0f));
     g.fx->setParamNormalized(0, 1.0f);
     REQUIRE(g.fx->paramNative(0) == Approx(20000.0f));
+    // Phase 33 §37: Cutoff is a Log-curve param — norm 0.5 lands on
+    // the geometric mean 20*sqrt(20000/20) = ~632 Hz, not 10 kHz.
     g.fx->setParamNormalized(0, 0.5f);
-    REQUIRE(g.fx->paramNative(0) == Approx(10010.0f).margin(1.0f));
+    REQUIRE(g.fx->paramNative(0) == Approx(632.46f).margin(1.0f));
     // out-of-range clamps
     g.fx->setParamNormalized(0, 7.0f);
     REQUIRE(g.fx->paramNormalized(0) == Approx(1.0f));
@@ -725,8 +727,9 @@ TEST_CASE("Mixer: deck insert FX processes into the channel", "[fx][mix]") {
     const float withFx = peak(f.outL);
     REQUIRE(withFx > 0.15f); // 440 inside LP passband, filter wet
 
-    // HP mode + cutoff ~5 kHz kills the 440 Hz tone
-    f.mixer.setParam(mixer::ParameterRegistry::fxParam(0, 0, 0), 0.25f); // ~5 kHz
+    // HP mode + cutoff ~5 kHz kills the 440 Hz tone — Phase 33 §37:
+    // Cutoff maps logarithmically, so ~5 kHz sits at norm ~0.8.
+    f.mixer.setParam(mixer::ParameterRegistry::fxParam(0, 0, 0), 0.8f); // ~5 kHz
     f.mixer.setParam(mixer::ParameterRegistry::fxParam(0, 0, 2), 1.0f);  // HP mode
     for (int i = 0; i < 60; ++i) f.render();
     REQUIRE(peak(f.outL) < withFx * 0.3f);

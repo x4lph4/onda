@@ -28,7 +28,7 @@ public:
         static constexpr FXParamInfo k[] = {
             { "Time",     5.0f,    kMaxDelayMs, 350.0f,   "ms",  0.0f },
             { "Feedback", 0.0f,    0.98f,       0.35f,    "",    0.0f },
-            { "Filter",   300.0f,  18000.0f,    12000.0f, "Hz",  0.0f },
+            { "Filter",   300.0f,  18000.0f,    12000.0f, "Hz",  0.0f, FXParamType::Float, FXParamCurve::Log },
             { "PingPong", 0.0f,    1.0f,        0.0f,     "",    1.0f },
         };
         return k[i & 3];

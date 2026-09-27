@@ -154,6 +154,15 @@ constexpr FXSlotKind fxKindOf(uint16_t id) noexcept {
 }
 
 /// RT -> control events (POD; pushed from the audio thread, polled by UI).
+/// §55 — CPU/quality tier for effects that can trade internal work
+/// for resources (e.g. ReverbFX comb/allpass count). A control-side
+/// configuration, not a realtime param — no slot-kind id is burned.
+enum class FXQuality : uint8_t {
+    Low = 0,
+    Medium,
+    High,
+};
+
 enum class FXEventType : uint8_t {
     Enabled = 0, Disabled, ParamChanged, TypeChanged, TypeRequested,
     SyncChanged, DivisionChanged, SlotChanged, Fault

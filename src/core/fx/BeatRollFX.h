@@ -33,7 +33,7 @@ public:
             { "Engage",   0.0f,   1.0f,     0.0f,    "",   1.0f },
             { "SizeMult", 0.125f, 2.0f,     0.5f,    "x",  0.0f },
             { "Gate",     0.0f,   0.9f,     0.0f,    "",   0.0f },
-            { "Tone",     300.0f, 18000.0f, 12000.0f,"Hz", 0.0f },
+            { "Tone",     300.0f, 18000.0f, 12000.0f,"Hz", 0.0f, FXParamType::Float, FXParamCurve::Log },
         };
         return k[i & 3];
     }

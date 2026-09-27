@@ -27,7 +27,7 @@ public:
 
     FXParamInfo paramInfo(int i) const noexcept override {
         static constexpr FXParamInfo k[] = {
-            { "Color",     100.0f, 18000.0f, 2000.0f, "Hz", 0.0f },
+            { "Color",     100.0f, 18000.0f, 2000.0f, "Hz", 0.0f, FXParamType::Float, FXParamCurve::Log },
             { "Sweep",     0.0f,   1.0f,     0.0f,    "",   0.0f },
             { "Resonance", 0.0f,   1.0f,     0.25f,   "",   0.0f },
         };

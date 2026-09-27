@@ -20,6 +20,18 @@ namespace onda::fx {
 /// is indistinguishable from a hardware or UI gesture downstream.
 /// NOT realtime-safe (std::vector) — never touched by the audio
 /// thread.
+/// §40 — lane behavior. Off/Manual describe *playback*; Latch/Touch/
+/// Write are capture policies a future recorder honors when writing
+/// points — the model carries them now so presets and session files
+/// can express intent before the recorder exists.
+enum class FXAutomationMode : uint8_t {
+    Off = 0,   // lane inert — evaluate() skips it entirely
+    Manual,    // static points, always evaluated (default)
+    Latch,     // capture: last-touched value holds until the lane ends
+    Touch,     // capture: write while touched, return to lane on release
+    Write,     // capture: destructive overwrite along the timeline
+};
+
 struct FXAutomationPoint {
     float beat;   // position in beats (session timeline or loop-local)
     float value;  // normalized 0..1
@@ -28,6 +40,7 @@ struct FXAutomationPoint {
 class FXAutomationLane {
 public:
     uint16_t paramId { 0 };
+    FXAutomationMode mode { FXAutomationMode::Manual }; // §40
 
     void addPoint(FXAutomationPoint p) {
         auto it = std::lower_bound(points_.begin(), points_.end(), p.beat,
@@ -91,6 +104,7 @@ public:
         int n = 0;
         for (const auto& l : lanes_) {
             if (n >= cap) break;
+            if (l.mode == FXAutomationMode::Off) continue;   // §40
             if (l.pointCount() == 0) continue;
             ids[n]  = l.paramId;
             vals[n] = l.sampleAt(beat);

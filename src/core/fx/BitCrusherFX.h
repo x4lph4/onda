@@ -22,7 +22,7 @@ public:
         static constexpr FXParamInfo k[] = {
             { "Bits",       1.0f,    16.0f,   8.0f,     "",   1.0f },
             { "Downsample", 1.0f,    60.0f,   1.0f,     "x",  1.0f },
-            { "PostLP",     400.0f,  18000.0f,12000.0f, "Hz", 0.0f },
+            { "PostLP",     400.0f,  18000.0f,12000.0f, "Hz", 0.0f, FXParamType::Float, FXParamCurve::Log },
             { "Dither",     0.0f,    1.0f,    0.0f,     "",   1.0f },
         };
         return k[i & 3];

@@ -23,11 +23,11 @@ public:
 
     FXParamInfo paramInfo(int i) const noexcept override {
         static constexpr FXParamInfo k[] = {
-            { "Rate",  0.02f, 8.0f,    0.6f,    "Hz", 0.0f },
+            { "Rate",  0.02f, 8.0f,    0.6f,    "Hz", 0.0f, FXParamType::Float, FXParamCurve::Log },
             { "Depth", 0.0f,  12.0f,   2.5f,    "ms", 0.0f },
             { "Delay", 1.0f,  40.0f,   14.0f,   "ms", 0.0f },
             { "Width", 0.0f,  1.0f,    0.8f,    "",   0.0f },
-            { "Tone",  400.0f,18000.0f,9000.0f, "Hz", 0.0f },
+            { "Tone",  400.0f,18000.0f,9000.0f, "Hz", 0.0f, FXParamType::Float, FXParamCurve::Log },
         };
         return k[i % 5];
     }
