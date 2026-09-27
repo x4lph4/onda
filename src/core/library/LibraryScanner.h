@@ -27,12 +27,29 @@ namespace onda::library {
 /// file watcher polls that and only escalates changed candidates.
 class LibraryScanner {
 public:
+    /// §11-12 — a watched folder. `autoImport` gates ONLY the
+    /// watcher's new-file pickup: scans always reconcile every root
+    /// (missing/relocated apply library-wide) but a file that appears
+    /// under a non-autoImport root is left alone until the user
+    /// imports or scans explicitly.
+    struct WatchRoot {
+        std::string path;
+        bool recursive  { true };
+        bool autoImport { false };
+    };
+
     LibraryScanner(TrackRepository& repo, TrackImporter& importer)
         : repo_(repo), importer_(importer) {}
 
-    void addRoot(const std::string& dir, bool recursive = true);
+    void addRoot(const std::string& dir, bool recursive = true,
+                 bool autoImport = false);
     bool removeRoot(const std::string& dir);
-    std::vector<std::pair<std::string, bool>> roots() const;
+    std::vector<WatchRoot> roots() const;
+
+    /// §12 — toggle auto-import for a root (returns false for unknown).
+    bool setAutoImport(const std::string& dir, bool on);
+    /// Is `path` under a root that auto-imports?
+    bool autoImportFor(const std::string& path) const;
 
     /// Full scan: hash every file, reconcile, import new/modified.
     /// Returns the diff applied. Runs on the worker.
@@ -45,7 +62,7 @@ public:
 private:
     TrackRepository& repo_;
     TrackImporter&   importer_;
-    std::vector<std::pair<std::string, bool>> roots_;
+    std::vector<WatchRoot> roots_;
 };
 
 } // namespace onda::library

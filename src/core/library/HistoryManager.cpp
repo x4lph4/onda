@@ -96,6 +96,31 @@ std::vector<HistoryEntry> HistoryManager::forTrack(int64_t trackId,
     return out;
 }
 
+SessionHistory HistoryManager::session(int64_t sessionId) {
+    std::lock_guard lk(repo_.db().mutex());
+    SessionHistory h;
+    h.id = sessionId;
+    {
+        auto s = repo_.db().prepare(
+            "SELECT name,started_at,ended_at FROM sessions WHERE id=?");
+        s.bind(1, sessionId);
+        if (s.step()) {
+            h.name = s.colText(0);
+            h.startedAt = s.colInt(1);
+            h.endedAt = s.colInt(2);
+        }
+    }
+    {
+        auto s = repo_.db().prepare(
+            "SELECT id,track_id,session_id,deck,started_at,played_sec,"
+            "counted FROM history WHERE session_id=? "
+            "ORDER BY started_at");
+        s.bind(1, sessionId);
+        while (s.step()) h.entries.push_back(rowToEntry(s));
+    }
+    return h;
+}
+
 int HistoryManager::sessionCount() {
     std::lock_guard lk(repo_.db().mutex());
     auto s = repo_.db().prepare("SELECT COUNT(*) FROM sessions");

@@ -3,6 +3,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -11,14 +12,17 @@
 #include <vector>
 
 #include "../data/Database.h"
+#include "ArtworkManager.h"
 #include "CrateManager.h"
 #include "DuplicateDetector.h"
 #include "FileWatcher.h"
 #include "HistoryManager.h"
+#include "ImportQueue.h"
 #include "LibraryBackup.h"
 #include "LibraryDiagnostics.h"
 #include "LibraryScanner.h"
 #include "LibraryTypes.h"
+#include "MetadataWriter.h"
 #include "MissingFileManager.h"
 #include "PlaylistManager.h"
 #include "RatingManager.h"
@@ -78,6 +82,10 @@ public:
     TagManager&         tagManager(){ return tags_; }
     RatingManager&      ratings()   { return ratings_; }
     LibraryBackup&      backup()    { return backup_; }
+    // Phase 29 surfaces
+    ImportQueue&        importQueue()   { return importQueue_; }
+    MetadataWriter&     metadataWriter(){ return metaWriter_; }
+    ArtworkManager&     artwork()       { return artwork_; }
 
     /// Diagnostics rollup (track/missing/analysis counts, db size).
     /// Constructed on demand — reads are cheap indexed counts.
@@ -88,6 +96,83 @@ public:
     // ---- convenience queries (sync, cheap) ----
     TrackPage query(const QuerySpec& q) { return repo_.query(q); }
     int  trackCount() { QuerySpec q; q.limit = 1; return repo_.query(q).total; }
+
+    /// §52-53 — deck hand-off: the library produces ONLY this
+    /// reference; the deck/loader resolves audio from `path` and
+    /// attaches cues/analysis via `trackId`. Playback control stays
+    /// outside the library by construction.
+    TrackReference trackRef(int64_t trackId) {
+        TrackReference r;
+        Track t;
+        if (!repo_.getById(trackId, t)) return r;
+        r.trackId = t.id; r.path = t.path;
+        r.title = t.title; r.artist = t.artist;
+        r.durationSec = t.durationSec;
+        r.bpm = t.bpm; r.keyIndex = t.keyIndex;
+        return r;
+    }
+
+    /// §11-12 — register a watched root AND persist it (kv), so
+    /// watch configuration survives restarts. `autoImport` = new files
+    /// appearing under it are picked up automatically.
+    void addWatchRoot(const std::string& dir, bool recursive = true,
+                      bool autoImport = false) {
+        scanner_.addRoot(dir, recursive, autoImport);
+        saveSetting("watch.root." + dir,
+                    std::string(recursive ? "1" : "0") +
+                    (autoImport ? ":a" : ""));
+    }
+    /// §12 — auto-import toggle for a watched root (persisted in kv).
+    bool setAutoImport(const std::string& dir, bool on) {
+        const bool ok = scanner_.setAutoImport(dir, on);
+        if (!ok) return false;
+        bool rec = true;
+        std::error_code ec;
+        const std::string abs = std::filesystem::absolute(
+            dir, ec).lexically_normal().string();
+        for (const auto& r : scanner_.roots())
+            if (r.path == abs) { rec = r.recursive; break; }
+        saveSetting("watch.root." + dir,
+                    std::string(rec ? "1" : "0") + (on ? ":a" : ""));
+        return true;
+    }
+    /// Re-register every persisted watch root (call after open()).
+    int restoreWatchRoots() {
+        std::lock_guard lk(db_.mutex());
+        auto s = db_.prepare(
+            "SELECT key,value FROM kv WHERE key LIKE 'watch.root.%'");
+        int n = 0;
+        while (s.step()) {
+            const std::string k = s.colText(0);
+            const std::string v = s.colText(1);
+            const std::string dir = k.substr(11);
+            const bool autoImport = v.find(":a") != std::string::npos;
+            scanner_.addRoot(dir, v.empty() || v[0] != '0', autoImport);
+            ++n;
+        }
+        return n;
+    }
+
+    /// §39 — configurable color palette (argb list in kv; comma-sep).
+    /// UI reads this to render color-tag pickers — never hardcoded.
+    std::vector<int> colorPalette() {
+        const std::string raw =
+            setting("palette.colors",
+                    "4294901760,4294934528,4278255360,4278235145,"
+                    "4280391411,4286578816,4294967040,4289574000");
+        std::vector<int> out;
+        size_t p = 0;
+        while (p <= raw.size()) {
+            const size_t c = raw.find(',', p);
+            const std::string tok =
+                raw.substr(p, c == std::string::npos ? c : c - p);
+            if (!tok.empty()) out.push_back((int)std::strtoll(
+                tok.c_str(), nullptr, 10));
+            if (c == std::string::npos) break;
+            p = c + 1;
+        }
+        return out;
+    }
 
     /// §13 — search-box entry point: parses `field:value` tokens into
     /// filters + FTS text, then runs the normal indexed query.
@@ -102,6 +187,44 @@ public:
     TrackPage smartTracks(int64_t playlistId, int offset = 0,
                           int limit = 200) {
         return playlists_.tracks(playlistId, offset, limit);
+    }
+
+    /// §22 — typo-tolerant search. First runs the exact indexed query;
+    /// when it returns nothing, an OR-prefix candidate net fetches a
+    /// bounded set and each candidate is re-scored by banded edit
+    /// distance over squashed (folded, space-stripped) metadata —
+    /// "daftpunk" → "Daft Punk". Original metadata is never modified.
+    /// Bounded work: at most `candCap` rows are scored per query.
+    TrackPage searchFuzzy(const std::string& text, int offset = 0,
+                          int limit = 200, int candCap = 500) {
+        TrackPage exact = search(text, offset, limit);
+        if (exact.total > 0 || text.empty()) return exact;
+        const std::string fx = SearchEngine::fuzzyExpr(text);
+        TrackPage out;
+        if (fx.empty()) return out;
+        std::vector<std::string> binds { fx };
+        QuerySpec q; q.limit = candCap; q.offset = 0;
+        TrackPage cands = repo_.queryWhere(
+            "t.id IN (SELECT rowid FROM tracks_fts"
+            " WHERE tracks_fts MATCH ?)", binds, q);
+        const int maxD = SearchEngine::fuzzyThreshold(text);
+        struct Scored { Track t; int d; };
+        std::vector<Scored> scored;
+        scored.reserve(cands.items.size());
+        for (auto& t : cands.items) {
+            const std::string hay = t.title + " " + t.artist + " " +
+                                    t.album + " " + t.filename;
+            const int d = SearchEngine::fuzzyDistance(text, hay, maxD);
+            if (d <= maxD) scored.push_back({ std::move(t), d });
+        }
+        std::stable_sort(scored.begin(), scored.end(),
+                         [](const Scored& a, const Scored& b) {
+                             return a.d < b.d; });
+        out.total = (int)scored.size();
+        for (int i = offset;
+             i < (int)scored.size() && (int)out.items.size() < limit; ++i)
+            out.items.push_back(std::move(scored[(size_t)i].t));
+        return out;
     }
 
     // ---- worker ----
@@ -154,6 +277,9 @@ private:
     TagManager        tags_;
     RatingManager     ratings_;
     LibraryBackup     backup_;
+    ImportQueue       importQueue_;
+    MetadataWriter    metaWriter_;
+    ArtworkManager    artwork_;
     AnalysisService*  analysis_ { nullptr };
     std::function<std::string(const std::string&, const std::string&)>
         artworkProvider_;

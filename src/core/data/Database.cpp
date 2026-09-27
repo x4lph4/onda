@@ -307,6 +307,14 @@ CREATE TABLE IF NOT EXISTS auto_tags(
 CREATE INDEX IF NOT EXISTS idx_auto_tags_track ON auto_tags(track_id);
 CREATE INDEX IF NOT EXISTS idx_auto_tags_name ON auto_tags(name);
 )SQL",
+    // v10 — Phase 29 playlist model completion: presentation fields
+    // (description, color) and the stored ordering preference
+    // (sort_mode) — manual position order stays the default.
+    R"SQL(
+ALTER TABLE playlists ADD COLUMN description TEXT NOT NULL DEFAULT '';
+ALTER TABLE playlists ADD COLUMN color INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE playlists ADD COLUMN sort_mode INTEGER NOT NULL DEFAULT 0;
+)SQL",
 };
 
 bool Database::open(const std::string& path) {

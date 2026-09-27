@@ -40,6 +40,8 @@ public:
     std::vector<HistoryEntry> entries(int64_t sessionId = -1,
                                     int limit = 500, int offset = 0);
     std::vector<HistoryEntry> forTrack(int64_t trackId, int limit = 100);
+    /// §47 — one session's full view (row + entries, start→end).
+    SessionHistory session(int64_t sessionId);
     int sessionCount();
     bool renameSession(int64_t id, const std::string& name);
     bool deleteSession(int64_t id);          // entries keep track_id via SET NULL

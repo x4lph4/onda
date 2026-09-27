@@ -143,7 +143,8 @@ PlaylistInfo PlaylistManager::info(int64_t id) {
     auto s = repo_.db().prepare(
         "SELECT p.id,p.name,p.folder_id,p.kind,p.rules,p.created_at,"
         "p.updated_at,(SELECT COUNT(*) FROM playlist_items i WHERE "
-        "i.playlist_id=p.id) FROM playlists p WHERE p.id=?");
+        "i.playlist_id=p.id),p.description,p.color,p.sort_mode"
+        " FROM playlists p WHERE p.id=?");
     s.bind(1, id);
     PlaylistInfo pi;
     if (!s.step()) return pi;
@@ -153,7 +154,34 @@ PlaylistInfo PlaylistManager::info(int64_t id) {
     pi.rulesJson = s.colText(4);
     pi.createdAt = s.colInt(5); pi.updatedAt = s.colInt(6);
     pi.itemCount = (int)s.colInt(7);
+    pi.description = s.colText(8);
+    pi.color = (int)s.colInt(9);
+    pi.sortMode = (int)s.colInt(10);
     return pi;
+}
+
+bool PlaylistManager::setMeta(int64_t id, const std::string* description,
+                              const int* color, const int* sortMode) {
+    std::lock_guard lk(repo_.db().mutex());
+    if (description) {
+        auto s = repo_.db().prepare(
+            "UPDATE playlists SET description=?,updated_at=? WHERE id=?");
+        s.bind(1, *description); s.bind(2, now()); s.bind(3, id);
+        s.step();
+    }
+    if (color) {
+        auto s = repo_.db().prepare(
+            "UPDATE playlists SET color=?,updated_at=? WHERE id=?");
+        s.bind(1, (int64_t)*color); s.bind(2, now()); s.bind(3, id);
+        s.step();
+    }
+    if (sortMode) {
+        auto s = repo_.db().prepare(
+            "UPDATE playlists SET sort_mode=?,updated_at=? WHERE id=?");
+        s.bind(1, (int64_t)*sortMode); s.bind(2, now()); s.bind(3, id);
+        s.step();
+    }
+    return true;
 }
 
 std::vector<PlaylistInfo> PlaylistManager::playlists(int64_t folderId) {
@@ -351,6 +379,47 @@ TrackPage PlaylistManager::tracks(int64_t playlistId, int offset, int limit) {
         if (repo_.getById(ids[(size_t)i], t)) p.items.push_back(std::move(t));
     }
     return p;
+}
+
+TrackPage PlaylistManager::tracksView(int64_t playlistId,
+                                      const QuerySpec& q) {
+    const PlaylistInfo pi = info(playlistId);
+    if (pi.id <= 0) return {};
+    // Smart playlists evaluate their rules — sort/paging ride the
+    // caller's QuerySpec straight through.
+    if (pi.kind == PlaylistKind::Smart)
+        return SmartPlaylistEngine::evaluate(repo_, pi.rulesJson, q);
+    const auto mode = (PlaylistSort)pi.sortMode;
+    if (mode == PlaylistSort::Manual)
+        return tracks(playlistId, q.offset, q.limit);
+    // Sorted view over the same membership — positions untouched.
+    QuerySpec v = q;
+    v.sort = sortKeyFor(mode);
+    return repo_.queryWhere(
+        "t.id IN (SELECT track_id FROM playlist_items"
+        " WHERE playlist_id=?)",
+        { std::to_string(playlistId) }, v);
+}
+
+int64_t PlaylistManager::snapshotSmart(int64_t smartId,
+                                       const std::string& name) {
+    const PlaylistInfo pi = info(smartId);
+    if (pi.id <= 0 || pi.kind != PlaylistKind::Smart) return -1;
+    const int64_t nid = create(name, pi.folderId);
+    if (nid <= 0) return -1;
+    // Page through the full live result — bounded pages, one
+    // membership insert batch at the end (transaction inside).
+    std::vector<int64_t> ids;
+    for (int off = 0;;) {
+        QuerySpec q; q.offset = off; q.limit = 1000;
+        const TrackPage p =
+            SmartPlaylistEngine::evaluate(repo_, pi.rulesJson, q);
+        for (auto& t : p.items) ids.push_back(t.id);
+        off += (int)p.items.size();
+        if ((int)p.items.size() < q.limit || off >= p.total) break;
+    }
+    addTracks(nid, ids);
+    return nid;
 }
 
 } // namespace onda::library

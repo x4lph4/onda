@@ -537,6 +537,37 @@ bool TrackRepository::integrityCheck(std::string& detail) {
             detail += "fk violation in " + s.colText(0) + "; ";
         }
     }
+    // ---- §59 semantic checks (beyond SQLite's own checks) ----
+    auto count1 = [&](const char* sql, const char* what) {
+        auto s = db_.prepare(sql);
+        if (s.step() && s.colInt(0) > 0) {
+            ok = false;
+            detail += what;
+            detail += ": " + s.colText(0) + "; ";
+        }
+    };
+    // invalid/empty paths
+    count1("SELECT COUNT(*) FROM tracks WHERE path=''",
+           "empty track paths");
+    // duplicate paths (identity violation — path is UNIQUE by policy)
+    count1("SELECT COUNT(*) FROM (SELECT path FROM tracks"
+           " GROUP BY path HAVING COUNT(*)>1)",
+           "duplicate track paths");
+    // broken playlist items → missing track/playlist rows
+    count1("SELECT COUNT(*) FROM playlist_items i"
+           " LEFT JOIN tracks t ON t.id=i.track_id WHERE t.id IS NULL",
+           "playlist items referencing missing tracks");
+    count1("SELECT COUNT(*) FROM playlist_items i"
+           " LEFT JOIN playlists p ON p.id=i.playlist_id"
+           " WHERE p.id IS NULL",
+           "playlist items referencing missing playlists");
+    // orphan tag memberships / cues / loops
+    count1("SELECT COUNT(*) FROM track_tags tt"
+           " LEFT JOIN tracks t ON t.id=tt.track_id WHERE t.id IS NULL",
+           "track_tags referencing missing tracks");
+    count1("SELECT COUNT(*) FROM cues c"
+           " LEFT JOIN tracks t ON t.id=c.track_id WHERE t.id IS NULL",
+           "cues referencing missing tracks");
     if (ok && detail.empty()) detail = "ok";
     return ok;
 }

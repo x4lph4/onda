@@ -39,6 +39,10 @@ public:
     bool remove(int64_t id);
     int64_t duplicate(int64_t id, const std::string& name);
     bool setRules(int64_t id, const std::string& rulesJson);
+    /// §29 — presentation fields (description/color/sortMode). All
+    /// optional — pass nullptr to keep a field unchanged.
+    bool setMeta(int64_t id, const std::string* description,
+                 const int* color, const int* sortMode);
     PlaylistInfo info(int64_t id);
     std::vector<PlaylistInfo> playlists(int64_t folderId = -1);
 
@@ -52,6 +56,15 @@ public:
     bool setOrder(int64_t playlistId, const std::vector<int64_t>& orderedIds);
     std::vector<int64_t> trackIds(int64_t playlistId);
     TrackPage tracks(int64_t playlistId, int offset = 0, int limit = 200);
+    /// §30 — membership viewed through the playlist's stored
+    /// sort_mode (or `q.sort` when the caller overrides). Stored
+    /// positions are never rewritten by sorting.
+    TrackPage tracksView(int64_t playlistId, const QuerySpec& q);
+    /// §35 — materialize a smart playlist's CURRENT result into a
+    /// new static playlist. The source smart playlist and the
+    /// collection are never modified; the copy is a plain static
+    /// playlist from then on.
+    int64_t snapshotSmart(int64_t smartId, const std::string& name);
 
     /// Shared DB handle for sibling managers (CrateManager depth
     /// walk). Still guarded by the same recursive mutex.

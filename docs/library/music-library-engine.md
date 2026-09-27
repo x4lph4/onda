@@ -205,14 +205,78 @@ size; `report()` → one-line text + `integrity_check` +
 - Duplicate rows are impossible (`path UNIQUE`, PK on
   playlist_items/track_tags); relinks verify content hash.
 
+## Phase 29 additions
+
+- **`ImportQueue`** (`importQueue()`, §9-10/§61) — per-item states
+  `Queued→Scanning→Analyzing→Completed|Failed|Cancelled` over the
+  worker thread; `enqueue` accumulates a batch, `cancel()` marks
+  untouched items Cancelled cooperatively (the in-flight file always
+  finishes — imports are per-file transactional), `resume()` re-queues
+  non-Completed items, `setProgress`/`setDone` report aggregate
+  progress and the final `ImportResult`. `Skipped` fingerprints count
+  as skipped, never failures.
+- **Auto-import per root** (§11-12) — `WatchRoot{path,recursive,
+  autoImport}`; `addWatchRoot`/`setAutoImport` persist the whole watch
+  configuration in `kv` (`watch.root.*`) and `restoreWatchRoots()`
+  re-registers it after `open()`. The flag gates only the watcher's
+  new-file pickup — explicit `scan()` still reconciles every root.
+- **`MissingFileManager` ops** (§14) — `ignore()`/`unignore()` hide a
+  missing row without deleting anything; `removeMissing(ids)` removes
+  only rows actually Missing; `removeFromCollection()` stays the
+  unconditional (user-confirmed) delete.
+- **`MetadataWriter`** (§19) — explicit write-back through an injected
+  `Writer` provider: file first, DB `edited_fields` only on success —
+  the collection never claims a write the file rejected. Nothing ever
+  writes audio files automatically.
+- **`TagNormalizer`** (§20) — pure opt-in helpers: whitespace collapse,
+  canonical case for ~40 known genres (unknown spellings kept),
+  `(feat. X)` splitting for callers that move featuring into artist.
+- **Fuzzy search** (§22) — `searchFuzzy(text)`: exact indexed search
+  first; on miss, a bounded OR-prefix FTS candidate set (per-token
+  prefixes + first-4-chars prefix of the squashed query so "daftpunk"
+  finds "daft punk") re-ranked by banded Levenshtein over folded,
+  space-stripped metadata. Threshold scales with query length.
+  Original metadata is never modified.
+- **Playlist metadata + sort views** (§29-30) — schema v10 adds
+  `playlists.description/color/sort_mode`; `setMeta()` updates them,
+  `tracksView()` honors the stored `PlaylistSort` (Manual keeps
+  `playlist_items.position`; every other mode is a view — sorting
+  never rewrites stored positions).
+- **Smart snapshots** (§35) — `snapshotSmart(smartId, name)` freezes a
+  live smart playlist's current evaluation into a static playlist;
+  later library changes never touch the snapshot.
+- **`ArtworkManager`** (§41-43) — `path()`/`thumbPath()`/`bytes()` over
+  a lazy disk-cache `PathFn` + provider `ThumbFn`; thumbnails keyed by
+  `trackId:px` in a byte-bounded in-memory LRU (`setCacheBudget`),
+  `invalidate()` on artwork change. Paint loops only ever touch
+  `bytes()`.
+- **`SessionHistory`/`TrackReference`** (§47, §52-53) —
+  `history().session(id)` rolls a session row + its entries;
+  `trackRef(id)` is the typed library→deck hand-off (DB identity,
+  path, display fallback, duration/bpm/key — no audio data, no
+  playback control crosses the boundary).
+- **Backup hardening** (§56-57) — `backupDb()` produces a physical,
+  consistent database copy via `VACUUM INTO`; `importJson` refuses
+  backups stamped with a newer format version.
+- **Integrity semantics** (§59) — `integrityCheck` now also detects
+  orphan `playlist_items`/`track_tags`/`history` rows, broken playlist
+  references and FTS index drift, on top of the physical checks.
+- **Color palette** (§39) — `colorPalette()` reads the argb list from
+  `kv` (`palette.colors`, comma-separated decimals) — the picker never
+  hardcodes colors.
+
 ## Performance (measured, synthetic)
+
+250k tracks seeded in ~9.5 s (~107 MB db):
+fts search ~54 ms · genre+bpm filter+sort page ~121 ms ·
+fuzzy re-rank ~510 ms · (10k-row chunked transactions).
 
 100k tracks seeded in ~2.9 s (~40 MB db):
 fts search ~24 ms · token search ~230 ms · filter+sort page ~30 ms ·
 page 500/1000 sort ~1.03 s · smart eval ~55 ms · 5k playlist add ~14 ms ·
 playlist page ~26 ms · diagnostics ~86 ms · integrity ~1.09 s.
 The paged-sort full COUNT is the slowest op by design (count is
-exact); everything else is comfortably interactive at 100k.
+exact); everything else is comfortably interactive at 100k–250k.
 
 ## Known limits
 
@@ -223,7 +287,8 @@ exact); everything else is comfortably interactive at 100k.
 - `play_count`/`last_played` are not re-synthesised on library import
   (they derive from history rows).
 - Tag/playlist names collide NOCASE; rename-to-existing merges.
-- Artwork manager exists (lazy disk cache via `artworkPath`); no
-  in-memory thumbnail pyramid yet.
+- Artwork thumbnails are single-size per request (keyed `trackId:px`);
+  no multi-level pyramid yet — the byte-bounded LRU covers the
+  working set of a scrolled page.
 - File watcher coverage is debounced rescan-on-change; OS-level
   recursive watching depth is platform-bounded.

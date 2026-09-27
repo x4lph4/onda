@@ -95,9 +95,33 @@ public:
         return writeFile(outPath, root.dump(1), err);
     }
 
+    /// §56 — physical database backup: a consistent snapshot of the
+    /// whole SQLite file via VACUUM INTO (online, atomic — safe while
+    /// the worker holds the connection open). Audio files are never
+    /// included, matching the metadata-only export contract.
+    bool backupDb(const std::string& outPath, std::string& err) {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const auto parent = fs::path(outPath).parent_path();
+        if (!parent.empty()) fs::create_directories(parent, ec);
+        std::lock_guard lk(repo_.db().mutex());
+        // VACUUM INTO takes a literal path (no binding) — escape '
+        std::string q = outPath;
+        for (size_t i = q.find('\''); i != std::string::npos;
+             i = q.find('\'', i + 2))
+            q.replace(i, 1, "''");
+        if (!repo_.db().exec(("VACUUM INTO '" + q + "'").c_str())) {
+            err = "VACUUM INTO failed";
+            return false;
+        }
+        return true;
+    }
+
     /// Import a previously exported library. Conflict policy applies
     /// when a matching track already exists (matched by content hash,
     /// then path). Never deletes rows/files — §50.
+    /// §57 — the export `version` is validated: a newer format than
+    /// this build understands is refused rather than half-applied.
     BackupResult importJson(const std::string& inPath,
                             BackupConflict policy) {
         BackupResult res;
@@ -107,6 +131,13 @@ public:
         const MiniJson root = MiniJson::parse(data, ok);
         if (!ok || root.at("format").str() != "onda-library") {
             res.detail = "not an onda-library export";
+            ++res.errors;
+            return res;
+        }
+        const int64_t ver = root.at("version").integer();
+        if (ver <= 0 || ver > kVersion) {
+            res.detail = "unsupported export version " +
+                         std::to_string((long long)ver);
             ++res.errors;
             return res;
         }

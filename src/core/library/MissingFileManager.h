@@ -78,6 +78,39 @@ public:
         return repo_.query(q).items;
     }
 
+    /// §14 — explicit removal from the collection. Destructive (the
+    /// track row + its user data go) — callers confirm first; this is
+    /// never automatic. Files on disk are never touched.
+    bool removeFromCollection(int64_t trackId) {
+        return repo_.remove(trackId);
+    }
+    int removeMissing(const std::vector<int64_t>& trackIds) {
+        int n = 0;
+        for (int64_t id : trackIds) {
+            Track t;
+            if (repo_.getById(id, t) &&
+                t.status == (int)TrackStatus::Missing &&
+                repo_.remove(id))
+                ++n;
+        }
+        return n;
+    }
+
+    /// §14 — "ignore": stop nagging about this missing file without
+    /// deleting anything. Marks the row Invalid (out of the missing
+    /// list) — every attached datum survives and a later `relink`
+    /// recovers it fully.
+    bool ignore(int64_t trackId) {
+        return repo_.setStatus(trackId, TrackStatus::Invalid);
+    }
+    /// Back on the radar: an ignored (Invalid) row becomes Missing
+    /// again when its file is still absent.
+    bool unignore(int64_t trackId) {
+        Track t;
+        if (!repo_.getById(trackId, t)) return false;
+        return repo_.setStatus(trackId, TrackStatus::Missing);
+    }
+
     /// A missing track whose original path exists again → Available.
     int recoverPresent() {
         int n = 0;

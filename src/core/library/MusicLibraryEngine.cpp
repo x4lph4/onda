@@ -11,13 +11,25 @@ MusicLibraryEngine::MusicLibraryEngine()
     : repo_(db_), importer_(repo_), scanner_(repo_, importer_),
       playlists_(repo_), history_(repo_), dup_(repo_), missing_(repo_),
       watcher_(scanner_, [this](const std::vector<std::string>& changed) {
-          // file changed on disk → re-import on the worker
+          // file changed on disk → re-import on the worker. §12 —
+          // files NOT already in the DB only auto-import under roots
+          // flagged for it; changed known files always re-import.
           post([this, changed] {
-              for (const auto& p : changed) importer_.importFile(p);
+              for (const auto& p : changed) {
+                  Track t;
+                  if (!repo_.getByPath(p, t) &&
+                      !scanner_.autoImportFor(p))
+                      continue;
+                  importer_.importFile(p);
+              }
           });
       }),
       crates_(playlists_), tags_(repo_), ratings_(repo_),
-      backup_(repo_, playlists_) {}
+      backup_(repo_, playlists_),
+      importQueue_(importer_,
+                   [this](std::function<void()> f) { post(std::move(f)); }),
+      metaWriter_(repo_),
+      artwork_([this](int64_t id) { return artworkPath(id); }) {}
 
 MusicLibraryEngine::~MusicLibraryEngine() {
     watcher_.stop();

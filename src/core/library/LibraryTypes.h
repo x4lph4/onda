@@ -174,12 +174,37 @@ struct ImportResult {
 
 enum class PlaylistKind : int { Static = 0, Smart = 1 };
 
+/// §30 — a playlist's stored view order. Manual = the explicit
+/// playlist_items.position order (canonical storage); every other
+/// mode is a VIEW over the same membership — sorting never rewrites
+/// stored positions.
+enum class PlaylistSort : int {
+    Manual = 0, Title, Artist, Album, Bpm, Key, Rating, DateAdded
+};
+/// PlaylistSort → repository SortKey (Manual has no column — callers
+/// keep the position path for it).
+inline SortKey sortKeyFor(PlaylistSort m) {
+    switch (m) {
+        case PlaylistSort::Title:     return SortKey::Title;
+        case PlaylistSort::Artist:    return SortKey::Artist;
+        case PlaylistSort::Album:     return SortKey::Album;
+        case PlaylistSort::Bpm:       return SortKey::Bpm;
+        case PlaylistSort::Key:       return SortKey::Key;
+        case PlaylistSort::Rating:    return SortKey::Rating;
+        case PlaylistSort::DateAdded: return SortKey::DateAdded;
+        default:                      return SortKey::Path;
+    }
+}
+
 struct PlaylistInfo {
     int64_t id { 0 };
     std::string name;
     int64_t folderId { 0 };
     PlaylistKind kind { PlaylistKind::Static };
     std::string rulesJson;           // smart playlists only
+    std::string description;         // v10
+    int     color { 0 };             // argb, 0 = none (v10)
+    int     sortMode { 0 };          // PlaylistSort (v10)
     int64_t createdAt { 0 }, updatedAt { 0 };
     int itemCount { 0 };
 };
@@ -195,6 +220,28 @@ struct HistoryEntry {
     int64_t startedAt { 0 };
     double playedSec { 0.0 };
     int counted { 0 };
+};
+
+/// §47 — one session's full view: the session row plus its entries.
+struct SessionHistory {
+    int64_t id { 0 };
+    std::string name;
+    int64_t startedAt { 0 };
+    int64_t endedAt { 0 };
+    std::vector<HistoryEntry> entries;
+};
+
+/// §52-53 — the hand-off object between library and deck. The library
+/// knows the track; the deck receives ONLY this reference and resolves
+/// audio through the loader — library never controls playback and no
+/// audio data crosses this boundary.
+struct TrackReference {
+    int64_t     trackId { -1 };     // DB identity (cues/loops/analysis)
+    std::string path;               // filesystem source for the loader
+    std::string title, artist;      // display fallback before metadata
+    double      durationSec { 0.0 };
+    double      bpm { 0.0 };
+    int         keyIndex { -1 };
 };
 
 /// Play-count rule (documented default): a playback counts when the

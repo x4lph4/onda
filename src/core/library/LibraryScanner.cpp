@@ -6,14 +6,19 @@
 
 namespace onda::library {
 
-void LibraryScanner::addRoot(const std::string& dir, bool recursive) {
+void LibraryScanner::addRoot(const std::string& dir, bool recursive,
+                             bool autoImport) {
     std::error_code ec;
     const std::string abs =
         std::filesystem::absolute(dir, ec).lexically_normal().string();
     if (ec) return;
-    for (auto& [r, rec] : roots_)
-        if (r == abs) { rec = recursive; return; }
-    roots_.push_back({ abs, recursive });
+    for (auto& r : roots_)
+        if (r.path == abs) {
+            r.recursive = recursive;
+            r.autoImport = autoImport;
+            return;
+        }
+    roots_.push_back({ abs, recursive, autoImport });
 }
 
 bool LibraryScanner::removeRoot(const std::string& dir) {
@@ -21,12 +26,27 @@ bool LibraryScanner::removeRoot(const std::string& dir) {
     const std::string abs =
         std::filesystem::absolute(dir, ec).lexically_normal().string();
     for (auto it = roots_.begin(); it != roots_.end(); ++it)
-        if (it->first == abs) { roots_.erase(it); return true; }
+        if (it->path == abs) { roots_.erase(it); return true; }
     return false;
 }
 
-std::vector<std::pair<std::string, bool>> LibraryScanner::roots() const {
+std::vector<LibraryScanner::WatchRoot> LibraryScanner::roots() const {
     return roots_;
+}
+
+bool LibraryScanner::setAutoImport(const std::string& dir, bool on) {
+    std::error_code ec;
+    const std::string abs =
+        std::filesystem::absolute(dir, ec).lexically_normal().string();
+    for (auto& r : roots_)
+        if (r.path == abs) { r.autoImport = on; return true; }
+    return false;
+}
+
+bool LibraryScanner::autoImportFor(const std::string& path) const {
+    for (const auto& r : roots_)
+        if (r.autoImport && path.rfind(r.path, 0) == 0) return true;
+    return false;
 }
 
 ScanDiff LibraryScanner::scan() {
@@ -34,8 +54,8 @@ ScanDiff LibraryScanner::scan() {
     // 1) every audio file under every root
     std::unordered_set<std::string> seen;
     std::vector<std::string> files;
-    for (const auto& [root, rec] : roots_)
-        for (auto& f : TrackImporter::listAudioFiles(root, rec)) {
+    for (const auto& r : roots_)
+        for (auto& f : TrackImporter::listAudioFiles(r.path, r.recursive)) {
             if (seen.insert(f).second) files.push_back(f);
         }
 
@@ -45,8 +65,8 @@ ScanDiff LibraryScanner::scan() {
         QuerySpec q; q.limit = 1 << 30;
         for (auto& t : repo_.query(q).items) {
             bool under = false;
-            for (const auto& [root, rec] : roots_)
-                if (t.path.rfind(root, 0) == 0) { under = true; break; }
+            for (const auto& r : roots_)
+                if (t.path.rfind(r.path, 0) == 0) { under = true; break; }
             if (under) byPath.emplace(t.path, std::move(t));
         }
     }
@@ -106,8 +126,8 @@ ScanDiff LibraryScanner::scan() {
 std::vector<std::string> LibraryScanner::quickDiff() {
     std::vector<std::string> changed;
     std::unordered_set<std::string> seen;
-    for (const auto& [root, rec] : roots_) {
-        for (auto& f : TrackImporter::listAudioFiles(root, rec)) {
+    for (const auto& r : roots_) {
+        for (auto& f : TrackImporter::listAudioFiles(r.path, r.recursive)) {
             if (!seen.insert(f).second) continue;
             Track t;
             int64_t sz = 0, mt = 0;

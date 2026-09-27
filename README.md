@@ -2,6 +2,53 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 29 (music library engine completion)
+
+Closed the remaining gaps on the Phase-7/14/18/23 library foundation
+(`docs/library/music-library-engine.md`, `docs/adr/0029-music-library-engine.md`)
+— the subsystem stays fully decoupled from audio/deck/mixer/fx/controller
+engines and all heavy work runs on the library worker.
+
+- **Import queue** (§9-10/§61): `ImportQueue` with per-item states
+  (Queued/Scanning/Analyzing/Completed/Failed/Cancelled), progress +
+  done callbacks, cooperative cancel and resume — self-driving through
+  `post_`, never blocking UI or audio.
+- **Auto-import** (§11-12): `WatchRoot.autoImport` gates only watcher
+  pickup; `addWatchRoot`/`setAutoImport` persist the whole watch
+  config in kv and `restoreWatchRoots()` replays it on open.
+- **Missing ops** (§14): `ignore`/`unignore` + status-gated
+  `removeMissing` (never deletes rows that aren't actually missing).
+- **Metadata write-back** (§19): `MetadataWriter` — explicit, provider-
+  injected, file-first; DB `edited_fields` only on success.
+- **Tag normalization** (§20): opt-in `TagNormalizer` — whitespace,
+  canonical genre case, feat.-splitting; original tags never altered
+  without consent.
+- **Fuzzy search** (§22): exact-first, then bounded OR-prefix FTS
+  candidates + banded-Levenshtein re-rank over folded squashed text —
+  "daftpunk" finds "Daft Punk".
+- **Playlist metadata** (§29-30): schema v10 description/color/
+  sort_mode; `tracksView` honors `PlaylistSort` as a view (Manual
+  order is never rewritten).
+- **Smart snapshots** (§35): `snapshotSmart` freezes a live smart
+  playlist into a static one.
+- **Artwork** (§41-43): `ArtworkManager` — lazy disk thumbs via
+  injected provider + byte-bounded in-memory LRU keyed `trackId:px`.
+- **History + deck hand-off** (§47, §52-53): `SessionHistory` rollup;
+  typed `TrackReference` — identity/path/display echo only, no audio
+  or playback control crosses the boundary.
+- **Backup + restore** (§56-57): `backupDb()` consistent copy via
+  `VACUUM INTO`; `importJson` refuses newer-version backups.
+- **Integrity + palette** (§59, §39): semantic checks (orphan
+  playlist/tag/history rows, broken refs, FTS drift) on top of
+  physical checks; `colorPalette()` from kv, never hardcoded.
+- **16 new `[lib29]` tests**: queue states/cancel/resume, auto-import
+  persistence, missing ops, write-back success/failure, tag normalize,
+  fuzzy, playlist meta+sort views, smart snapshot staleness, artwork
+  LRU eviction/invalidate, session rollup, TrackReference, backupDb +
+  version gate, orphan detection, palette — plus a **250k-track perf
+  suite** (FTS ~54 ms, filter+sort ~121 ms, fuzzy ~0.5 s, 107 MB db).
+- Full suite green: **567 cases / 1.66 M assertions**.
+
 ## Status — Phase 28 (performance deck engine completion)
 
 Completed the performance deck layer on top of the Phase-4/9/20/25
