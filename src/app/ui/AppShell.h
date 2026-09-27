@@ -298,6 +298,25 @@ public:
             mixer_.setChannelCount(snap_.master.deckMode);
         mixer_.setSnapshot(snap_.master, 1.0f / 30.0f);
         fx_->setSnapshot(snap_);
+        // Phase 22 — harmonic panel: reference = master deck, else the
+        // first playing deck; candidate = browser selection (§49).
+        if (prefs_.browserOpen) {
+            int ref = snap_.master.masterDeck;
+            if (ref < 0)
+                for (int d = 0; d < 4 && ref < 0; ++d)
+                    if (snap_.deck[d].state == (int)DeckState::Playing)
+                        ref = d;
+            if (ref >= 0) {
+                const auto& rd = snap_.deck[ref];
+                browser_.setHarmonicRef(rd.keyIndex, rd.keyConfidence,
+                                        rd.keyAmbiguous,
+                                        rd.effBpm > 0.0 ? rd.effBpm
+                                                        : rd.bpm,
+                                        rd.title);
+            } else {
+                browser_.setHarmonicRef(-1, 0.0f, false, 0.0, {});
+            }
+        }
         browser_.tick();
         notes_->tick(1.0 / 30.0);
         if (notes_->size() > 0) notifications_.repaint();

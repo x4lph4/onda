@@ -1,6 +1,7 @@
 #include "AnalysisStore.h"
 
 #include "../analysis/KeyAnalyzer.h"
+#include "../harmonic/KeyAnalysisCache.h"
 
 #include <cstdio>
 #include <cstring>
@@ -223,6 +224,20 @@ void AnalysisStore::save(const std::string& path, const AnalysisBundle& b,
     }
     saveGrid(id, b.grid, false);
 
+    // Phase 22 — rich key detail (algo/version/alts/segments + history)
+    if (b.keyDetail.analyzedAt > 0 || b.keyDetail.primary.valid()) {
+        harmonic::KeyAnalysisResult kd = b.keyDetail;
+        if (kd.algorithm.empty()) {
+            kd.algorithm = "onda.ks"; kd.version = "1.0.0";
+            kd.analyzedAt = (int64_t)::time(nullptr);
+            if (!kd.primary.valid()) {
+                kd.primary = harmonic::MusicalKey::fromIndex(
+                    r.key.key, r.key.confidence);
+            }
+        }
+        harmonic::KeyAnalysisCache(db_).save(id, kd);
+    }
+
     // ---- waveform blobs (3-level pyramid) ----
     auto& w = b.waveform;
     const size_t ovBytes = w.overview.size() * sizeof(WaveformBin);
@@ -390,6 +405,11 @@ std::shared_ptr<AnalysisBundle> AnalysisStore::load(const std::string& path) {
     }
     r.numFrames = b->waveform.numFrames;
     return b;
+}
+
+std::optional<harmonic::KeyAnalysisResult> AnalysisStore::loadKeyDetail(
+    int64_t trackId) {
+    return harmonic::KeyAnalysisCache(db_).load(trackId);
 }
 
 void AnalysisStore::setUserBpm(int64_t trackId, double bpm) {

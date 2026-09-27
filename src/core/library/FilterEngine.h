@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "../harmonic/CamelotWheel.h"
 #include "LibraryTypes.h"
 
 namespace onda::library {
@@ -33,6 +34,12 @@ public:
         out.push_back(rel((pc + 5) % 12, minor));
         out.push_back(rel(pc, !minor));            // relative maj/min
         return out;
+    }
+
+    /// Phase 22 — strict Camelot wheel neighbourhood: same + relative
+    /// + number±1 same side (the classic "perfect match" set).
+    static std::vector<int> camelotCompatibleKeys(int keyIndex) {
+        return harmonic::CamelotWheel::compatibleIndices(keyIndex);
     }
 
     /// WHERE clause + bound values (text via bind, numbers inlined —
@@ -82,6 +89,8 @@ private:
             { "analysis_state", "t.analysis_state" },
             { "play_state", "t.play_state" },
             { "key", "a.key_index" }, { "key_index", "a.key_index" },
+            { "keyconf", "a.key_confidence" },
+            { "key_confidence", "a.key_confidence" },
             { "rating", "t.rating" }, { "color", "t.color" },
             { "energy", "t.energy" }, { "duration", "t.duration_sec" },
             { "year", "t.year" }, { "track_num", "t.track_num" },
@@ -130,6 +139,22 @@ private:
             for (size_t i = 0; i < keys.size(); ++i)
                 s += (i ? "," : "") + std::to_string(keys[i]);
             return s + ")";
+        }
+        // Phase 22 — strict Camelot neighbourhood (wheel adjacency:
+        // same + relative + number±1 same side only).
+        if (c.field == "key_camelot_compatible") {
+            const auto keys = camelotCompatibleKeys((int)c.a);
+            if (keys.empty()) return "1 = 1";
+            std::string s = "a.key_index IN (";
+            for (size_t i = 0; i < keys.size(); ++i)
+                s += (i ? "," : "") + std::to_string(keys[i]);
+            return s + ")";
+        }
+        // Phase 22 — mode:major|minor|unknown over the canonical index.
+        if (c.field == "key_mode") {
+            if (c.a < 0.0)  return "a.key_index = -1";
+            if (c.a > 0.5)  return "a.key_index BETWEEN 12 AND 23"; // minor
+            return "a.key_index BETWEEN 0 AND 11";                  // major
         }
 
         const char* col = column(c.field);

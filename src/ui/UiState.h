@@ -48,6 +48,13 @@ struct DeckSnapshot {
     // meta (filled by bridge from track/library, not atomics)
     std::string path, title, artist, keyText;
     int    keyIndex = -1;               // 0..23 — notation chosen by view
+    // Phase 22 — tonal detail (§28): detected confidence, ambiguity,
+    // mode, and effective/shifted key when key-shift is active.
+    float  keyConfidence = 0.0f;
+    bool   keyAmbiguous = false;
+    bool   keyIsMinor = false;
+    int    keyEffectiveIndex = -1;      // -1 = same as keyIndex/unknown
+    int    keyShiftSemis = 0;
     int64_t trackId = -1;
     bool    analyzed = false;
 };

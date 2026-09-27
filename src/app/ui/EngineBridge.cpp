@@ -5,6 +5,7 @@
 
 #include "core/analysis/AnalysisTypes.h"
 #include "core/analysis/KeyAnalyzer.h"
+#include "core/harmonic/KeyShiftEngine.h"
 #include "core/mixer/ParameterRegistry.h"
 
 namespace onda::ui {
@@ -474,6 +475,21 @@ void EngineBridge::refreshDeckMeta(int, DeckSnapshot& o) {
     if (t.keyIndex >= 0) {
         o.keyIndex = t.keyIndex;
         o.keyText = KeyAnalyzer::camelotName(t.keyIndex);
+        // Phase 22 — tonal detail: confidence, mode, ambiguity and
+        // effective key (tempo drift transposes when !keylock, §19/§20)
+        o.keyConfidence = t.keyConfidence;
+        o.keyIsMinor    = t.keyIndex >= 12;
+        // ambiguous = persisted flag OR weak margin (both surfaces
+        // say "treat as estimate", §7/§8)
+        o.keyAmbiguous  = t.keyAmbiguous != 0
+                       || (t.keyConfidence > 0.0f && t.keyConfidence < 0.25f);
+        const double ratio = o.bpm > 0.0 ? o.effBpm / o.bpm : 1.0;
+        const auto km = harmonic::KeyShiftEngine::model(
+            t.keyIndex, o.keyShiftSemis, ratio, o.keylock);
+        o.keyEffectiveIndex = km.effectiveIndex != t.keyIndex
+            ? km.effectiveIndex : -1;
+        if (o.keyEffectiveIndex >= 0)
+            o.keyText = harmonic::KeyShiftEngine::display(km);
     }
 }
 

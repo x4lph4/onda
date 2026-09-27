@@ -2,6 +2,54 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 22 (key analysis + harmonic mixing engine)
+
+Professional tonal analysis and musical compatibility
+(`docs/analysis/key-analysis-engine.md`,
+`docs/adr/0022-key-analysis-harmonic-engine.md`) — informs the DJ,
+never decides for them.
+
+- `KeyAnalysisEngine` coordinator + `KeyAnalysisProvider` /
+  `KeyDetector` seam (chromagram + Krumhansl–Schmuckler shipping impl,
+  FAST/BALANCED/HIGH_QUALITY tiers) — background-only, one chromagram
+  pass feeds both the legacy `KeyResult` and the rich
+  `KeyAnalysisResult` (alternatives, windowed `TonalSegment`s,
+  algorithm/version/timestamp).
+- `KeyAnalysisResult`: primary key + margin-based confidence +
+  alternatives on ambiguity + `key_ambiguous` flag — uncertain
+  results render as uncertain everywhere.
+- Five notations over one canonical index (maj 0-11 / min 12-23):
+  Standard/Flat/Sharp/Camelot/OpenKey via `KeyNotationConverter` +
+  `KeyNormalizer` enharmonics; `nA/nB/nd/nm` parsing.
+- `CamelotWheel` canonical math (`(pc*7+8|5) mod 12`) — strict wheel
+  neighbourhood (same + relative + ±1 same side) as
+  `key_camelot_compatible`; broad `key_compatible` semantics
+  preserved.
+- `HarmonicCompatibilityEngine` (SameKey/Relative/Adjacent/
+  EnergyChange/Distant/Unknown + explanation),
+  `TempoCompatibility` (diff/ratio/pitch %), `MusicalCompatibility`,
+  `KeyShiftEngine` (semitone math, octave wrap — never touches
+  audio).
+- Schema v8: `key_algo/version/at/alt_json/segments_json/ambiguous` +
+  `key_analysis_history`; `KeyAnalysisCache` invalidates on
+  algorithm/version/quality change. User key override stays separate
+  from detected values.
+- Library: `mode:`/`camelot:`/`keyconf:`/`compatible:` search tokens;
+  `key_mode`/`keyconf`/`key_camelot_compatible` filters; Key/Camelot/
+  Mode/Confidence browser columns; `RelatedTracksEngine` criteria +
+  per-result explanations.
+- UI: deck key badge with confidence styling (all 4 decks, shared
+  model); `HarmonicPanel` (current vs candidate + relationship +
+  tempo) in the browser; `CamelotWheelView`.
+- DDJ-FLX4 prep is data-only (snapshot key fields); no invented
+  controls.
+- 24 new tests (**449 cases / 1,646,801 assertions green**):
+  synthetic-key detection, confidence/ambiguity, all-24 Camelot
+  round-trips, notation round-trips, compatibility matrix, BPM math,
+  key-shift wraps, cache round-trip+validity+history, filter SQL,
+  related-track explanations, quality tiers, 100k-track perf
+  (related-tracks 32 hits in ~65 ms), 4-deck shared model.
+
 ## Status — Phase 21 (professional stems engine)
 
 Track separation into VOCALS/DRUMS/BASS/INSTRUMENTS with real-time

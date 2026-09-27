@@ -97,6 +97,17 @@ std::string TrackTableModel::cellText(const Track& t,
         return t.keyIndex >= 0 && t.keyIndex < 24
              ? KeyAnalyzer::standardName(t.keyIndex) : "";
     }
+    // Phase 22 §23 — mode + confidence columns
+    if (col == "keyMode") {
+        if (t.keyIndex < 0) return "";
+        return t.keyIndex >= 12 ? "minor" : "major";
+    }
+    if (col == "keyConf") {
+        if (t.keyIndex < 0 || t.keyConfidence <= 0.0f) return "";
+        std::snprintf(buf, sizeof buf, "%d%%",
+                      (int)(t.keyConfidence * 100.0f));
+        return buf;
+    }
     if (col == "year") {
         return t.year > 0 ? (std::snprintf(buf, sizeof buf, "%d", t.year),
                              std::string(buf)) : "";

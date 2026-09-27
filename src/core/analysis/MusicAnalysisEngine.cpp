@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "../decode/IDecoder.h"
+#include "../harmonic/KeyAnalysisProvider.h"
 #include "BeatGridEngine.h"
 #include "BeatGridValidator.h"
 #include "BpmAnalyzer.h"
@@ -136,9 +137,20 @@ std::shared_ptr<AnalysisBundle> MusicAnalysisEngine::analyzeBuffer(
     if (cancelled(cancel)) return nullptr;
 
     // ---- key (failure isolated: other components keep their data) ----
-    KeyAnalyzer key;
+    // Phase 22: the K-S detector produces the rich KeyAnalysisResult;
+    // the flat KeyResult on `r` is derived from it — same chromagram
+    // pass, no duplicate work.
     try {
-        r.key = key.analyze(samples, numFrames, channels, sampleRate);
+        harmonic::KsKeyDetector det;
+        harmonic::KeyAnalysisConfig cfg =
+            harmonic::KeyAnalysisProvider().configFor(
+                (int)harmonic::KeyQuality::Balanced);
+        b->keyDetail = det.analyze(samples, numFrames, channels,
+                                   sampleRate, cfg);
+        r.key.key        = b->keyDetail.primary.index();
+        r.key.confidence = b->keyDetail.primary.confidence;
+        r.key.standard   = KeyAnalyzer::standardName(r.key.key);
+        r.key.camelot    = KeyAnalyzer::camelotName(r.key.key);
         comp(AnalysisComponent::Key,
              r.key.key >= 0 ? AnalysisState::Analyzed
                             : AnalysisState::Failed, 1.0f);

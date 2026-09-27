@@ -17,6 +17,7 @@
 #include "../core/sampler/SampleRepository.h"
 #include "../core/sampler/SamplerEngine.h"
 #include "../core/stems/StemsEngine.h"
+#include "../core/harmonic/KeyAnalysisEngine.h"
 #include "../core/engine/DecodeToTrackAudio.h"
 
 #include <unordered_map>
@@ -162,6 +163,14 @@ public:
             stems_->setPlaybackActive(true);
         }
 
+        // Phase 22: key-analysis coordinator — key-only re-analysis
+        // (e.g. HIGH_QUALITY segment pass) on its own worker; full
+        // track analysis stays on AnalysisService's queue.
+        keyEng_ = std::make_unique<harmonic::KeyAnalysisEngine>(db_.get());
+        keyEng_->setDecoderFactory(
+            [] { return std::make_unique<FFmpegDecoder>(); });
+        keyEng_->setPlaybackActive(true);   // §34 yield during playback
+
         mainWindow_ = std::make_unique<MainWindow>(getApplicationName(),
                                                  *engine_, *analysis_,
                                                  *perf_, *lib_, config_,
@@ -185,6 +194,7 @@ public:
             if (db_ && db_->isOpen()) sampler_->saveAll();
         }
         stems_.reset();      // join stem workers before engines die
+        keyEng_.reset();     // join key worker before the DB closes
         stemAudio_.clear();
         if (engine_) {
             engine_->shutdown();
@@ -248,6 +258,7 @@ private:
     std::unique_ptr<adevice::AudioDeviceEngine> adevice_;
     std::unique_ptr<audio::AudioEngine> engine_;
     std::unique_ptr<stems::StemsEngine> stems_;
+    std::unique_ptr<harmonic::KeyAnalysisEngine> keyEng_;
     std::unordered_map<std::string, std::unique_ptr<TrackAudio>> stemAudio_;
     std::unique_ptr<MainWindow> mainWindow_;
 };

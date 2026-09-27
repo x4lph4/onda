@@ -20,7 +20,8 @@ static const char* kCols =
     "t.label,t.composer,t.play_state,t.edited_fields,t.updated_at,"
     "a.needs_review,"
     "EXISTS(SELECT 1 FROM beatgrids bg WHERE bg.track_id=t.id),"
-    "EXISTS(SELECT 1 FROM waveforms wf WHERE wf.track_id=t.id)";
+    "EXISTS(SELECT 1 FROM waveforms wf WHERE wf.track_id=t.id),"
+    "a.key_ambiguous";
 
 static const char* kFrom =
     " FROM tracks t LEFT JOIN analysis a ON a.track_id = t.id ";
@@ -241,6 +242,7 @@ Track TrackRepository::rowToTrack(Database::Stmt& s) {
     t.needsReview  = (int)s.colInt(40);
     t.hasBeatgrid  = (int)s.colInt(41);
     t.hasWaveform  = (int)s.colInt(42);
+    t.keyAmbiguous = (int)s.colInt(43);
     return t;
 }
 

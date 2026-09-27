@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "../harmonic/CamelotWheel.h"
 #include "KeyNotation.h"
 #include "LibraryTypes.h"
 
@@ -119,6 +120,49 @@ private:
             const int k = KeyNotationConverter::parse(v);
             if (k < 0) return false;
             c.field = "key_index";
+            c.op = CmpOp::Eq;
+            c.a = (double)k;
+            q.filters.push_back(c);
+            return true;
+        }
+        // Phase 22 — harmonic-mixing tokens
+        if (f == "camelot") {
+            const int k = harmonic::CamelotConverter::toIndex(v);
+            if (k < 0) return false;
+            c.field = "key_index";
+            c.op = CmpOp::Eq;
+            c.a = (double)k;
+            q.filters.push_back(c);
+            return true;
+        }
+        if (f == "mode") {
+            const std::string m = lower(v);
+            if (m != "major" && m != "minor" && m != "unknown") return false;
+            c.field = "key_mode";
+            c.op = CmpOp::Eq;
+            c.a = m == "minor" ? 1.0 : m == "unknown" ? -1.0 : 0.0;
+            q.filters.push_back(c);
+            return true;
+        }
+        if (f == "keyconf" || f == "keyconfidence") {
+            c.field = "keyconf";
+            numericCond(v, c);
+            q.filters.push_back(c);
+            return true;
+        }
+        if (f == "compatible") {
+            const int k = KeyNotationConverter::parse(v);
+            if (k < 0) return false;
+            c.field = "key_compatible";
+            c.op = CmpOp::Eq;
+            c.a = (double)k;
+            q.filters.push_back(c);
+            return true;
+        }
+        if (f == "camelot_compatible") {
+            const int k = harmonic::CamelotConverter::toIndex(v);
+            if (k < 0) return false;
+            c.field = "key_camelot_compatible";
             c.op = CmpOp::Eq;
             c.a = (double)k;
             q.filters.push_back(c);

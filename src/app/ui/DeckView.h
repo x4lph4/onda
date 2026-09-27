@@ -116,7 +116,7 @@ public:
 
     /// §27 — key notation preference (Standard / Camelot / OpenKey).
     void setKeyNotation(int n) {
-        keyNotation_ = (library::KeyNotation)std::clamp(n, 0, 2);
+        keyNotation_ = (library::KeyNotation)std::clamp(n, 0, 4);
         repaint();
     }
 
@@ -201,11 +201,23 @@ public:
                                              : snap_.bpm);
             badge(badges, num, p.accent);
         }
-        // §27 — key in the configured notation; keyText fallback
+        // §27 — key in the configured notation; keyText fallback.
+        // Phase 22 §28: shifted/effective key shows "orig → eff";
+        // ambiguity gets an explicit "?" marker (not color alone).
         if (snap_.keyIndex >= 0) {
-            badge(badges, library::KeyNotationConverter::name(
-                              snap_.keyIndex, keyNotation_),
-                          p.deckColor(deck_));
+            const char* kn = library::KeyNotationConverter::name(
+                snap_.keyIndex, keyNotation_);
+            char buf[64];
+            if (snap_.keyEffectiveIndex >= 0) {
+                std::snprintf(buf, sizeof buf, "%s→%s", kn,
+                    library::KeyNotationConverter::name(
+                        snap_.keyEffectiveIndex, keyNotation_));
+            } else {
+                std::snprintf(buf, sizeof buf, "%s%s", kn,
+                              snap_.keyAmbiguous ? "?" : "");
+            }
+            badge(badges, buf, snap_.keyAmbiguous ? p.warn
+                                                  : p.deckColor(deck_));
         } else if (!snap_.keyText.empty()) {
             badge(badges, snap_.keyText, p.deckColor(deck_));
         }

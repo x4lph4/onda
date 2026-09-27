@@ -9,6 +9,7 @@
 #include "AnalysisTypes.h"
 #include "BeatGrid.h"
 #include "WaveformData.h"
+#include "../harmonic/HarmonicTypes.h"
 
 namespace onda {
 
@@ -23,6 +24,9 @@ struct AnalysisBundle {
     BeatGrid         grid;         // detected grid (may be empty)
     WaveformData     waveform;
     AnalysisOverride overrides;    // user edits, if any
+    /// Phase 22 — rich key result (alternatives/segments/algo id) the
+    /// KeyAnalysisCache persists. `result.key` is derived from it.
+    harmonic::KeyAnalysisResult keyDetail;
     int              version { kAnalysisVersion };
 
     /// Effective grid for playback/sync/UI.

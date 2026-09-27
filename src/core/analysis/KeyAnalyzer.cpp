@@ -19,6 +19,11 @@ static const char* kNames[24] = {
     "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
     "Cm", "C#m", "Dm", "D#m", "Em", "Fm", "F#m", "Gm", "G#m", "Am", "A#m", "Bm" };
 
+// Flat enharmonic spellings (§9/§10 FLAT notation).
+static const char* kFlatNames[24] = {
+    "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B",
+    "Cm", "Dbm", "Dm", "Ebm", "Em", "Fm", "Gbm", "Gm", "Abm", "Am", "Bbm", "Bm" };
+
 // Camelot: majors -> B column, minors -> A column.
 static const char* kCamelot[24] = {
     "8B","3B","10B","5B","12B","7B","2B","9B","4B","11B","6B","1B",
@@ -27,25 +32,33 @@ static const char* kCamelot[24] = {
 const char* KeyAnalyzer::standardName(int key) {
     return key >= 0 && key < 24 ? kNames[key] : "?";
 }
+const char* KeyAnalyzer::flatName(int key) {
+    return key >= 0 && key < 24 ? kFlatNames[key] : "?";
+}
 const char* KeyAnalyzer::camelotName(int key) {
     return key >= 0 && key < 24 ? kCamelot[key] : "?";
 }
 
-KeyResult KeyAnalyzer::analyze(const float* samples, int64_t numFrames,
-                               int channels, double sampleRate) {
-    KeyResult r;
-    if (samples == nullptr || numFrames <= 0) return r;
+namespace {
 
-    constexpr int kOrder = 13;          // 8192 FFT ≈ 5.9 Hz/bin @ 48 kHz
-    constexpr int kHop   = 4096;
+constexpr int kOrder = 13;              // 8192 FFT ≈ 5.9 Hz/bin @48k
+constexpr int kHop   = 4096;
+constexpr int kMaxFramesDef = 1500;
+
+/// Fold the track into a normalized 12-bin pitch-class histogram.
+/// Returns false on silence/empty (§31 — no invented chroma).
+bool chromagram(const float* samples, int64_t numFrames, int channels,
+                double sampleRate, int64_t startFrame, int64_t endFrame,
+                int maxFrames, double chroma[12], int* usedFrames) {
+    if (samples == nullptr || numFrames <= 0 || endFrame <= startFrame)
+        return false;
     Fft fft;
     fft.prepare(kOrder);
     const int n = fft.size(), bins = n / 2;
     std::vector<float> mags((size_t)bins, 0.0f), mono((size_t)n, 0.0f);
-    double chroma[12] = {};
+    for (int i = 0; i < 12; ++i) chroma[i] = 0.0;
 
     const double binHz = sampleRate / (double)n;
-    // Precompute bin->pitch-class table (55 Hz..5 kHz, A0..~C8).
     std::vector<int> binPc((size_t)bins, -1);
     for (int b = 1; b < bins; ++b) {
         const double f = b * binHz;
@@ -55,7 +68,8 @@ KeyResult KeyAnalyzer::analyze(const float* samples, int64_t numFrames,
     }
 
     int frames = 0;
-    for (int64_t hop = 0; hop + n <= numFrames && frames < 1500; hop += kHop, ++frames) {
+    for (int64_t hop = startFrame; hop + n <= endFrame &&
+         frames < maxFrames; hop += kHop, ++frames) {
         float acc = 0.0f;
         for (int i = 0; i < n; ++i) {
             float s = 0.0f;
@@ -64,21 +78,24 @@ KeyResult KeyAnalyzer::analyze(const float* samples, int64_t numFrames,
             mono[(size_t)i] = s / (float)channels;
             acc += mono[(size_t)i] * mono[(size_t)i];
         }
-        if (acc / n < 1e-5) continue; // skip quiet frames
+        if (acc / n < 1e-5) continue;   // skip quiet frames
         fft.magnitudeSpectrum(mono.data(), n, mags.data());
         for (int b = 1; b < bins; ++b) {
             const int pc = binPc[(size_t)b];
             if (pc >= 0) chroma[pc] += (double)mags[(size_t)b] * mags[(size_t)b];
         }
     }
-    if (frames == 0) return r;
-
+    if (usedFrames) *usedFrames = frames;
+    if (frames == 0) return false;
     double total = 0.0;
-    for (double v : chroma) total += v;
-    if (total <= 0.0) return r;
-    for (double& v : chroma) v /= total;
+    for (int i = 0; i < 12; ++i) total += chroma[i];
+    if (total <= 0.0) return false;
+    for (int i = 0; i < 12; ++i) chroma[i] /= total;
+    return true;
+}
 
-    // Correlate each rotation of both profiles (Pearson).
+/// Pearson against every rotation of both K-S profiles.
+void correlateAll(const double chroma[12], double corr[24]) {
     auto pearson = [](const double* x, const double* y) {
         double mx = 0, my = 0;
         for (int i = 0; i < 12; ++i) { mx += x[i]; my += y[i]; }
@@ -90,27 +107,86 @@ KeyResult KeyAnalyzer::analyze(const float* samples, int64_t numFrames,
         }
         return syy > 0.0 && sxx > 0.0 ? sxy / std::sqrt(sxx * syy) : 0.0;
     };
-
     double rot[12];
-    double best = -2.0, second = -2.0; int bestKey = -1;
     for (int mode = 0; mode < 2; ++mode) {
         const double* prof = mode == 0 ? kMajor : kMinor;
         for (int root = 0; root < 12; ++root) {
             for (int i = 0; i < 12; ++i)
                 rot[i] = prof[(i - root + 12) % 12];
-            const double c = pearson(chroma, rot);
-            const int keyIdx = mode == 0 ? root : 12 + root;
-            if (c > best) { second = best; best = c; bestKey = keyIdx; }
-            else if (c > second) second = c;
+            corr[mode == 0 ? root : 12 + root] = pearson(chroma, rot);
         }
     }
-    r.key = bestKey;
-    r.confidence = best > 0.0
+}
+
+/// Rank the correlation table: best key + runner-up + best score.
+void rankCorr(const double corr[24], int& bestKey, double& best,
+              double& second) {
+    best = -2.0; second = -2.0; bestKey = -1;
+    for (int i = 0; i < 24; ++i)
+        if (corr[i] > best) { second = best; best = corr[i]; bestKey = i; }
+        else if (corr[i] > second) second = corr[i];
+}
+
+float marginConfidence(double best, double second) {
+    return best > 0.0
         ? (float)std::clamp((best - second) * 4.0 + best * 0.5, 0.0, 1.0)
         : 0.0f;
-    r.standard = standardName(bestKey);
-    r.camelot  = camelotName(bestKey);
+}
+
+} // namespace
+
+KeyResult KeyAnalyzer::analyze(const float* samples, int64_t numFrames,
+                               int channels, double sampleRate) {
+    KeyResult r;
+    const Detail d = analyzeDetail(samples, numFrames, channels,
+                                   sampleRate, 0);
+    r.key = d.key; r.confidence = d.confidence;
+    r.standard = standardName(d.key);
+    r.camelot  = camelotName(d.key);
     return r;
+}
+
+KeyAnalyzer::Detail KeyAnalyzer::analyzeDetail(
+    const float* samples, int64_t numFrames, int channels,
+    double sampleRate, int maxFrames) {
+    Detail d;
+    double chroma[12];
+    if (!chromagram(samples, numFrames, channels, sampleRate,
+                    0, numFrames,
+                    maxFrames > 0 ? maxFrames : kMaxFramesDef,
+                    chroma, nullptr))
+        return d;
+    for (int i = 0; i < 12; ++i) d.chroma[i] = chroma[i];
+    correlateAll(chroma, d.corr);
+    double best, second;
+    rankCorr(d.corr, d.key, best, second);
+    d.confidence = marginConfidence(best, second);
+    return d;
+}
+
+std::vector<KeyAnalyzer::SegmentGuess> KeyAnalyzer::analyzeSegments(
+    const float* samples, int64_t numFrames, int channels,
+    double sampleRate, int64_t segFrames) {
+    std::vector<SegmentGuess> out;
+    if (segFrames <= 0) return out;
+    for (int64_t s = 0; s < numFrames; s += segFrames) {
+        const int64_t e = std::min(numFrames, s + segFrames);
+        SegmentGuess g;
+        g.startFrame = s; g.endFrame = e;
+        double chroma[12];
+        if (chromagram(samples, numFrames, channels, sampleRate,
+                       s, e, kMaxFramesDef, chroma, nullptr)) {
+            double corr[24];
+            correlateAll(chroma, corr);
+            double best, second; int k;
+            rankCorr(corr, k, best, second);
+            g.confidence = marginConfidence(best, second);
+            // §31 — low-confidence windows are UNKNOWN, never guessed.
+            g.key = g.confidence >= 0.25f ? k : -1;
+        }
+        out.push_back(g);
+    }
+    return out;
 }
 
 } // namespace onda

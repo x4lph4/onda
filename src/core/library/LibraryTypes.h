@@ -37,6 +37,7 @@ struct Track {
     float  bpmConfidence { 0.0f };
     int    keyIndex { -1 };          // -1 unknown, 0..23 standard
     float  keyConfidence { 0.0f };
+    int    keyAmbiguous { 0 };       // analysis.key_ambiguous — §22
     int    analysisState { 0 };      // AnalysisState
     int    analysisVersion { 0 };
     int    needsReview  { 0 };       // analysis.needs_review — §36

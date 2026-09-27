@@ -37,6 +37,11 @@ public:
               const std::string& title, const std::string& artist);
     std::shared_ptr<AnalysisBundle> load(const std::string& path);
 
+    /// Phase 22 — rich key detail for one track (alternatives,
+    /// segments, algo identity); loaded on demand, not in `load()`.
+    std::optional<harmonic::KeyAnalysisResult> loadKeyDetail(
+        int64_t trackId);
+
     /// Manual overrides — detected data is left untouched.
     void setUserBpm(int64_t trackId, double bpm);        // -1 clears
     void setUserKey(int64_t trackId, int keyIndex);      // -1 clears

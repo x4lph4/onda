@@ -7,6 +7,9 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "OndaTheme.h"
+#include "HarmonicPanel.h"
+#include "core/harmonic/Compatibility.h"
+#include "core/harmonic/KeyNormalizer.h"
 #include "core/library/MusicLibraryEngine.h"
 #include "ui/CommandManager.h"
 #include "ui/TrackTableModel.h"
@@ -24,7 +27,7 @@ public:
     BrowserView(const ThemeEngine& te, CommandManager& cm,
                 library::MusicLibraryEngine& lib)
         : theme_(&te), cmds_(&cm), lib_(&lib),
-          railModel_(*this), tableModel_(*this) {
+          railModel_(*this), tableModel_(*this), harmonic_(te) {
         model_.setDefaultColumns();
         applyLibrarySource();
 
@@ -47,6 +50,18 @@ public:
         table_.setColour(juce::ListBox::backgroundColourId,
                          col(theme_->theme().palette.surfaceSunk));
         addAndMakeVisible(table_);
+
+        // Phase 22 §49 — harmonic panel: wheel pick writes a
+        // camelot_compatible: search token (advisory filter; the DJ
+        // still picks the track).
+        harmonic_.wheel().onPick = [this](int keyIndex) {
+            if (keyIndex < 0) return;
+            const auto cam = harmonic::CamelotConverter::fromIndex(keyIndex);
+            if (!cam.valid()) return;
+            search_.setText("camelot_compatible:" + cam.str(), false);
+            applySpec();
+        };
+        addAndMakeVisible(harmonic_);
 
         reloadRail();
         applySpec();
@@ -73,6 +88,31 @@ public:
     }
     void focusSearch() { search_.grabKeyboardFocus(); }
     TrackTableModel& model() { return model_; }
+    HarmonicPanel&   harmonic() { return harmonic_; }
+
+    /// Phase 22 — per-tick feed: ref = reference deck's key/bpm,
+    /// candidate = current table selection. Advisory only.
+    void setHarmonicRef(int keyIndex, float conf, bool ambiguous,
+                        double bpm, const std::string& title) {
+        ref_ = { keyIndex, conf, ambiguous, bpm, title };
+        HarmonicPanel::State s;
+        s.refKey = keyIndex; s.refConf = conf; s.refAmbiguous = ambiguous;
+        s.refBpm = bpm; s.refTitle = title;
+        const library::Track sel = selected();
+        if (sel.id > 0 && sel.keyIndex >= 0) {
+            s.candKey = sel.keyIndex; s.candConf = sel.keyConfidence;
+            s.candBpm = sel.bpm;
+            s.candTitle = sel.title.empty() ? sel.filename : sel.title;
+            const auto mc = harmonic::MusicalCompatibilityEngine::relate(
+                harmonic::MusicalKey::fromIndex(keyIndex, conf), bpm,
+                harmonic::MusicalKey::fromIndex(sel.keyIndex,
+                                                sel.keyConfidence),
+                sel.bpm);
+            s.relation = mc.explanation;
+            s.mixable  = mc.mixableNow;
+        }
+        harmonic_.setState(s);
+    }
 
     // ---- sources / filters ----
     void applyLibrarySource() {
@@ -177,6 +217,12 @@ public:
     void resized() override {
         auto b = getLocalBounds();
         search_.setBounds(b.removeFromTop(30).reduced(4));
+        // Phase 22 — harmonic panel column (square-ish, right edge)
+        const int hw = juce::jmin(220, b.getWidth() / 4);
+        if (hw >= 140)
+            harmonic_.setBounds(b.removeFromRight(hw));
+        else
+            harmonic_.setBounds(0, 0, 0, 0);
         auto rail = b.removeFromLeft(railW_);
         b.removeFromTop(20);           // header strip
         rail_.setBounds(rail.withTrimmedTop(20));
@@ -289,6 +335,10 @@ private:
     juce::TextEditor   search_;
     juce::ListBox      rail_{ "rail", nullptr },
                      table_{ "tracks", nullptr };
+    HarmonicPanel      harmonic_;
+    struct { int keyIndex { -1 }; float conf { 0.0f };
+             bool ambiguous { false }; double bpm { 0.0 };
+             std::string title; } ref_;
     std::vector<RailItem> railItems_;
     int playlistFilter_ = -1;
     bool historyMode_   = false;

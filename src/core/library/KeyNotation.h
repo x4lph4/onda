@@ -10,7 +10,9 @@ namespace onda::library {
 /// §43 — key display notation. The stored value is always the key
 /// index 0..23 (majors C..B = 0..11, minors Cm..Bm = 12..23, -1
 /// unknown); notation is a presentation concern only.
-enum class KeyNotation { Standard, Camelot, OpenKey };
+/// Phase 22 §10 — full system set: STANDARD(=SHARP), FLAT, SHARP,
+/// CAMELOT, OPEN_KEY.
+enum class KeyNotation { Standard = 0, Camelot, OpenKey, Flat, Sharp };
 
 class KeyNotationConverter {
 public:
@@ -23,7 +25,10 @@ public:
                 return KeyAnalyzer::camelotName(key);
             case KeyNotation::OpenKey:
                 return openName(key);
+            case KeyNotation::Flat:
+                return KeyAnalyzer::flatName(key);
             case KeyNotation::Standard:
+            case KeyNotation::Sharp:
             default:
                 return KeyAnalyzer::standardName(key);
         }

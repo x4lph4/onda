@@ -252,6 +252,33 @@ CREATE TABLE IF NOT EXISTS stem_sets(
 CREATE INDEX IF NOT EXISTS idx_stem_sets_hash ON stem_sets(content_hash);
 CREATE INDEX IF NOT EXISTS idx_stem_sets_track ON stem_sets(track_id);
 )SQL",
+
+    // v8 — Phase 22 key analysis: detector identity + rich result on
+    // the analysis row (cache invalidation keyed by algo+version §21),
+    // alternatives/segments JSON (§8/§32), and an append-only analysis
+    // HISTORY for debugging/re-analysis (§40). Detected values stay
+    // separate from user_overrides.key_index (§38).
+    R"SQL(
+ALTER TABLE analysis ADD COLUMN key_algo TEXT;
+ALTER TABLE analysis ADD COLUMN key_version TEXT;
+ALTER TABLE analysis ADD COLUMN key_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE analysis ADD COLUMN key_alt_json TEXT;
+ALTER TABLE analysis ADD COLUMN key_segments_json TEXT;
+ALTER TABLE analysis ADD COLUMN key_ambiguous INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS key_history(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    algo TEXT NOT NULL,
+    version TEXT NOT NULL,
+    quality INTEGER NOT NULL DEFAULT 1,
+    key_index INTEGER NOT NULL DEFAULT -1,
+    confidence REAL NOT NULL DEFAULT 0,
+    ambiguous INTEGER NOT NULL DEFAULT 0,
+    analyzed_at INTEGER NOT NULL,
+    detail_json TEXT);
+CREATE INDEX IF NOT EXISTS idx_key_history_track ON key_history(track_id);
+)SQL",
 };
 
 bool Database::open(const std::string& path) {
