@@ -26,7 +26,8 @@ MainComponent::MainComponent(audio::AudioEngine& engine,
     // ---- Phase 13: device engine ports (control thread only) ----
     if (adevice_) {
         adevice_->ports.mixerMap = [&engine](const adevice::ChannelMapping& m) {
-            engine.setOutputMap(m.masterL, m.masterR, m.cueL, m.cueR);
+            engine.setOutputMap(m.masterL, m.masterR,
+                                m.cueL, m.cueR, m.boothL, m.boothR);
         };
         adevice_->ports.testSig = [&engine](adevice::TestSignal m) {
             engine.setTestSignal((int)m);

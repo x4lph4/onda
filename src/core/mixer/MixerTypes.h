@@ -50,6 +50,7 @@ enum class BusParam : uint16_t {
     FxReturnB,         // FX send bus 1 return level (0..2)
     MasterCue,         // 0/1 — taps post-master program into the cue bus
     BoothGain = 0x40B, // booth monitor gain 0..2 — independent of master (§33)
+    HeadphoneMono,     // 0/1 — fold the headphone bus to mono (§24)
 };
 
 enum class XfAssign : int { A = 0, B = 1, Thru = 2 };

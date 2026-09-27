@@ -15,6 +15,7 @@
 #include "CueManager.h"
 #include "HeadphoneBus.h"
 #include "MasterBus.h"
+#include "OutputGuard.h"
 #include "RecordingBus.h"
 #include "MixerDiagnostics.h"
 #include "MixerTypes.h"
@@ -171,8 +172,28 @@ public:
         return outMap_[i & 7].load(std::memory_order_relaxed);
     }
 
+    /// §38-39 — stream (re)start safety. Called by the device layer
+    /// (AudioEngine::audioDeviceAboutToStart, or on device switch) to
+    /// re-arm a ~40 ms fade-in on every mapped output — kills the
+    /// DC jump/pop a restarted endpoint would otherwise emit. Non-RT.
+    void onStreamRestart() noexcept {
+        streamFadeReq_.store(1, std::memory_order_relaxed);
+    }
+
+    /// §40-41 — output guard telemetry for a mapped pair
+    /// (0=master, 1=cue/phones, 2=booth). Control thread read.
+    const mixer::OutputGuard::Stats& outGuardStats(int pair) const noexcept {
+        return outGuard_[pair < 0 || pair > 2 ? 0 : pair].stats();
+    }
+
 private:
     void rebuildRouting() noexcept;
+    /// Emit a stereo pair onto mapped device channels: mono-sums when
+    /// both legs land on the same out (§15), applies the stream-start
+    /// fade (§38-39), then sanitize + DC-monitor via OutputGuard (§40-41).
+    void emitPair(const float* sL, const float* sR, int chL, int chR,
+                  float* const* out, int numOut, int n,
+                  int guardIdx) noexcept;
 
     double rate_ { 48000.0 };
     int    active_ { 4 };
@@ -189,7 +210,17 @@ private:
 
     std::vector<float> mixL_, mixR_, cueL_, cueR_;       // bus scratch (preallocated)
     std::vector<float> boothL_, boothR_;                 // booth tap scratch
+    std::vector<float> phonesOutL_, phonesOutR_;         // headphone pair stage
+    std::vector<float> boothOutL_, boothOutR_;           // booth pair stage
+    std::vector<float> fadeG_;                           // stream-start ramp curve
     std::array<std::atomic<int>,8> outMap_ { 0, 1, 2, 3, -1, -1, -1, -1 };
+    /// §38-39 stream-start fade + §40-41 output guards (master/cue/
+    /// booth pairs). smStreamFade_ snaps to 1 (unity) — the restart
+    /// request re-arms it at 0 for a clickless ramp-in.
+    mixer::GainSmoother    smStreamFade_;
+    std::atomic<int>       streamFadeReq_ { 0 };
+    bool                   streamFading_ { false };   // RT-owned
+    mixer::OutputGuard     outGuard_[3];
     /// Channel source table (packed ChSource). Written on the control
     /// thread, read every block — atomics only, never a lock.
     std::array<std::atomic<uint32_t>, kMaxChannels> chSource_ {};

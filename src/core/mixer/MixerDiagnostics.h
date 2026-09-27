@@ -53,6 +53,11 @@ struct MixerBusDiag {
     float boothPeakL { 0.0f }, boothPeakR { 0.0f };
     uint64_t boothClips { 0 };
     bool  recorderAttached { false };
+    bool  headphoneMono { false };
+    // §40-41 output guards (mapped pairs: master / cue / booth)
+    float masterDc { 0.0f }, cueDc { 0.0f }, boothDc { 0.0f };
+    uint64_t outSanitized { 0 };   // NaN/Inf/over-clamp samples fixed
+    uint64_t outOverFull  { 0 };   // |x| > 1.0 samples detected
 };
 
 /// Human-readable report — same style as fx::diagnosticReport.
@@ -81,6 +86,11 @@ inline std::string mixerReport(const MixerBusDiag& d,
        + "  peak=" + num(d.boothPeakL) + "/" + num(d.boothPeakR)
        + "  clips=" + std::to_string(d.boothClips)
        + (d.recorderAttached ? "  REC" : "") + "\n";
+    s += "outGuard: dc=" + num(d.masterDc) + "/" + num(d.cueDc)
+       + "/" + num(d.boothDc)
+       + "  sanitized=" + std::to_string(d.outSanitized)
+       + "  overFull=" + std::to_string(d.outOverFull)
+       + (d.headphoneMono ? "  PHONES-MONO" : "") + "\n";
     for (int i = 0; i < nCh; ++i) {
         const auto& c = ch[i];
         if (!c.active) continue;

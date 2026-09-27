@@ -2,6 +2,48 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 26 (audio device engine completion)
+
+Completed the device layer on top of the Phase-13 `adevice` foundation
+(`docs/audio/audio-device-engine.md`, `docs/adr/0026-audio-device-engine.md`)
+— audit showed ~70% of the spec already existed; this phase closed the
+real gaps.
+
+- **`ChannelMapping` + booth pair** (§17): `boothL/boothR` with full
+  validation (complete pairs, no overlap), `defaults()` maps booth on
+  4/5 only with ≥6 detected outs, `DeviceProfile` JSON v2 (`bL/bR`,
+  backward compatible), all three pairs flow to `setOutputMap` (6
+  atomics).
+- **Typed errors + status** (§31-32): `selectEx()` returns
+  `DeviceResult{AudioError, message}` — `DEVICE_NOT_FOUND`,
+  `CHANNEL_CONFIGURATION_FAILED`, `INITIALIZATION_FAILED`,
+  `STREAM_START_FAILED`, `DEVICE_DISCONNECTED`,
+  `MANUAL_CONFIGURATION_REQUIRED`, …; `AudioDeviceStatus` view
+  (UNAVAILABLE…RECOVERING) from backend + recovery FSM; diagnostics
+  print ROUTING/DEVICE STATUS/LAST ERROR.
+- **`DjAudioProfile`** (§27-30): capability-based DJ-device profile —
+  FLX4 with ≥4 detected outs → master 1-2 / phones 3-4; generic
+  ≥4-out interface → master+cue(+booth ≥6); **never invented** —
+  a 2-out "FLX4" gets no cue suggestion. Controller detection stays
+  independent (`ctrl::`).
+- **`autoRoute`** (§46): returns `{map, ok, reason}` — safe defaults
+  or explicit *Manual Configuration Required*, never a guess; mono
+  devices get a legal collapsed master.
+- **Output stage** (`emitPair`, §15/§38-42): every mapped pair passes
+  mono fold-down (collapsed pair = L+R sum, not last-wins), the
+  ~40 ms stream-start fade (`onStreamRestart` from
+  `audioDeviceAboutToStart`, kills restart pops/DC jumps), and
+  `OutputGuard` — NaN/Inf/over-clamp sanitize + `|x|>1` counter +
+  ~200 ms DC estimator per pair, all preallocated/atomic.
+- **Headphone mono** (§24): `HeadphoneMono` registry id `0x40C`,
+  smoothed L+R fold-down on the phones bus (distinct from routing
+  collapse).
+- **17 new `[adev26]` tests**: booth validation, autoRoute/manual,
+  DJ profiles, typed errors + status, disconnect→recovery (ok+fail),
+  profile v2, cue xf-independence, mix sweep, 4-deck cue, master cue,
+  phones mono, OutputGuard, stream fade, mono master, mock-FLX4
+  end-to-end, state preservation, 4-deck stress.
+
 ## Status — Phase 25 (FX engine completion)
 
 Completed the professional FX semantics on top of the Phase-16 engine

@@ -148,6 +148,7 @@ public:
             case BusParam::FxReturnB:        return &kFxRetB;
             case BusParam::MasterCue:        return &kMasterCue;
             case BusParam::BoothGain:        return &kBoothGain;
+            case BusParam::HeadphoneMono:    return &kHeadphoneMono;
         }
         return nullptr;
     }
@@ -198,6 +199,7 @@ private:
     static constexpr ParamDef kFxRetB     { (uint16_t)BusParam::FxReturnB,     "FxReturnB",  1.0f,  0.0f, 2.0f, 0.001f, 8.0f };
     static constexpr ParamDef kMasterCue  { (uint16_t)BusParam::MasterCue,     "MasterCue",  0.0f,  0.0f, 1.0f, 1.0f,   0.0f };
     static constexpr ParamDef kBoothGain  { (uint16_t)BusParam::BoothGain,     "BoothGain",  1.0f,  0.0f, 2.0f, 0.001f, 8.0f };
+    static constexpr ParamDef kHeadphoneMono{ (uint16_t)BusParam::HeadphoneMono, "HeadphoneMono", 0.0f, 0.0f, 1.0f, 1.0f, 0.0f };
 
     // ---- FX slot params (kind templates; ids encoded by caller) ----
     static constexpr ParamDef kFxType     { 0, "FxType",     0.0f, 0.0f,

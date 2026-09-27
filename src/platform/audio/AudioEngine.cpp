@@ -110,6 +110,7 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device) {
     stats_.maxCallbackMs.store(0.0f, std::memory_order_relaxed);
     haveLastCb_ = false;
     smoothedLoad_ = 0.0f;
+    mixer_.onStreamRestart();   // §38-39: re-arm the output fade-in
     log::info("Audio device started: " + device->getName()
               + " @ " + juce::String(sr) + " Hz, "
               + juce::String(device->getCurrentBufferSizeSamples()) + " smp");

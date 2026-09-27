@@ -7,6 +7,12 @@ buffer policy, channel routing, latency accounting, health and
 recovery. The real-time callback itself is unchanged and still lives
 in `audio::AudioEngine` — this layer is control-plane only.
 
+**Phase 26 completes it**: booth pair in `ChannelMapping`, typed
+`AudioError` codes + `AudioDeviceStatus`, `DjAudioProfile`
+capability-based detection (DDJ-FLX4), explicit `autoRoute` with
+Manual-Required, headphone mono fold-down, stream-start output fade,
+and `OutputGuard` (sanitize + DC monitor) on every mapped pair.
+
 ```
 Application
 ↓
@@ -36,8 +42,10 @@ Output
 | `AudioHealthMonitor` | `core/adevice/AudioHealthMonitor.h` | underruns/xruns/budget/overload, dedup'd warnings |
 | `AudioRecoveryManager` | `core/adevice/AudioRecoveryManager.h` | explicit FSM |
 | `AudioTestTool` | `core/adevice/AudioTestTool.h` | routing-test signal generator (RT-safe) |
-| `DeviceProfile` | `core/adevice/DeviceProfile.h` | per-device-id persisted settings (JSON) |
-| `AudioDeviceTypes` | `core/adevice/AudioDeviceTypes.h` | POD types + enums |
+| `DeviceProfile` | `core/adevice/DeviceProfile.h` | per-device-id persisted settings (JSON v2: booth keys) |
+| `DjAudioProfile` | `core/adevice/DjAudioProfile.h` | DJ-controller audio profile from detected caps (§27-28) |
+| `OutputGuard` | `core/mixer/OutputGuard.h` | per-pair sanitize + DC monitor + over-full counters (§40-42) |
+| `AudioDeviceTypes` | `core/adevice/AudioDeviceTypes.h` | POD types + `AudioError`/`DeviceResult`/`AudioDeviceStatus` (§31-32) |
 
 ## Backend architecture (§2, §37)
 
@@ -120,22 +128,69 @@ input/output latencies (driver + hardware) → estimated round trip.
 - Monitoring/cue implication: cue lives on a mapped pair of the same
   stream → same buffer latency as master; no extra estimate.
 
-## Routing + channel management (§14-16)
+## Routing + channel management (§14-17, §26, §45-46)
 
-`ChannelMapping {masterL, masterR, cueL, cueR, inL, inR}`:
+`ChannelMapping {masterL/R, cueL/R, boothL/R, inL/R}` — Phase 26 adds
+the booth pair (the mixer's `BoothBus` already owned `outMap[4..5]`;
+the domain layer now models it):
 
-- validated by `AudioRouting::check` (in-range, stereo pairs complete,
-  no master/cue overlap);
-- persisted per device id in `DeviceProfile`;
-- auto-derived: saved profile → FLX4 topology → `defaults(outCh)`
-  (master 0-1, cue 2-3 iff ≥4 outs);
-- published to `MixerEngine::setOutputMap` (4 atomics) — `render()`
-  zeroes all channels, copies master to the mapped pair, and renders
-  the headphone bus only when the mapped cue pair is in range. Unused
-  channels always carry silence; master and cue can never duplicate
-  each other (overlap rejected at validation).
+- validated by `AudioRouting::check` (in-range, complete stereo pairs,
+  no overlap between master/cue/booth);
+- persisted per device id in `DeviceProfile` (JSON v2 `bL/bR` keys —
+  v1 files read back as `booth=-1`);
+- auto-derived via `AudioRouting::autoRoute()`: detected DJ profile →
+  `defaults(outCh)` (master 0-1, cue 2-3 iff ≥4 outs, booth 4-5 iff
+  ≥6 outs) — or **Manual Configuration Required** when the device
+  cannot even host a master pair (never a guessed route, §46);
+- published to `MixerEngine::setOutputMap` (6 atomics) — `render()`
+  zeroes all channels then `emitPair()` writes each bus to its mapped
+  pair. Unused channels carry silence; a pair collapsed onto one
+  channel (`mL==mR`) is mono-summed, not overwritten (§15);
+- `emitPair` is also where the stream-start fade and `OutputGuard`
+  apply (below).
 
-## Recovery + hot-plug (§18-19, §32)
+## Typed errors + device status (§31-32) — Phase 26
+
+`selectEx()` / `setChannelMappingEx()` return `DeviceResult
+{AudioError code, std::string message}` — the legacy `select()` keeps
+the string view. Codes: `DEVICE_NOT_FOUND`, `UNSUPPORTED_SAMPLE_RATE`,
+`UNSUPPORTED_BUFFER_SIZE`, `CHANNEL_CONFIGURATION_FAILED`,
+`INITIALIZATION_FAILED`, `DEVICE_DISCONNECTED`, `STREAM_START_FAILED`,
+`STREAM_STOP_FAILED`, `MANUAL_CONFIGURATION_REQUIRED`. The engine also
+keeps `lastResult()` and derives `AudioDeviceStatus`
+(`UNAVAILABLE/AVAILABLE/INITIALIZING/ACTIVE/DISCONNECTED/ERROR/
+RECOVERING`) from backend status + recovery FSM — surfaced in the
+diagnostics text and the Settings audio panel.
+
+## DJ-controller audio profiles (§27-30) — Phase 26
+
+`DjAudioProfile::detect(DeviceInfo, DeviceCapabilities)` produces a
+profile **only from detected capabilities**: DDJ-FLX4 with ≥4 outs →
+`DjController` (master 1-2, phones 3-4 — documented topology); any
+interface with ≥4 outs → `DjInterface` (master, phones, booth iff ≥6).
+A device named "DDJ-FLX4" that reports only 2 outs gets **no**
+controller profile — capabilities are never invented from a name.
+Controller (MIDI/HID) detection lives in `ctrl::` and is fully
+independent: FLX4-as-controller + different-audio-device is a legal
+configuration.
+
+## Output stage (§15, §24, §38-42) — Phase 26
+
+- **Headphone mono** — `BusParam::HeadphoneMono (0x40C)`: smoothed
+  L+R fold-down on the headphone bus, separate from routing collapse.
+- **Stream-start fade** — `audioDeviceAboutToStart` calls
+  `MixerEngine::onStreamRestart()`; the next blocks ramp every mapped
+  out 0→1 over ~40 ms via a precomputed gain curve (`fadeG_`) — no DC
+  jump/pop on device (re)start or switch (§38-39).
+- **OutputGuard** — per mapped pair (master/cue/booth), after fade:
+  non-finite and over-`kClamp` samples are zeroed/clamped and counted,
+  `|x|>1.0` counted separately, plus a ~200 ms DC-offset estimator —
+  counters published in `MixerBusDiag` (`outSanitized`, `outOverFull`,
+  `masterDc/cueDc/boothDc`). Last-resort protection only — the master
+  limiter stays the gain-staging boundary and remains optional (§41-42).
+- **Mono master** — `mL==mR` writes the L+R sum, not last-wins (§15).
+
+## Recovery + hot-plug (§11-13, §32)
 
 FSM: `Healthy → Warning | DeviceLost → Reconnecting → Recovered →
 Healthy`, plus `Failed` (leaves only via successful reopen).
@@ -157,8 +212,11 @@ no exceptions, no repeated allocation. Phase 13 added only:
 - one atomic load (`testMode_`), and when a test signal is active a
   bounded `memset`+sine write into the already-delivered output block
   (`AudioTestTool::render` — no state changes, no allocation);
-- `mixer_.outMap()` — 4 relaxed atomic loads per block;
-- `underrunCount` / `deviceErrors` atomic increments.
+- `mixer_.outMap()` — 6 relaxed atomic loads per block;
+- `underrunCount` / `deviceErrors` atomic increments;
+- `streamFadeReq_` atomic consume + preallocated `fadeG_` curve +
+  `OutputGuard` math per mapped pair (Phase 26 — still pure math and
+  atomics, no allocation/locks).
 
 All enumeration, probing, permission requests, switching and recovery
 run on the control/UI thread.
@@ -185,8 +243,9 @@ timestamp, duration, buffer and CPU for diagnostics.
 
 ```
 DEVICE / BACKEND / SAMPLE RATE / BUFFER (+ms) / INPUT CH / OUTPUT CH /
+ROUTING (master->L/R cue->L/R booth->L/R) /
 ESTIMATED LATENCY (+estimated|measured tag) / CPU % / UNDERRUNS /
-XRUNS / STREAM STATUS / RECOVERY
+XRUNS / STREAM STATUS / DEVICE STATUS / LAST ERROR / RECOVERY
 ```
 
 The Settings → Audio panel shows it live and offers **COPY
@@ -241,7 +300,16 @@ Limitations:
   a bespoke backend later.
 - Measured round-trip latency requires a physical loopback — reported
   honestly as estimated until then.
+- `UNSUPPORTED_SAMPLE_RATE`/`UNSUPPORTED_BUFFER_SIZE` codes exist but
+  current policy *snaps* to supported values instead of failing — the
+  codes are for backends that reject explicitly.
+- Device-switch crossfade is a fade-in after restart (the outgoing
+  stream cannot be kept alive across a JUCE device switch); no
+  gapless audio during the switch itself.
+- `DjAudioProfile` for non-FLX4 hardware needs a real detection table
+  per model — currently only FLX4 is name-matched; everything else
+  falls back to generic out-count defaults.
 - Hardware verification on a real DDJ-FLX4 is pending; topology is
   applied only after name detection + capability check, never assumed.
 - The JUCE selector still owns backend-type selection; the Onda panel
-  covers preset/test/diagnostics on top of it.
+  covers preset/test/diagnostics + routing/status readout on top of it.

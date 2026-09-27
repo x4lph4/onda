@@ -37,14 +37,19 @@ struct DeviceCapabilities {
 
 /// Per-device channel routing — output indices into the device stream.
 /// -1 = unmapped. Inputs reserved for future capture paths.
+/// Phase 26 adds the booth pair (§17): the mixer already owns a booth
+/// bus on outMap[4..5]; the domain layer now models it explicitly.
 struct ChannelMapping {
     int masterL = 0, masterR = 1;
     int cueL = 2, cueR = 3;         // headphone bus; -1 → no cue out
+    int boothL = -1, boothR = -1;   // booth monitor; -1 → no booth out
     int inL = -1, inR = -1;
-    bool hasCue() const { return cueL >= 0 && cueR >= 0; }
+    bool hasCue()   const { return cueL >= 0 && cueR >= 0; }
+    bool hasBooth() const { return boothL >= 0 && boothR >= 0; }
     bool operator==(const ChannelMapping& o) const {
         return masterL == o.masterL && masterR == o.masterR
             && cueL == o.cueL && cueR == o.cueR
+            && boothL == o.boothL && boothR == o.boothR
             && inL == o.inL && inR == o.inR;
     }
 };
@@ -87,6 +92,71 @@ struct LatencyReport {
 enum class HealthState : int {
     Healthy = 0, Warning, DeviceLost, Reconnecting, Recovered, Failed
 };
+
+/// §32 — typed failure reasons, never bare strings. `DeviceResult`
+/// carries the code plus the actionable human message.
+enum class AudioError : int {
+    Ok = 0,
+    DeviceNotFound,
+    UnsupportedSampleRate,
+    UnsupportedBufferSize,
+    ChannelConfigurationFailed,
+    InitializationFailed,
+    DeviceDisconnected,
+    StreamStartFailed,
+    StreamStopFailed,
+    ManualConfigRequired      // auto-route could not find a safe map
+};
+inline const char* audioErrorName(AudioError e) {
+    switch (e) {
+        case AudioError::Ok:                          return "OK";
+        case AudioError::DeviceNotFound:              return "DEVICE_NOT_FOUND";
+        case AudioError::UnsupportedSampleRate:       return "UNSUPPORTED_SAMPLE_RATE";
+        case AudioError::UnsupportedBufferSize:       return "UNSUPPORTED_BUFFER_SIZE";
+        case AudioError::ChannelConfigurationFailed:  return "CHANNEL_CONFIGURATION_FAILED";
+        case AudioError::InitializationFailed:        return "INITIALIZATION_FAILED";
+        case AudioError::DeviceDisconnected:          return "DEVICE_DISCONNECTED";
+        case AudioError::StreamStartFailed:           return "STREAM_START_FAILED";
+        case AudioError::StreamStopFailed:            return "STREAM_STOP_FAILED";
+        case AudioError::ManualConfigRequired:        return "MANUAL_CONFIGURATION_REQUIRED";
+    }
+    return "?";
+}
+struct DeviceResult {
+    AudioError  code = AudioError::Ok;
+    std::string message;      // actionable detail for the user
+    bool        ok()   const { return code == AudioError::Ok; }
+    bool        empty()const { return message.empty(); } // legacy-compat
+    const char* codeName() const { return audioErrorName(code); }
+    static DeviceResult success() { return {}; }
+    static DeviceResult fail(AudioError c, std::string m) {
+        return { c, std::move(m) };
+    }
+};
+
+/// §31 — user-facing device state, derived from backend status +
+/// recovery FSM. Distinct from HealthState (internal diagnostic FSM).
+enum class AudioDeviceStatus : int {
+    Unavailable = 0,   // no device selected / none present
+    Available,         // present, not streaming
+    Initializing,      // select()/apply() in flight
+    Active,            // streaming
+    Disconnected,      // vanished while selected
+    Error,             // last operation failed
+    Recovering         // recovery FSM attempting a reopen
+};
+inline const char* audioDeviceStatusName(AudioDeviceStatus s) {
+    switch (s) {
+        case AudioDeviceStatus::Unavailable:  return "UNAVAILABLE";
+        case AudioDeviceStatus::Available:    return "AVAILABLE";
+        case AudioDeviceStatus::Initializing: return "INITIALIZING";
+        case AudioDeviceStatus::Active:       return "ACTIVE";
+        case AudioDeviceStatus::Disconnected: return "DISCONNECTED";
+        case AudioDeviceStatus::Error:        return "ERROR";
+        case AudioDeviceStatus::Recovering:   return "RECOVERING";
+    }
+    return "?";
+}
 
 /// One over-budget callback — recorded for the health report.
 struct UnderrunEvent {

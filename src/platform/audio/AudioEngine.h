@@ -87,10 +87,11 @@ public:
     double sampleRate() const noexcept { return sampleRate_.load(); }
     bool   running()    const noexcept { return started_; }
 
-    /// Phase 13: physical output routing (master/cue stereo pairs onto
-    /// device channel indices). Non-RT; the mixer reads atomics.
-    void setOutputMap(int mL, int mR, int cL, int cR) noexcept {
-        mixer_.setOutputMap(mL, mR, cL, cR);
+    /// Phase 13/26: physical output routing (master/cue/booth stereo
+    /// pairs onto device channel indices). Non-RT; atomics only.
+    void setOutputMap(int mL, int mR, int cL, int cR,
+                      int bL = -1, int bR = -1) noexcept {
+        mixer_.setOutputMap(mL, mR, cL, cR, bL, bR);
     }
     /// Phase 13: routing-test signal (adevice::TestSignal). Replaces
     /// program audio on the mapped outs while active. Non-RT set.

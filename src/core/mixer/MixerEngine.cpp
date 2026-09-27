@@ -41,7 +41,41 @@ void MixerEngine::prepare(double sampleRate) noexcept {
     booth_.prepare(sampleRate);
     cueMgr_.prepare(sampleRate);
     fx_.prepare(sampleRate);
+    // §38-42 output stage resources (all preallocated, non-RT)
+    phonesOutL_.assign(AudioFormat::kMaxBlockFrames, 0.0f);
+    phonesOutR_.assign(AudioFormat::kMaxBlockFrames, 0.0f);
+    boothOutL_.assign(AudioFormat::kMaxBlockFrames, 0.0f);
+    boothOutR_.assign(AudioFormat::kMaxBlockFrames, 0.0f);
+    fadeG_.assign(AudioFormat::kMaxBlockFrames, 1.0f);
+    smStreamFade_.prepare(sampleRate, 40.0f); // ~40 ms restart ramp
+    smStreamFade_.snap(1.0f);
+    for (auto& g : outGuard_) { g.prepare(sampleRate); g.reset(); }
     rebuildRouting();
+}
+
+void MixerEngine::emitPair(const float* sL, const float* sR,
+                           int chL, int chR, float* const* out,
+                           int numOut, int n, int guardIdx) noexcept {
+    float* L = (chL >= 0 && chL < numOut) ? out[chL] : nullptr;
+    float* R = (chR >= 0 && chR < numOut) ? out[chR] : nullptr;
+    if (L == nullptr && R == nullptr) return;
+    if (L == R) {   // both legs on one out → mono fold-down (§15/§24)
+        for (int i = 0; i < n; ++i)
+            L[i] = (sL[i] + sR[i]) * 0.5f;
+    } else {
+        if (L != nullptr)
+            std::memcpy(L, sL, (size_t)n * sizeof(float));
+        if (R != nullptr)
+            std::memcpy(R, sR, (size_t)n * sizeof(float));
+    }
+    if (streamFading_) {
+        const float* g = fadeG_.data();
+        for (int i = 0; i < n; ++i) {
+            if (L != nullptr) L[i] *= g[i];
+            if (R != nullptr) R[i] *= g[i];
+        }
+    }
+    outGuard_[guardIdx].process(L, L == R ? nullptr : R, n);
 }
 
 void MixerEngine::setActiveChannels(int n) noexcept {
@@ -164,6 +198,7 @@ void MixerEngine::setParam(uint16_t id, float v) noexcept {
         case mixer::BusParam::FxReturnB:        fx_.setSendReturn(1, v); break;
         case mixer::BusParam::MasterCue:        cueMgr_.setMasterCue(v > 0.5f); break;
         case mixer::BusParam::BoothGain:        booth_.setGain(v); break;
+        case mixer::BusParam::HeadphoneMono:   phones_.setMono(v > 0.5f); break;
     }
 }
 
@@ -281,6 +316,17 @@ void MixerEngine::render(float* const* out, int numOut, int n,
     // 3) master bus in place -> outputs 0-1
     master_.process(mixL_.data(), mixR_.data(), n);
 
+    // §38-39 — consume a pending stream-restart request, then bake the
+    // fade curve once so every mapped pair sees the identical ramp.
+    if (streamFadeReq_.exchange(0, std::memory_order_relaxed) != 0) {
+        smStreamFade_.snap(0.0f);
+        smStreamFade_.setTarget(1.0f);
+    }
+    streamFading_ = smStreamFade_.target() < 1.0f
+                    || !smStreamFade_.settled();
+    if (streamFading_)
+        for (int i = 0; i < n; ++i) fadeG_[i] = smStreamFade_.tick();
+
     // physical output map (Phase 13 AudioRouting — atomic published)
     const int mL = outMap_[0].load(std::memory_order_relaxed);
     const int mR = outMap_[1].load(std::memory_order_relaxed);
@@ -294,10 +340,7 @@ void MixerEngine::render(float* const* out, int numOut, int n,
         if (out[ch] != nullptr)
             std::memset(out[ch], 0, (size_t)n * sizeof(float));
 
-    float* L = (mL >= 0 && mL < numOut) ? out[mL] : nullptr;
-    float* R = (mR >= 0 && mR < numOut) ? out[mR] : nullptr;
-    if (L != nullptr) std::memcpy(L, mixL_.data(), (size_t)n * sizeof(float));
-    if (R != nullptr) std::memcpy(R, mixR_.data(), (size_t)n * sizeof(float));
+    emitPair(mixL_.data(), mixR_.data(), mL, mR, out, numOut, n, 0);
 
     // legacy clip accounting (MasterStats + AudioStats still published)
     const uint64_t clips = master_.meters().clips.load(std::memory_order_relaxed);
@@ -315,22 +358,29 @@ void MixerEngine::render(float* const* out, int numOut, int n,
     cueMgr_.process(cueL_.data(), cueR_.data(),
                     mixL_.data(), mixR_.data(), n);
 
-    // 4) phones bus -> mapped cue outputs
+    // 4) phones bus -> staged -> mapped cue outputs (mono-collapse
+    //    handled inside emitPair when both legs land on one out)
     const bool cue = cL >= 0 && cR >= 0 && cL < numOut && cR < numOut
                      && out[cL] != nullptr && out[cR] != nullptr;
-    if (cue)
+    if (cue) {
         phones_.process(cueL_.data(), cueR_.data(),
                         mixL_.data(), mixR_.data(),
-                        out[cL], out[cR], n);
+                        phonesOutL_.data(), phonesOutR_.data(), n);
+        emitPair(phonesOutL_.data(), phonesOutR_.data(),
+                 cL, cR, out, numOut, n, 1);
+    }
 
-    // 4b) booth bus -> mapped booth outputs (independent of master)
+    // 4b) booth bus -> staged -> mapped booth outputs (independent of master)
     const bool booth = bL >= 0 && bR >= 0 && bL < numOut && bR < numOut
                        && out[bL] != nullptr && out[bR] != nullptr;
-    if (booth)
+    if (booth) {
         booth_.process(boothL_.data(), boothR_.data(),
-                       out[bL], out[bR], n);
-    else
+                       boothOutL_.data(), boothOutR_.data(), n);
+        emitPair(boothOutL_.data(), boothOutR_.data(),
+                 bL, bR, out, numOut, n, 2);
+    } else {
         booth_.idle(n);
+    }
 
     // 5) publish legacy MasterStats from bus meters
     const auto& mm = master_.meters();
@@ -377,6 +427,18 @@ void MixerEngine::snapshot(mixer::MixerBusDiag& bus,
     bus.boothPeakR = bm.peakR.load(std::memory_order_relaxed);
     bus.boothClips = bm.clips.load(std::memory_order_relaxed);
     bus.recorderAttached = recording_.attached() != nullptr;
+    bus.headphoneMono = phones_.mono();
+    bus.masterDc = outGuard_[0].stats().dc.load(std::memory_order_relaxed);
+    bus.cueDc    = outGuard_[1].stats().dc.load(std::memory_order_relaxed);
+    bus.boothDc  = outGuard_[2].stats().dc.load(std::memory_order_relaxed);
+    bus.outSanitized =
+          outGuard_[0].stats().sanitized.load(std::memory_order_relaxed)
+        + outGuard_[1].stats().sanitized.load(std::memory_order_relaxed)
+        + outGuard_[2].stats().sanitized.load(std::memory_order_relaxed);
+    bus.outOverFull =
+          outGuard_[0].stats().overFull.load(std::memory_order_relaxed)
+        + outGuard_[1].stats().overFull.load(std::memory_order_relaxed)
+        + outGuard_[2].stats().overFull.load(std::memory_order_relaxed);
     for (int i = 0; i < std::min(nCh, kMaxChannels); ++i) {
         const auto& s = strips_[i];
         auto& d = chans[i];

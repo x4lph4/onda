@@ -7,6 +7,7 @@
 
 #include "core/adevice/AudioBackend.h"
 #include "core/adevice/AudioHealthMonitor.h"
+#include "core/adevice/DjAudioProfile.h"
 #include "core/adevice/AudioRecoveryManager.h"
 #include "core/adevice/AudioRouting.h"
 #include "core/adevice/BufferManager.h"
@@ -60,9 +61,21 @@ public:
     const DeviceSettings& settings() const { return settings_; }
     const ChannelMapping& mapping() const { return settings_.map; }
 
-    /// Validate + apply a settings change with rollback (§25-27).
-    /// Returns "" on success, else an actionable error string.
+    /// Validate + apply a settings change with rollback (§9-10).
+    /// Legacy string view — failures are also typed via lastResult().
     std::string select(const DeviceSettings& s) {
+        return selectEx(s).message;
+    }
+
+    /// §32 — typed result: AudioError code + actionable message.
+    /// The returned path never leaves the audio stack half-configured:
+    /// any failure either keeps the previous device or rolls back to
+    /// the system default (§9 "never start partially").
+    DeviceResult selectEx(const DeviceSettings& s) {
+        auto fail = [&](AudioError c, std::string m) {
+            lastResult_ = DeviceResult::fail(c, m);
+            return lastResult_;
+        };
         enumerate();
         DesiredSetup ds;
         ds.outChans = 4;
@@ -70,18 +83,22 @@ public:
         // resolve output device
         std::string outErr;
         const DeviceInfo* out = resolveOut(s.outputId, outErr);
-        if (!outErr.empty()) return outErr;
+        if (!outErr.empty())
+            return fail(AudioError::DeviceNotFound, outErr);
         ds.outName = out ? out->name : "";
         if (!s.inputId.empty()) {
             const DeviceInfo* in = find(s.inputId);
-            if (!in) return "input device not found: " + s.inputId;
+            if (!in) return fail(AudioError::DeviceNotFound,
+                                 "input device not found: " + s.inputId);
             if (in->inCh <= 0)
-                return "device '" + in->name + "' has no input channels";
+                return fail(AudioError::ChannelConfigurationFailed,
+                            "device '" + in->name +
+                            "' has no input channels");
             ds.inName = in->name;
             ds.inChans = 2;
         }
 
-        // capabilities → rate/buffer policy (§7-9)
+        // capabilities → rate/buffer policy (§6-8)
         DeviceCapabilities caps;
         if (out) caps = backend_.probe(out->name);
         double wantRate = s.sampleRate;
@@ -102,25 +119,29 @@ public:
         }
         ds.exclusive = s.exclusive && caps.exclusiveCapable;
 
-        // routing must fit the resolved device (§15-16)
+        // routing must fit the resolved device (§16-17, §46)
         ChannelMapping map = s.map;
         // unset or untouched-default mapping → auto-pick for the device
         if (map.masterL < 0 || map == ChannelMapping()) {
             const int outs = caps.known ? caps.outCh
-                            : (out ? out->outCh : 2);
-            map = (out && DeviceCatalog::isFlx4(*out))
-                ? AudioRouting::flx4() : AudioRouting::defaults(outs);
-            const int span = AudioRouting::span(map);
-            if (caps.known && span > caps.outCh) {
-                map.cueL = map.cueR = -1;      // shrink: master only
+                            : (out ? out->outCh : 0);
+            const auto choice = routeChoice(out, caps, outs);
+            if (!choice.ok)
+                return fail(AudioError::ManualConfigRequired,
+                            choice.reason);
+            map = choice.map;
+            if (caps.known) {          // shrink to detected outs
+                if (map.boothR >= caps.outCh) map.boothL = map.boothR = -1;
+                if (map.cueR   >= caps.outCh) map.cueL   = map.cueR   = -1;
             }
         }
         if (caps.known) {
             const auto e = AudioRouting::check(map, caps.outCh);
-            if (!e.empty()) return e;
+            if (!e.empty())
+                return fail(AudioError::ChannelConfigurationFailed, e);
         }
 
-        // safe switch: snapshot → apply → verify → rollback (§25)
+        // safe switch: snapshot → apply → verify → rollback (§9)
         const BackendStatus before = backend_.status();
         const std::string err = backend_.apply(ds);
         if (!err.empty()) {
@@ -131,14 +152,15 @@ public:
             notify("Audio device switch failed",
                    err + (rb.empty() ? " — restored default output"
                                      : " — restore failed: " + rb));
-            return err;
+            return fail(AudioError::InitializationFailed, err);
         }
         const BackendStatus now = backend_.status();
         if (!now.running) {
             recovery_.on(RecEvent::StreamFailed);
             notify("Audio device", "stream did not start on '" +
                    ds.outName + "'");
-            return "stream did not start";
+            return fail(AudioError::StreamStartFailed,
+                        "stream did not start");
         }
         recovery_.on(RecEvent::StreamOk);
 
@@ -153,18 +175,24 @@ public:
         const std::string rateNote =
             SampleRateManager::explain(wantRate, now.rate);
         if (!rateNote.empty()) notify("Sample rate adjusted", rateNote);
-        return {};
+        lastResult_ = DeviceResult::success();
+        return lastResult_;
     }
 
     /// Convenience: change only the routing on the live device.
     std::string setChannelMapping(const ChannelMapping& m) {
+        return setChannelMappingEx(m).message;
+    }
+    DeviceResult setChannelMappingEx(const ChannelMapping& m) {
         const BackendStatus st = backend_.status();
         const auto e = AudioRouting::check(m, st.outCh);
-        if (!e.empty()) return e;
+        if (!e.empty())
+            return (lastResult_ = DeviceResult::fail(
+                        AudioError::ChannelConfigurationFailed, e));
         settings_.map = m;
         if (ports.mixerMap) ports.mixerMap(m);
         persistCurrentProfile();
-        return {};
+        return (lastResult_ = DeviceResult::success());
     }
 
     void setTestSignal(TestSignal m) {
@@ -194,6 +222,36 @@ public:
     const char* recoveryName() const { return recovery_.stateName(); }
     HealthReport health() const { return health_.report(); }
     std::string backendName() const { return backend_.backendName(); }
+
+    /// §31 — user-facing device state derived from the backend plus
+    /// the recovery FSM. Cheap, control-thread only.
+    AudioDeviceStatus deviceStatus() const {
+        switch (recovery_.state()) {
+            case HealthState::Reconnecting: return AudioDeviceStatus::Recovering;
+            case HealthState::DeviceLost:   return AudioDeviceStatus::Disconnected;
+            case HealthState::Failed:       return AudioDeviceStatus::Error;
+            default: break;
+        }
+        const BackendStatus st = backend_.status();
+        if (st.running)                 return AudioDeviceStatus::Active;
+        if (!st.outName.empty())        return AudioDeviceStatus::Available;
+        if (!lastResult_.ok())          return AudioDeviceStatus::Error;
+        return AudioDeviceStatus::Unavailable;
+    }
+    /// §32 — last operation's typed result (code + message).
+    const DeviceResult& lastResult() const { return lastResult_; }
+
+    /// §27-28 — detected DJ-controller audio profile for a device id
+    /// (nullptr when the device is gone or no profile matches). The
+    /// returned pointer is owned by `djProfileCache_` — do not store.
+    DjAudioProfile djProfile(const std::string& deviceId) {
+        const DeviceInfo* d = find(deviceId);
+        if (!d) return {};
+        DeviceCapabilities caps;
+        if (d->outCh <= 0 && d->inCh <= 0) caps = backend_.probe(d->name);
+        else { caps.known = true; caps.outCh = d->outCh; caps.inCh = d->inCh; }
+        return DjAudioProfile::detect(*d, caps);
+    }
 
     LatencyReport latency() const {
         const BackendStatus st = backend_.status();
@@ -240,23 +298,30 @@ public:
         const BackendStatus st = backend_.status();
         const HealthReport h = health_.report();
         const LatencyReport l = latency();
-        char b[1400];
+        char b[1800];
         std::snprintf(b, sizeof b,
             "DEVICE: %s\nBACKEND: %s\nSAMPLE RATE: %.0f Hz\n"
             "BUFFER: %d smp (%.1f ms)\n"
             "INPUT CH: %d\nOUTPUT CH: %d\n"
+            "ROUTING: master->%d/%d cue->%d/%d booth->%d/%d\n"
             "ESTIMATED LATENCY: %.1f ms round trip%s\n"
             "CPU: %.0f%% of budget\n"
             "UNDERRUNS: %llu\nXRUNS: %llu\n"
-            "STREAM STATUS: %s\nRECOVERY: %s\n",
+            "STREAM STATUS: %s\nDEVICE STATUS: %s\n"
+            "LAST ERROR: %s\nRECOVERY: %s\n",
             st.outName.empty() ? "(none)" : st.outName.c_str(),
             st.backend.c_str(), st.rate, st.buffer, l.bufferMs,
             st.inCh, st.outCh,
+            settings_.map.masterL, settings_.map.masterR,
+            settings_.map.cueL, settings_.map.cueR,
+            settings_.map.boothL, settings_.map.boothR,
             l.roundTripMs, l.measured ? " (measured)" : " (estimated)",
             h.cpu * 100.0f,
             (unsigned long long)h.underruns,
             (unsigned long long)h.xruns,
             st.running ? "running" : "stopped",
+            audioDeviceStatusName(deviceStatus()),
+            lastResult_.codeName(),
             recovery_.stateName());
         return b;
     }
@@ -294,6 +359,9 @@ private:
             if (recovery_.state() == HealthState::Healthy
                 || recovery_.state() == HealthState::Recovered) {
                 recovery_.on(RecEvent::DeviceLost);
+                lastResult_ = DeviceResult::fail(
+                    AudioError::DeviceDisconnected,
+                    "'" + st.outName + "' disconnected");
                 notify("Audio device lost",
                        "'" + st.outName + "' disconnected — attempting "
                        "recovery on the default output");
@@ -354,10 +422,25 @@ private:
         if (ports.notify) ports.notify(t, d);
     }
 
+    /// §46 auto-route: a detected DJ profile wins, then the generic
+    /// capability-derived default. Returns ok=false (never a guess)
+    /// when the device's outs cannot even host a master pair.
+    AudioRouting::RouteChoice routeChoice(const DeviceInfo* out,
+                                          const DeviceCapabilities& caps,
+                                          int outs) {
+        if (out != nullptr) {
+            const auto prof = DjAudioProfile::detect(*out, caps);
+            if (prof.role == DjAudioProfile::Role::DjController)
+                return { prof.suggested, true, {} };
+        }
+        return AudioRouting::autoRoute(outs > 0 ? outs : 0);
+    }
+
     Backend& backend_;
     AudioRecoveryManager recovery_;
     AudioHealthMonitor   health_;
     DeviceSettings       settings_;
+    DeviceResult         lastResult_;
     TestSignal           testSig_ = TestSignal::Off;
     std::vector<DeviceInfo> lastEnum_;
     std::map<std::string, DeviceProfile> profiles_;
