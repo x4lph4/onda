@@ -2,6 +2,39 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 32 (professional mixer engine)
+
+Closed the remaining mixer gaps on top of the Phase-5/17/24 engine
+(`docs/audio/mixer-engine.md`,
+`docs/adr/0032-professional-mixer-engine.md`).
+
+- **Crossfader hamster/reverse** (§26): `BusParam::XfReverse` —
+  `CrossfaderEngine::setReverse` swaps rail A↔B inside `gainFor`, so
+  it composes with every curve including Custom and leaves `Thru`
+  alone. Registry (0/1 quantized) → `SetParam` → RT like any param;
+  persisted in `MixerScene`/`MixerBusDiag`/`MasterSnapshot`; toggled
+  by `mixer.xfReverseToggle` or the REV button.
+- **AudioBus contract** (§5): `mixer::AudioBus{L,R,frames}` — the
+  non-owning stereo window sources fill each block; obtained via
+  `ChannelStrip::inBus(frames)`. Zero copies, zero allocation.
+- **Registry-driven UI ranges** (§9): every `MixerView` knob/fader
+  binds `rngLo/rngHi(ParameterRegistry::find(id))` — UI, MIDI learn
+  and RT sanitization share one source of truth (fixes CUE VOL,
+  which the UI capped at 1.0 while the registry allows 0..2).
+- **Detent marks + filter direction** (§48-49):
+  `Knob::setCenterMark` ticks the neutral position (EQ/filter/pan at
+  0, trim at unity); the filter caption shows `HPF`/`LPF`/`FILT`.
+- **MixerState** (§44): spec-name alias for `MixerScene` — the
+  existing capture/apply container.
+- **Latency documented** (§58-59): ≤1-block queue drain + per-param
+  smoother τ (xf 5 ms, gains 8 ms); `ParamEvent` applies on the
+  exact `targetFrame`; insert/master algorithmic delay reported via
+  `masterLatencySamples()` (0 today).
+- **10 new `[mix32]` tests** (~64 k assertions): reverse on all
+  curves + custom + end-to-end through the mixer, registry/quantize/
+  scene/diag coverage, AudioBus contract, registry ranges, SPSC
+  queue integrity, bounded monotonic convergence, flip stress.
+
 ## Status — Phase 31 (deck visualization engine)
 
 Formalized the remaining surfaces of the Phase-19 waveform/deck

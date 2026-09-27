@@ -51,6 +51,7 @@ enum class BusParam : uint16_t {
     MasterCue,         // 0/1 — taps post-master program into the cue bus
     BoothGain = 0x40B, // booth monitor gain 0..2 — independent of master (§33)
     HeadphoneMono,     // 0/1 — fold the headphone bus to mono (§24)
+    XfReverse,         // 0/1 — hamster/reverse: swaps A↔B sides (§26)
 };
 
 enum class XfAssign : int { A = 0, B = 1, Thru = 2 };
@@ -83,5 +84,21 @@ constexpr uint32_t packSource(ChSource s) noexcept {
 constexpr ChSource unpackSource(uint32_t p) noexcept {
     return { (ChSourceType)((p >> 24) & 0xFF), (int)(p & 0xFFFFFF) };
 }
+
+// ---------------------------------------------------------------- audio bus
+/// §5 — the bus contract between a source and a channel strip: a
+/// non-owning stereo block window the producer fills each render
+/// block. Deck engines, the sampler and future external-in/FX-return
+/// sources all hand the mixer the same shape — the strip never knows
+/// what produced it, and the producer never knows which channel it
+/// feeds (routing lives in ChSource, not here).
+struct AudioBus {
+    float* L      { nullptr };
+    float* R      { nullptr };
+    int    frames { 0 };          // samples valid this block
+    constexpr bool valid() const noexcept {
+        return L != nullptr && R != nullptr && frames > 0;
+    }
+};
 
 } // namespace onda::mixer

@@ -43,6 +43,7 @@ struct MixerScene {
 
     float xfPos    { 0.0f };
     float xfCurve  { 1.0f };              // EqualPower
+    float xfReverse{ 0.0f };              // §26 — hamster orientation
     float masterGain { 1.0f }, masterMute { 0.0f };
     float limiterOn { 0.0f }, limiterThr { 0.891f };
     float cueVol { 0.8f }, cueMix { 0.5f }, masterCue { 0.0f };
@@ -64,7 +65,8 @@ constexpr ChParam kSceneChParams[] = {
 constexpr int kSceneChParamCount = (int)(sizeof(kSceneChParams) / sizeof(kSceneChParams[0]));
 
 constexpr BusParam kSceneBusParams[] = {
-    BusParam::CrossfaderPos, BusParam::XfCurve, BusParam::MasterGain,
+    BusParam::CrossfaderPos, BusParam::XfCurve, BusParam::XfReverse,
+    BusParam::MasterGain,
     BusParam::MasterMute, BusParam::LimiterOn, BusParam::LimiterThreshold,
     BusParam::CueVolume, BusParam::CueMix, BusParam::MasterCue,
     BusParam::FxReturnA, BusParam::FxReturnB, BusParam::BoothGain,
@@ -104,6 +106,7 @@ inline float& sceneField(MixerScene& s, BusParam k) noexcept {
     switch (k) {
         case BusParam::CrossfaderPos:    return s.xfPos;
         case BusParam::XfCurve:          return s.xfCurve;
+        case BusParam::XfReverse:        return s.xfReverse;
         case BusParam::MasterGain:       return s.masterGain;
         case BusParam::MasterMute:       return s.masterMute;
         case BusParam::LimiterOn:        return s.limiterOn;
@@ -120,5 +123,11 @@ inline float& sceneField(MixerScene& s, BusParam k) noexcept {
 inline const float& sceneField(const MixerScene& s, BusParam k) noexcept {
     return sceneField(const_cast<MixerScene&>(s), k);
 }
+
+/// §44 — the mixer state container: per-channel gain/EQ/filter/fader/
+/// cue/xfAssign plus the global crossfader/master/cueMix/headphone
+/// fields. `MixerScene` is that state (capture/apply through
+/// MixerController); the alias keeps the spec name discoverable.
+using MixerState = MixerScene;
 
 } // namespace onda::mixer

@@ -15,6 +15,17 @@
 
 namespace onda::ui {
 
+/// §9 — knob/fader ranges come from the ParameterRegistry, the same
+/// table the RT path sanitizes with. Never hardcode UI ranges.
+inline double rngLo(uint16_t p) {
+    const auto* d = mixer::ParameterRegistry::find(p);
+    return d ? d->minV : 0.0;
+}
+inline double rngHi(uint16_t p) {
+    const auto* d = mixer::ParameterRegistry::find(p);
+    return d ? d->maxV : 1.0;
+}
+
 /// Channel strip — trim, H/M/L EQ, filter, sends, cue/mute, xf assign,
 /// fader + meter. Writes go through MixerController (validated params);
 /// reads come from ChannelSnapshot.
@@ -23,15 +34,24 @@ public:
     ChannelStrip(const ThemeEngine& te, mixer::MixerController& mc,
                  int ch)
         : theme_(&te), ch_(ch),
-          gain_(te, "GAIN", 0.0, 2.0, 1.0),
-          high_(te, "HI",  -26.0, 6.0, 0.0),
-          mid_(te,  "MID", -26.0, 6.0, 0.0),
-          low_(te,  "LOW", -26.0, 6.0, 0.0),
-          filt_(te, "FILT", -1.0, 1.0, 0.0),
-          pan_(te,  "PAN",  -1.0, 1.0, 0.0),
-          sendA_(te, "A", 0.0, 1.0, 0.0),
-          sendB_(te, "B", 0.0, 1.0, 0.0),
-          fader_(te, "", 0.0, 1.0, 1.0),
+          gain_(te, "GAIN", rngLo(mixer::ParameterRegistry::channelGain(ch)),
+                            rngHi(mixer::ParameterRegistry::channelGain(ch)), 1.0),
+          high_(te, "HI",   rngLo(mixer::ParameterRegistry::channelHigh(ch)),
+                            rngHi(mixer::ParameterRegistry::channelHigh(ch)), 0.0),
+          mid_(te,  "MID",  rngLo(mixer::ParameterRegistry::channelMid(ch)),
+                            rngHi(mixer::ParameterRegistry::channelMid(ch)), 0.0),
+          low_(te,  "LOW",  rngLo(mixer::ParameterRegistry::channelLow(ch)),
+                            rngHi(mixer::ParameterRegistry::channelLow(ch)), 0.0),
+          filt_(te, "FILT", rngLo(mixer::ParameterRegistry::channelFilter(ch)),
+                            rngHi(mixer::ParameterRegistry::channelFilter(ch)), 0.0),
+          pan_(te,  "PAN",  rngLo(mixer::ParameterRegistry::channelPan(ch)),
+                            rngHi(mixer::ParameterRegistry::channelPan(ch)), 0.0),
+          sendA_(te, "A",   rngLo(mixer::ParameterRegistry::channelSendA(ch)),
+                            rngHi(mixer::ParameterRegistry::channelSendA(ch)), 0.0),
+          sendB_(te, "B",   rngLo(mixer::ParameterRegistry::channelSendB(ch)),
+                            rngHi(mixer::ParameterRegistry::channelSendB(ch)), 0.0),
+          fader_(te, "",    rngLo(mixer::ParameterRegistry::channelFader(ch)),
+                            rngHi(mixer::ParameterRegistry::channelFader(ch)), 1.0),
           meter_(te),
           cueBtn_(te, "CUE"), muteBtn_(te, "M"), xfBtn_(te, "THRU") {
         using R = mixer::ParameterRegistry;
@@ -42,7 +62,12 @@ public:
         bind(high_,  R::channelHigh(ch));
         bind(mid_,   R::channelMid(ch));
         bind(low_,   R::channelLow(ch));
-        bind(filt_,  R::channelFilter(ch));
+        // §49 — caption announces sweep direction around the detent.
+        filt_.onValue = [this, &mc, ch](double v) {
+            filt_.setCaption(v < -0.001 ? "HPF" : v > 0.001 ? "LPF"
+                                                          : "FILT");
+            mc.setParam(R::channelFilter(ch), (float)v);
+        };
         bind(pan_,   R::channelPan(ch));
         bind(sendA_, R::channelSendA(ch));
         bind(sendB_, R::channelSendB(ch));
@@ -62,6 +87,12 @@ public:
             mc.channelXfAssign(ch, (mixer::XfAssign)xf_);
             xfBtn_.setLabel(xf_ == 0 ? "A" : xf_ == 2 ? "B" : "THRU");
         };
+        // §48 — neutral detent marks: EQ/filter/pan at 0, trim at
+        // unity gain (0 dB).
+        gain_.setCenterMark(true, 1.0);
+        high_.setCenterMark(true); mid_.setCenterMark(true);
+        low_.setCenterMark(true);  filt_.setCenterMark(true);
+        pan_.setCenterMark(true);
         for (auto* c : { (juce::Component*)&gain_, (juce::Component*)&high_,
                          (juce::Component*)&mid_, (juce::Component*)&low_,
                          (juce::Component*)&filt_,
@@ -162,13 +193,22 @@ class MixerView : public juce::Component {
 public:
     MixerView(const ThemeEngine& te, mixer::MixerController& mc)
         : theme_(&te),
-          masterGain_(te, "MASTER", 0.0, 2.0, 1.0),
-          cueVol_(te, "CUE VOL", 0.0, 1.0, 0.8),
-          cueMix_(te, "CUE MIX", 0.0, 1.0, 0.0),
-          booth_(te, "BOOTH", 0.0, 2.0, 1.0),
+          masterGain_(te, "MASTER",
+                      rngLo(mixer::ParameterRegistry::MASTER_GAIN),
+                      rngHi(mixer::ParameterRegistry::MASTER_GAIN), 1.0),
+          cueVol_(te, "CUE VOL",
+                  rngLo(mixer::ParameterRegistry::CUE_VOLUME),
+                  rngHi(mixer::ParameterRegistry::CUE_VOLUME), 0.8),
+          cueMix_(te, "CUE MIX",
+                  rngLo(mixer::ParameterRegistry::CUE_MIX),
+                  rngHi(mixer::ParameterRegistry::CUE_MIX), 0.0),
+          booth_(te, "BOOTH",
+                 rngLo(mixer::ParameterRegistry::BOOTH_GAIN),
+                 rngHi(mixer::ParameterRegistry::BOOTH_GAIN), 1.0),
           masterMeter_(te, false),
           limBtn_(te, "LIM"),
           mCueBtn_(te, "M.CUE"),
+          xfRevBtn_(te, "REV"),
           xfCurveBox_() {
         for (int c = 0; c < 4; ++c)
             strips_[(size_t)c] =
@@ -199,6 +239,9 @@ public:
         xfCurveBox_.onChange = [&mc, this] {
             mc.xfCurve(xfCurveBox_.getSelectedId() - 1);
         };
+        xfRevBtn_.onInvoke = [&mc] {           // §26 hamster toggle
+            mc.xfReverse(mc.value(R::XF_REVERSE) < 0.5f);
+        };
         for (auto* c : { (juce::Component*)&masterGain_,
                          (juce::Component*)&cueVol_,
                          (juce::Component*)&cueMix_,
@@ -207,7 +250,8 @@ public:
                          (juce::Component*)&limBtn_,
                          (juce::Component*)&mCueBtn_,
                          (juce::Component*)&xf_,
-                         (juce::Component*)&xfCurveBox_ })
+                         (juce::Component*)&xfCurveBox_,
+                         (juce::Component*)&xfRevBtn_ })
             addAndMakeVisible(*c);
     }
 
@@ -237,6 +281,8 @@ public:
                                      : ControlState::Off);
         mCueBtn_.setState(s.masterCue ? ControlState::On
                                       : ControlState::Off);
+        xfRevBtn_.setState(s.xfReverse ? ControlState::On
+                                       : ControlState::Off);
         masterMeter_.set(s.peakL, s.peakR, dt);
         if (s.clip) masterMeter_.repaint();
     }
@@ -256,6 +302,7 @@ public:
         auto b = getLocalBounds().reduced(m.gap2);
         auto xfRow = b.removeFromBottom(30);
         xfCurveBox_.setBounds(xfRow.removeFromLeft(44).reduced(1));
+        xfRevBtn_.setBounds(xfRow.removeFromLeft(34).reduced(1));
         xf_.setBounds(xfRow.reduced(1));
 
         const int masterW = juce::jmax(64, b.getWidth() / 6);
@@ -292,6 +339,7 @@ private:
     int        visibleChans_ = 4;
     juce::Slider    xf_;
     juce::ComboBox  xfCurveBox_;
+    StateButton     xfRevBtn_;       // §26 hamster/reverse
 };
 
 } // namespace onda::ui

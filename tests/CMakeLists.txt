@@ -31,6 +31,7 @@ add_executable(onda_tests
     key_phase22_tests.cpp
     smart_phase23_tests.cpp
     mixer_phase24_tests.cpp
+    mixer_phase32_tests.cpp
   adevice_phase26_tests.cpp
     fx_phase25_tests.cpp
     ctrl_phase27_tests.cpp

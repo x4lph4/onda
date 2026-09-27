@@ -357,6 +357,7 @@ void EngineBridge::snapshot(UiSnapshot& o) {
     ms.cueMix     = m.value(R::CUE_MIX);
     ms.crossfader = m.value(R::CROSSFADER);
     ms.xfCurve    = (int)m.value(R::XF_CURVE);
+    ms.xfReverse  = m.value(R::XF_REVERSE) >= 0.5f;
     ms.limiterOn  = m.value(R::LIMITER_ON)  >= 0.5f;
     ms.masterMute = m.value(R::MASTER_MUTE) >= 0.5f;
     const MasterStats& st = engine_.masterStats();

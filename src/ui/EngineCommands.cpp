@@ -641,6 +641,14 @@ void registerEngineCommands(CommandManager& cm,
         [p](float, CommandSource) {
             if (p.mixer) p.mixer->crossfader(0.0f);
         }));
+    // ---- Phase 32 §26: crossfader hamster/reverse ----
+    cm.add(mk(cmd::MixXfReverseTgl, "mixer.xfReverseToggle", "Mixer",
+        [p](float, CommandSource) {
+            if (p.mixer) {
+                using R = mixer::ParameterRegistry;
+                p.mixer->xfReverse(p.mixer->value(R::XF_REVERSE) < 0.5f);
+            }
+        }));
 
     // ---- Phase 17: master cue / deck mode / scenes / presets / diag ----
     cm.add(mk(cmd::MixMasterCueTgl, "mixer.masterCueToggle", "Mixer",

@@ -93,6 +93,8 @@ enum Id : uint32_t {
     MixSceneRecall   = 0x2F0D,  // value = scene slot 0..7
     MixPresetNext    = 0x2F0E,
     MixPresetPrev    = 0x2F0F,
+    // ---- Phase 32: crossfader orientation ----
+    MixXfReverseTgl  = 0x2F10,  // hamster/reverse A↔B (§26)
 
     // ---- browser / library: 0x3000 ----
     BrowserFocusSearch = 0x3000,

@@ -1,4 +1,4 @@
-# Mixer Engine (Phase 24)
+# Mixer Engine (Phases 17, 24, 32)
 
 Completion phase for the professional mixer. Phase 17 built the
 foundation (remappable sources, cue system, filter resonance, scenes,
@@ -119,6 +119,55 @@ ring as before, zero extra copies, ~free when detached.
 
 **HeadphoneBus** (existing): `(cueSum·(1−mix) + masterPost·mix) · cueVol`
 → `outMap[2..3]`.
+
+## AudioBus contract (§5, Phase 32)
+
+`mixer::AudioBus { float *L, *R; int frames; }` is the formal
+non-owning stereo window a producer fills each render block and a
+`ChannelStrip` consumes — decks, the sampler and future external-in /
+FX-return sources all hand the mixer the same shape. The strip never
+knows what produced the signal; the producer never knows which
+channel it feeds (routing lives in `ChSource`, not the bus).
+`ChannelStrip::inBus(frames)` returns the handle over its RT-owned
+input buffers; ownership never leaves the strip, so the callback
+stays allocation-free.
+
+## Crossfader orientation (§26, Phase 32)
+
+`BusParam::XfReverse` (0/1, registry id `0x40D`) toggles
+hamster/reverse on `CrossfaderEngine`: with reverse on, position −1
+plays rail B and cuts rail A — the swap happens inside
+`gainFor(assign)`, so it composes with every curve including
+`Custom` (the `sideA` flag is what flips) and leaves `Thru`
+untouched. Exposed through `MixerController::xfReverse`,
+`MixerBusDiag::xfReverse`, `MixerScene::xfReverse`, the
+`mixer.xfReverseToggle` command, and the REV button in `MixerView`.
+
+## UI parameter surface (§9, §48–§49, Phase 32)
+
+`MixerView` knobs/faders now take their ranges from
+`ParameterRegistry::find(id)` (`rngLo/rngHi`) — the same table the
+RT path sanitizes with — instead of hardcoded literals. `Knob`
+gained `setCenterMark(on, value)`: a tick at the neutral detent
+(EQ/filter/pan at 0, trim at unity gain). The filter knob's caption
+announces the sweep direction (`HPF`/`LPF`/`FILT`) around the
+center. Double-click return-to-default is unchanged.
+
+## Latency budget (§58–§59, Phase 32)
+
+Parameter-update latency is deterministic and documented:
+
+| stage | bound |
+|---|---|
+| UI/controller → `MixerController` sanitize + `CommandQueue::tryPush` | non-blocking, same call |
+| queue drain at block start | ≤ 1 audio block (~10.7 ms @ 512/48 k, less at smaller buffers) |
+| unscheduled `SetParam` → smoother settle | per-param `smoothMs` time constant (xf 5 ms, gains 8 ms); ~5τ to full convergence |
+| scheduled `ParamEvent` | applies on the exact `targetFrame` (render splits at the boundary) — zero quantization error |
+| insert/master DSP | `masterLatencySamples()` / `fxLatency()` report algorithmic delay (0 today — all FX are zero-latency IIR) |
+
+Cue path (§59): the PFL tap is pre-fader inside the strip, so
+cue-on latency is the same ≤1-block + 8 ms smoother budget — no
+extra queue hops, and the headphone mix adds no buffering.
 
 ## Scheduled parameters (§44)
 

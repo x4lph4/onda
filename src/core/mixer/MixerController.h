@@ -106,6 +106,8 @@ public:
     }
     float crossfader(float x)     { return setParam(ParameterRegistry::CROSSFADER,  x); }
     float xfCurve(int c)          { return setParam(ParameterRegistry::XF_CURVE,    (float)c); }
+    /// §26 — hamster/reverse toggle (0/1 quantized by the registry).
+    float xfReverse(bool on)      { return setParam(ParameterRegistry::XF_REVERSE,  on ? 1.0f : 0.0f); }
     float masterGain(float g)     { return setParam(ParameterRegistry::MASTER_GAIN, g); }
     float cueVolume(float v)      { return setParam(ParameterRegistry::CUE_VOLUME,  v); }
     float cueMix(float m)         { return setParam(ParameterRegistry::CUE_MIX,     m); }

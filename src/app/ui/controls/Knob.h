@@ -42,6 +42,34 @@ public:
                                    : juce::dontSendNotification);
     }
     void setAccent(uint32_t) {} // arc color comes from the LookAndFeel
+    void setCaption(const juce::String& t) {
+        label_.setText(t, juce::dontSendNotification);
+    }
+    /// §48 — draw a tick at the neutral position (value `mark`, def
+    /// 0): for bipolar knobs that's the detent the knob returns to on
+    /// double-click. Off by default; strips opt in.
+    void setCenterMark(bool on, double mark = 0.0) {
+        markOn_ = on; markV_ = mark; repaint();
+    }
+
+    void paintOverChildren(juce::Graphics& g) override {
+        if (!markOn_) return;
+        const double lo = slider_.getMinimum();
+        const double hi = slider_.getMaximum();
+        if (!(markV_ > lo && markV_ < hi)) return;
+        const float start = juce::MathConstants<float>::pi * 1.25f;
+        const float span  = juce::MathConstants<float>::pi * 1.5f;
+        const float ang   = start + span *
+            (float)((markV_ - lo) / (hi - lo));
+        const auto b = slider_.getBounds().toFloat();
+        const auto c = b.getCentre();
+        const float r = juce::jmin(b.getWidth(), b.getHeight()) * 0.5f;
+        const auto p1 = c.getPointOnCircumference(r * 0.86f, ang);
+        const auto p2 = c.getPointOnCircumference(r * 1.02f, ang);
+        g.setColour(col(theme_->theme().palette.textDim)
+                        .withAlpha(0.85f));
+        g.drawLine({ p1, p2 }, 1.4f);
+    }
 
     std::function<void(double)> onValue;
 
@@ -58,6 +86,8 @@ private:
     const ThemeEngine* theme_;
     juce::Slider slider_;
     juce::Label  label_;
+    bool   markOn_ { false };
+    double markV_  { 0.0 };
 };
 
 /// Vertical fader with caption — same input surface as Knob.

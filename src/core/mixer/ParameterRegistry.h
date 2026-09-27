@@ -43,6 +43,7 @@ public:
     static constexpr uint16_t FX_RETURN_B   = (uint16_t)BusParam::FxReturnB;
     static constexpr uint16_t MASTER_CUE    = (uint16_t)BusParam::MasterCue;
     static constexpr uint16_t BOOTH_GAIN    = (uint16_t)BusParam::BoothGain;
+    static constexpr uint16_t XF_REVERSE    = (uint16_t)BusParam::XfReverse;
 
     // ---- FX parameter ids (fx:: encoding, 0x1000 space) -------------
     using K = fx::FXSlotKind;
@@ -149,6 +150,7 @@ public:
             case BusParam::MasterCue:        return &kMasterCue;
             case BusParam::BoothGain:        return &kBoothGain;
             case BusParam::HeadphoneMono:    return &kHeadphoneMono;
+            case BusParam::XfReverse:        return &kXfReverse;
         }
         return nullptr;
     }
@@ -200,6 +202,7 @@ private:
     static constexpr ParamDef kMasterCue  { (uint16_t)BusParam::MasterCue,     "MasterCue",  0.0f,  0.0f, 1.0f, 1.0f,   0.0f };
     static constexpr ParamDef kBoothGain  { (uint16_t)BusParam::BoothGain,     "BoothGain",  1.0f,  0.0f, 2.0f, 0.001f, 8.0f };
     static constexpr ParamDef kHeadphoneMono{ (uint16_t)BusParam::HeadphoneMono, "HeadphoneMono", 0.0f, 0.0f, 1.0f, 1.0f, 0.0f };
+    static constexpr ParamDef kXfReverse  { (uint16_t)BusParam::XfReverse,       "XfReverse",     0.0f, 0.0f, 1.0f, 1.0f,   0.0f };
 
     // ---- FX slot params (kind templates; ids encoded by caller) ----
     static constexpr ParamDef kFxType     { 0, "FxType",     0.0f, 0.0f,

@@ -64,6 +64,11 @@ public:
     // ---- source input (written by the rendering engine each block) ----
     float* inL() noexcept { return inL_.data(); }
     float* inR() noexcept { return inR_.data(); }
+    /// §5 — the strip's input as a bus handle: producers fill it per
+    /// block (frames = block size). Non-owning; lifetime = the strip.
+    AudioBus inBus(int frames) noexcept {
+        return { inL_.data(), inR_.data(), frames };
+    }
 
     // ---- RT parameters (called from the engine's command dispatch) ----
     void setInputGain(float g) noexcept { smGain_.setTarget(g); }

@@ -35,6 +35,7 @@ struct MixerChannelDiag {
 struct MixerBusDiag {
     float xfPos { 0.0f };
     int   xfCurve { 0 };
+    bool  xfReverse { false };        // §26 — hamster/reverse state
     float masterGain { 1.0f };
     bool  masterMute { false };
     bool  limiterOn  { false };

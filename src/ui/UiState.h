@@ -76,6 +76,7 @@ struct MasterSnapshot {
     float gain = 1.0f, cueVol = 1.0f, cueMix = 0.0f;
     float crossfader = 0.0f;
     int   xfCurve = 0;
+    bool  xfReverse = false;    // Phase 32 §26: hamster orientation
     bool  limiterOn = true, masterMute = false;
     float peakL = 0.0f, peakR = 0.0f, rmsL = 0.0f, rmsR = 0.0f;
     float holdL = 0.0f,  holdR = 0.0f;

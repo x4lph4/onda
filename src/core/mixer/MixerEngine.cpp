@@ -199,6 +199,7 @@ void MixerEngine::setParam(uint16_t id, float v) noexcept {
         case mixer::BusParam::MasterCue:        cueMgr_.setMasterCue(v > 0.5f); break;
         case mixer::BusParam::BoothGain:        booth_.setGain(v); break;
         case mixer::BusParam::HeadphoneMono:   phones_.setMono(v > 0.5f); break;
+        case mixer::BusParam::XfReverse:       xf_.setReverse(v > 0.5f); break;
     }
 }
 
@@ -403,6 +404,7 @@ void MixerEngine::snapshot(mixer::MixerBusDiag& bus,
     bus = mixer::MixerBusDiag{};
     bus.xfPos = xf_.position();
     bus.xfCurve = (int)xf_.curve();
+    bus.xfReverse = xf_.reversed();
     bus.masterGain = master_.gain();
     bus.limiterOn = master_.limiter().enabled();
     bus.limiterGain = master_.limiter().gainReduction();
