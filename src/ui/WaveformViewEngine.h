@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "VisualizationState.h"
 #include "WaveformMapping.h"
 #include "core/analysis/BeatGrid.h"
 #include "core/analysis/WaveformData.h"
@@ -16,11 +17,12 @@
 
 namespace onda::ui {
 
-/// Phase 19 — professional waveform view engine.
+/// Phase 19+31 — professional waveform/deck visualization engine.
 ///
 /// Pure, JUCE-free model that turns analysis data (WaveformData +
-/// BeatGrid + DeckSnapshot + markers) into a render plan the JUCE
-/// component blits. Split per the phase architecture:
+/// BeatGrid + DeckSnapshot + markers) into a render plan a
+/// FrameRenderer backend (JUCE raster today) draws. Split per the
+/// phase architecture:
 ///
 ///   WaveformViewEngine
 ///   ├── WaveformViewport   (sec↔px transform — alias of the proven
@@ -30,15 +32,19 @@ namespace onda::ui {
 ///   ├── PlayheadSmoother   (visual-only interpolation + jump detect)
 ///   ├── WaveformRenderer   (buildColumns — amplitude columns)
 ///   ├── BeatGridRenderer / BeatMarkerRenderer (buildMarkers, bar nos)
-///   ├── CueRenderer        (buildCueFlags — hot/memory types)
-///   ├── LoopRenderer       (buildLoopRects — active + saved regions)
-///   ├── WaveformInteraction (hit tests + drags → WaveCmd, §42)
+///   ├── CueRenderer        (buildCueFlags — hot/memory/primary types,
+///   │                      §33 collision tiers, §47-48 index)
+///   ├── LoopRenderer       (buildLoopRects — active + saved regions,
+///   │                      prefix-max left-edge index)
+///   ├── VisualizationState (vis — §2 layer gates + §45 perf degrade)
+///   ├── WaveformInteraction (hit tests + drags → WaveCmd, §42;
+///   │                      §53 SeekBegin/Scrub/Commit/Cancel session)
 ///   ├── WaveformCache      (cache keys — view stores the image)
 ///   └── WaveformDiagnostics (counters/timings the shell may poll)
 ///
 /// Everything here is plain values — no colors, no JUCE. The view maps
-/// semantic fields (crest, kind, severity) to theme colors, so tests
-/// assert geometry/data and the paint layer stays thin.
+/// semantic fields (crest, kind, tier, severity) to theme colors, so
+/// tests assert geometry/data and the paint layer stays thin.
 
 // ==========================================================================
 // Viewport — the spec name for the mapping type
@@ -180,10 +186,14 @@ struct BeatMarkerPx {
 struct CueFlagPx {
     float px    = 0.0f;
     int   slot  = -1;         // 0..7 hot-cue slot, -1 = unslotted
-    int   type  = 0;          // 0 hot, 1 memory, 2 loop-cue
+    int   type  = 0;          // 0 hot, 1 memory, 2 loop-cue, 3 primary
     uint32_t argb = 0;
     char  label[16] = {};
     bool  armedDelete = false; // armed for confirm-delete (§19)
+    /// §33 — label collision tier: flags closer than the label width
+    /// stack their labels on alternating rows instead of overlapping.
+    /// The marker itself never moves (positions are the truth).
+    int   tier = 0;
 };
 
 struct LoopRectPx {
@@ -213,6 +223,10 @@ struct WaveformFrame {
     BarBandPx barBand;
     bool      hasBarBand = false;
     double    playheadPx  = 0.0;        // smoothed draw position
+    /// §53 — drag-seek ghost: while a wave drag is active the frame
+    /// carries the scrub position so the view can draw a preview
+    /// playhead without touching the real one. -1 = no preview.
+    double    previewPx   = -1.0;
     int       levelUsed   = -1;         // 0 overview / 1 mid / 2 detail
     int64_t   f0 = 0, f1 = 0;           // frames queried (diagnostics)
     bool      hasWave = false, hasGrid = false;
@@ -221,7 +235,7 @@ struct WaveformFrame {
     void clear() {
         cols.clear(); beats.clear(); cues.clear(); loops.clear();
         phrases.clear(); badges.clear();
-        hasBarBand = false; playheadPx = 0.0;
+        hasBarBand = false; playheadPx = 0.0; previewPx = -1.0;
         levelUsed = -1; hasWave = hasGrid = false;
     }
 };
@@ -284,7 +298,14 @@ enum class WaveCmdKind : int {
     GridNudgeMs,     // a = delta ms         — grid drag (§17)
     GridSetFirstBeat,// a = sec of click     — set beat 0 (§16)
     ZoomAt,          // a = factor, b = px   — wheel zoom (§33-34)
-    ScrollDetail     // a = delta sec        — overview pan
+    ScrollDetail,    // a = delta sec        — overview pan
+    // §53 — a wave drag is a seek transaction: Begin when the press
+    // lands, live ScrubSeek while dragging, Commit on release with the
+    // final position, Cancel when the host/user aborts (Esc, right-
+    // click mid-drag). Hosts can bracket scrub state (e.g. slip-arms).
+    SeekBegin,
+    SeekCommit,      // a = final sec
+    SeekCancel
 };
 
 struct WaveCmd { WaveCmdKind kind = WaveCmdKind::None;
@@ -306,6 +327,11 @@ struct WaveformInteraction {
     double  dragLastPx  = 0.0;
     double  dragStartSec = 0.0;
     bool    dragged     = false;
+    /// §53 — a wave scrub is a transaction: SeekBegin on first move,
+    /// live ScrubSeek while held, SeekCommit on release, SeekCancel
+    /// on abort. Click-without-drag never opens a session.
+    bool    seekSession_ = false;
+    double  seekPreviewSec = -1.0;   // ghost position during scrub
 
     /// Hit-test a press on the detail strip. `cueTopPx` is the height
     /// of the flag zone; `edgePx` the grab tolerance on loop edges.
@@ -431,6 +457,17 @@ struct WaveformInteraction {
                     dragLastPx = sec;
                     return c;
                 }
+                dragged = true;
+                seekPreviewSec = sec;
+                if (!seekSession_) {
+                    // first move of the scrub — the session opens;
+                    // the position arrives on the next ScrubSeek.
+                    seekSession_ = true;
+                    dragLastPx = sec;
+                    c.kind = WaveCmdKind::SeekBegin;
+                    c.a = sec;
+                    return c;
+                }
                 c.kind = WaveCmdKind::ScrubSeek; c.a = sec;
                 dragLastPx = sec;
                 return c;
@@ -470,7 +507,30 @@ struct WaveformInteraction {
                 0.0, std::max(0.0, v.durationSec - len));
             c.kind = WaveCmdKind::LoopSet; c.a = in; c.b = in + len;
         }
+        if (seekSession_) {                 // §53 — scrub commit
+            seekSession_ = false;
+            c.kind = WaveCmdKind::SeekCommit;
+            c.a = std::clamp(seekPreviewSec >= 0.0 ? seekPreviewSec
+                                                 : dragLastPx,
+                             0.0, v.durationSec);
+            seekPreviewSec = -1.0;
+        }
         dragged = false;
+        return c;
+    }
+
+    /// §53 — abort an in-flight seek session (Esc, focus loss, second
+    /// button mid-drag). Hosts decide whether to snap back or stay;
+    /// the interaction only reports the abort.
+    WaveCmd cancelSeek() {
+        WaveCmd c;
+        if (seekSession_) {
+            seekSession_ = false;
+            seekPreviewSec = -1.0;
+            dragZone = HitZone::None; dragIndex = -1;
+            dragged = false;
+            c.kind = WaveCmdKind::SeekCancel;
+        }
         return c;
     }
 
@@ -517,10 +577,17 @@ public:
     PlayheadSmoother   playhead;
     WaveformInteraction interact;
     WaveformDiagnostics diag;
+    VisualizationState vis;              // §2 layer toggles + §45 mode
     int                style = 0;        // 0 clean, 1 spectral-tint
     /// Marker density limits (§13): min px between labels / markers.
     double barLabelMinPx = 36.0;
     double markerMinPx   = 6.0;
+    /// §33 — min px between cue-flag labels on the same tier; closer
+    /// flags stack their labels instead of overlapping.
+    double cueLabelMinPx = 44.0;
+    /// Marker revision — the view bumps it whenever `cues`/`loops`
+    /// change so the visible-range index is rebuilt lazily (§47-48).
+    uint32_t markersRev = 0;
 
     // ---- inputs (re-pointed by the view per snapshot/track) ----
     const WaveformData* wf   = nullptr;
@@ -577,23 +644,28 @@ public:
         }
 
         // ---- BeatGridRenderer / BeatMarkerRenderer (§12-14) ----
-        if (out.hasGrid && wf && wf->sampleRate > 0.0)
+        if (out.hasGrid && wf && wf->sampleRate > 0.0 &&
+            vis.showBeatgrid)
             buildMarkers(out);
 
-        // ---- CueRenderer (§18) ----
-        buildCueFlags(out);
+        // ---- CueRenderer (§18, §2 flags) ----
+        if (vis.showCues) buildCueFlags(out);
 
         // ---- LoopRenderer (§20) ----
-        buildLoopRects(out);
+        if (vis.showLoops) buildLoopRects(out);
 
         // ---- phrase seam (§30) ----
-        for (auto& pm : phrases) {
-            const double px = detail.secToPx(pm.sec);
-            if (px >= -8.0 && px <= n + 8.0) out.phrases.push_back(pm);
-        }
+        if (vis.showPhrases)
+            for (auto& pm : phrases) {
+                const double px = detail.secToPx(pm.sec);
+                if (px >= -8.0 && px <= n + 8.0)
+                    out.phrases.push_back(pm);
+            }
 
-        // ---- playhead (§10-11): smoothed draw position ----
+        // ---- playhead (§10-11): smoothed draw position + §53 ghost --
         out.playheadPx = detail.secToPx(playhead.drawSec);
+        if (interact.seekSession_)
+            out.previewPx = detail.secToPx(interact.seekPreviewSec);
 
         // ---- state badges (§38-40) ----
         buildBadges(out);
@@ -627,8 +699,8 @@ public:
             ++diag.queries;
             buildColumns(ovBins_, out);
         }
-        buildCueFlagsFor(overview, out);
-        buildLoopRectsFor(overview, out);
+        if (vis.showCues) buildCueFlagsFor(overview, out);
+        if (vis.showLoops) buildLoopRectsFor(overview, out);
         out.playheadPx = overview.secToPx(
             snap ? snap->positionSec : 0.0);
     }
@@ -672,11 +744,12 @@ private:
         const double playBeat =
             grid->frameToBeat((int64_t)(
                 playhead.drawSec * wf->sampleRate));
-        const bool labelBars =
-            beatPx * bpb >= barLabelMinPx;     // room for numbers
+        const bool labelBars = vis.showBarNumbers && !vis.perfMode &&
+            beatPx * bpb >= barLabelMinPx;    // room for numbers
         double lastLabelPx = -1e9;
         for (const GridMarker& gm : markersBuf_) {
             if (gm.px < -4.0 || gm.px > detail.widthPx + 4.0) continue;
+            if (vis.perfMode && gm.kind == 0) continue;  // §45: bars only
             BeatMarkerPx m;
             m.px = (float)gm.px;
             m.kind = gm.kind;
@@ -703,18 +776,92 @@ private:
     }
 
     // ---- CueRenderer ----
+    /// §47-48 — visible-window lookup instead of a full scan. The
+    /// sec-sorted index is rebuilt lazily when `markersRev` changes;
+    /// each frame binary-searches the window, so hundreds of markers
+    /// on a long track cost O(log n + visible), never O(n).
+    void ensureCueIndex() {
+        // rebuild triggers: explicit markersRev bump (the view's
+        // contract for in-place edits) or a vector swap that changed
+        // size/backing pointer — cheap guards so callers that assign
+        // `cues`/`loops` wholesale never see a stale index.
+        if (markersRev == idxRev_ &&
+            cueIdx_.size() == cues.size() &&
+            loopIdx_.size() == loops.size() &&
+            idxCuesData_ == cues.data() &&
+            idxLoopsData_ == loops.data())
+            return;
+        idxRev_ = markersRev;
+        idxCuesData_ = cues.data();
+        idxLoopsData_ = loops.data();
+        cueIdx_.clear();
+        cueIdx_.reserve(cues.size());
+        for (size_t i = 0; i < cues.size(); ++i)
+            cueIdx_.push_back(&cues[i]);
+        std::sort(cueIdx_.begin(), cueIdx_.end(),
+                  [](const CueMarker* a, const CueMarker* b) {
+                      return a->sec < b->sec;
+                  });
+        loopIdx_.clear();
+        loopIdx_.reserve(loops.size());
+        for (size_t i = 0; i < loops.size(); ++i)
+            loopIdx_.push_back(&loops[i]);
+        std::sort(loopIdx_.begin(), loopIdx_.end(),
+                  [](const LoopRegion* a, const LoopRegion* b) {
+                      return a->inSec < b->inSec;
+                  });
+        // prefix-max outSec: a loop may start long before the window
+        // yet still cross its left edge; loopMaxOut_[i] bounds how
+        // far back any reaching loop can live (§48).
+        loopMaxOut_.assign(loopIdx_.size(), 0.0);
+        for (size_t i = 0; i < loopIdx_.size(); ++i)
+            loopMaxOut_[i] = std::max(i ? loopMaxOut_[i - 1] : 0.0,
+                                      loopIdx_[i]->outSec);
+    }
+
+    bool cueVisible(int type) const {
+        switch (type) {
+            case 1:  return vis.showMemoryCues;
+            case 3:  return vis.showPrimaryCue;
+            case 0:
+            default: return vis.showHotCues;
+        }
+    }
+
     void buildCueFlagsFor(const WaveformViewport& v,
                           WaveformFrame& out) {
-        for (const CueMarker& cm : cues) {
+        ensureCueIndex();
+        // visible window → [lo, hi) in the sorted index
+        const double s0 = v.pxToSec(-10.0);
+        const double s1 = v.pxToSec(v.widthPx + 10.0);
+        auto lo = std::lower_bound(cueIdx_.begin(), cueIdx_.end(), s0,
+            [](const CueMarker* m, double s) { return m->sec < s; });
+        auto hi = std::upper_bound(lo, cueIdx_.end(), s1,
+            [](double s, const CueMarker* m) { return s < m->sec; });
+        // §33 — collision tiers: labels closer than cueLabelMinPx on
+        // the same tier step down a row. Tiers 0-2; beyond that the
+        // label is suppressed (marker still drawn — §32 legibility).
+        double lastTierPx[3] = { -1e9, -1e9, -1e9 };
+        for (; lo != hi; ++lo) {
+            const CueMarker& cm = **lo;
+            if (!cueVisible(cm.type)) continue;
             const double px = v.secToPx(cm.sec);
-            if (px < -10.0 || px > v.widthPx + 10.0) continue;
             CueFlagPx f;
             f.px = (float)px;
             f.slot = cm.slot;
             f.type = cm.type;
             f.argb = cm.argb;
-            std::snprintf(f.label, sizeof f.label, "%s",
-                          cm.label.c_str());
+            for (int t = 0; t < 3; ++t) {
+                if (px - lastTierPx[t] >= cueLabelMinPx) {
+                    f.tier = t;
+                    lastTierPx[t] = px;
+                    break;
+                }
+                f.tier = t + 1;
+            }
+            if (f.tier >= 3) f.label[0] = '\0';   // crowd: hide label
+            else std::snprintf(f.label, sizeof f.label, "%s",
+                               cm.label.c_str());
             f.armedDelete = interact.armedSlot == cm.slot &&
                             cm.slot >= 0;
             out.cues.push_back(f);
@@ -727,10 +874,23 @@ private:
     // ---- LoopRenderer ----
     void buildLoopRectsFor(const WaveformViewport& v,
                            WaveformFrame& out) {
-        for (const LoopRegion& lr : loops) {
+        ensureCueIndex();
+        const double s0 = v.pxToSec(-4.0);
+        const double s1 = v.pxToSec(v.widthPx + 4.0);
+        // binary-search the window start, then walk back over every
+        // earlier loop that could still reach it (prefix-max outSec).
+        size_t i = (size_t)(
+            std::lower_bound(loopIdx_.begin(), loopIdx_.end(), s0,
+                [](const LoopRegion* l, double s) {
+                    return l->inSec < s;
+                }) - loopIdx_.begin());
+        while (i > 0 && loopMaxOut_[i - 1] >= s0) --i;
+        for (; i < loopIdx_.size(); ++i) {
+            const LoopRegion& lr = *loopIdx_[i];
+            if (lr.inSec > s1) break;
             const double x0 = v.secToPx(lr.inSec);
             const double x1 = v.secToPx(lr.outSec);
-            if (x1 < -4.0 || x0 > v.widthPx + 4.0) continue;
+            if (x1 < -4.0) continue;
             LoopRectPx r;
             r.x0 = (float)std::max(-4.0, x0);
             r.x1 = (float)std::min(v.widthPx + 4.0, x1);
@@ -780,6 +940,13 @@ private:
     // reusable buffers — stable across frames
     std::vector<WaveformBin> binsBuf_, ovBins_;
     std::vector<GridMarker>  markersBuf_;
+    // §47-48 — sorted visible-window index (rebuilt on markersRev)
+    std::vector<const CueMarker*>  cueIdx_;
+    std::vector<const LoopRegion*> loopIdx_;
+    std::vector<double>            loopMaxOut_;
+    const CueMarker*  idxCuesData_  = nullptr;
+    const LoopRegion* idxLoopsData_ = nullptr;
+    uint32_t idxRev_ = 0xFFFFFFFFu;   // forces first build
     int lastJumpCount_ = 0;
     int jumpEvents_    = 0;
 };

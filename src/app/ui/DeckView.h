@@ -13,6 +13,7 @@
 #include "controls/MeterBar.h"
 #include "controls/StateButton.h"
 #include "ui/CommandIds.h"
+#include "ui/TimeDisplay.h"
 #include "ui/UiState.h"
 #include "core/library/KeyNotation.h"
 #include "core/model/DeckStats.h"
@@ -272,35 +273,29 @@ public:
             }
         }
 
-        // ---- time readout — §23-24: elapsed / remaining / total,
-        // mode label on the right; click row (mouseDown) cycles ----
+        // ---- time readout — §23-24/§37-38: elapsed / remaining /
+        // total via TimeDisplay (M:SS, H:MM:SS over an hour); mode
+        // label on the right; click row (mouseDown) cycles ----
         auto tr = b.removeFromTop(m.fontXl + m.gap4);
         tr.reduce(m.gap3, 0);
-        const auto tstr = [](double s) {
-            if (s < 0) s = 0;
-            char t[16]; std::snprintf(t, sizeof t, "%d:%05.2f",
-                                      (int)(s / 60.0), std::fmod(s, 60.0));
-            return juce::String(t);
-        };
-        const double main_ =
-            timeMode_ == TimeMode::Elapsed   ? snap_.positionSec
-          : timeMode_ == TimeMode::Remaining ? snap_.durationSec
-                                                - snap_.positionSec
-                                             : snap_.durationSec;
-        const char* tag = timeMode_ == TimeMode::Elapsed   ? "EL"
-                        : timeMode_ == TimeMode::Remaining ? "REM"
-                                                           : "TOT";
+        const auto tmode = timeMode_ == TimeMode::Elapsed
+                               ? TimeDisplay::Mode::Elapsed
+                         : timeMode_ == TimeMode::Remaining
+                               ? TimeDisplay::Mode::Remaining
+                               : TimeDisplay::Mode::Total;
+        char tbuf[24];
+        TimeDisplay::formatMode(tbuf, sizeof tbuf, tmode,
+                                snap_.positionSec, snap_.durationSec);
         g.setColour(col(timeMode_ == TimeMode::Remaining ? p.warn
                                                          : p.text));
         g.setFont(juce::Font(juce::FontOptions((float)m.fontXl,
                                              juce::Font::bold)));
-        g.drawText((timeMode_ == TimeMode::Remaining ? "-" : "")
-                       + tstr(main_),
-                   tr.removeFromLeft(tr.getWidth() - 34),
+        g.drawText(tbuf, tr.removeFromLeft(tr.getWidth() - 34),
                    juce::Justification::centredLeft);
         g.setColour(col(p.textDim));
         g.setFont(juce::Font(juce::FontOptions((float)m.fontMd)));
-        g.drawText(tag, tr, juce::Justification::centredRight);
+        g.drawText(TimeDisplay::tag(tmode), tr,
+                   juce::Justification::centredRight);
     }
 
     void resized() override {

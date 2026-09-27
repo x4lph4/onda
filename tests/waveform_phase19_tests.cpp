@@ -471,16 +471,19 @@ TEST_CASE("interaction: hit-test zones and press/drag/release",
     REQUIRE(c.slot == 0);
     REQUIRE(c.a == Approx(2.0).margin(0.05));
 
-    // wave zone: press = Seek, drag = ScrubSeek (below cue strip,
-    // outside the loop rect → px 500 = 3.125 s, py past cue zone)
+    // wave zone: press = Seek, drag opens a §53 scrub transaction
+    // (SeekBegin → ScrubSeek* → SeekCommit on release)
     h = WaveformInteraction::hitTest(500.0, 40.0, r.f, v);
     REQUIRE(h.zone == HitZone::Wave);
     c = it.press(h, r.f, false, 0.0);
     REQUIRE(c.kind == WaveCmdKind::Seek);
     c = it.drag(600.0, v);
+    REQUIRE(c.kind == WaveCmdKind::SeekBegin);
+    c = it.drag(640.0, v);
     REQUIRE(c.kind == WaveCmdKind::ScrubSeek);
-    REQUIRE(c.a == Approx(v.pxToSec(600.0)));
-    it.release(r.f, false, v);
+    REQUIRE(c.a == Approx(v.pxToSec(640.0)));
+    c = it.release(r.f, false, v);
+    REQUIRE(c.kind == WaveCmdKind::SeekCommit);
 
     // grid-edit mode: click = set first beat, drag = nudge ms
     it.gridEdit = true;

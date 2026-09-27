@@ -2,6 +2,42 @@
 
 Professional desktop DJ application. C++20 + JUCE 8, GPLv3.
 
+## Status — Phase 31 (deck visualization engine)
+
+Formalized the remaining surfaces of the Phase-19 waveform/deck
+display (`docs/ui/deck-visualization-engine.md`,
+`docs/adr/0031-deck-visualization-engine.md`) — the model/shell split
+stays: pure `WaveformViewEngine` → `WaveformFrame` render plan → thin
+JUCE raster.
+
+- **VisualizationState** (§2): per-layer build-time gates — grid,
+  bar numbers, hot/memory/primary cues, loops, RMS, phrases; a hidden
+  layer costs zero geometry.
+- **FrameRenderer seam** (§6/§7/§46): `GraphicsRenderer.h` —
+  backend-neutral `drawFrame(frame, ctx)` + `nativeBatching()`/`maxFps()`
+  hints; `NullFrameRenderer` drives tests headlessly.
+- **Marker collision** (§33): label tiers 0-2 stack under 44 px
+  spacing; tier-3 suppresses the label — marker positions never move.
+- **Marker virtualization** (§47-48): sec-sorted indexes + binary
+  search per window → O(log n + visible); `loopMaxOut_` prefix-max
+  keeps arbitrary-length loops correct at the left edge.
+- **Seek transaction** (§53): wave drag opens `SeekBegin` →
+  `ScrubSeek`* → `SeekCommit`/`SeekCancel` (Esc aborts via the shell);
+  `previewPx` ghost playhead during scrub; clicks stay plain `Seek`.
+- **Primary cue** (§25): transport cue point emitted as type-3 —
+  filled diamond in the text colour, never a pad colour, out of
+  hit-test/delete zones.
+- **Performance mode** (§45): `vis.perfMode`/`setPerfMode` sheds beat
+  ticks, bar numbers, RMS trace and phrases under sustained frame
+  cost — structure, loops, cues and playhead never degrade.
+- **TimeDisplay** (§37-38): pure `M:SS`/`H:MM:SS` auto-format +
+  `M:SS.ss` sub-hour variant + Elapsed/Remaining/Total modes;
+  `DeckView` is now a thin caller.
+- **17 new `[ui31]` tests**: formats/modes, flag gating, collision
+  tiers, virtualization windows, the full seek transaction, static
+  mode, renderer seam, 120-min/500-cue/zoom/seek stress, 4 decks.
+- Full suite green: **606 cases / 1.66 M assertions**.
+
 ## Status — Phase 30 (track analysis engine deepening)
 
 Deepened the Phase-3/14/19/22/23 analysis pipeline

@@ -34,7 +34,8 @@ add_executable(onda_tests
   adevice_phase26_tests.cpp
     fx_phase25_tests.cpp
     ctrl_phase27_tests.cpp
-    perf_phase28_tests.cpp)
+    perf_phase28_tests.cpp
+    waveform_phase31_tests.cpp)
 target_link_libraries(onda_tests PRIVATE onda_core onda_ui onda_ctrl onda_decode Catch2::Catch2WithMain)
 target_compile_features(onda_tests PRIVATE cxx_std_20)
 onda_copy_runtime_dlls(onda_tests)

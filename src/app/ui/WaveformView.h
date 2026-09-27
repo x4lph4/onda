@@ -55,6 +55,7 @@ public:
                     std::vector<LoopRegion> loops) {
         engine_.cues = std::move(cues);
         engine_.loops = std::move(loops);
+        ++engine_.markersRev;            // §47-48 — reindex lazily
         ++dataRev_; repaint();
     }
     void setDeckColor(uint32_t argb) { deckCol_ = argb; repaint(); }
@@ -108,6 +109,18 @@ public:
                      ZoomAnchor::Playhead, 0.0, playheadSec()); }
     void zoomFit() { engine_.detail.fitAll(); }
     void setStyle(int s) { engine_.style = s; ++dataRev_; }
+    /// §45 — performance degrade: sheds secondary detail (bar
+    /// numbers, plain beats, RMS trace, phrases) to hold FPS.
+    void setPerfMode(bool on) {
+        engine_.vis.perfMode = on; ++dataRev_; repaint();
+    }
+    bool perfMode() const { return engine_.vis.perfMode; }
+    /// §53 — abort an in-flight scrub (Esc / focus loss).
+    void cancelSeekDrag() {
+        emit(engine_.interact.cancelSeek());
+        repaint();
+    }
+    bool seekActive() const { return engine_.interact.seekSession_; }
 
     WaveformViewEngine&       engine()       { return engine_; }
     const WaveformViewEngine& engine() const { return engine_; }
@@ -277,6 +290,13 @@ private:
         // ---- live overlays (cheap; change every frame) ----
         paintCueFlags(g, b, p);
         paintPlayhead(g, b, p, frame_.playheadPx);
+        // §53 — scrub ghost: preview position while dragging
+        if (frame_.previewPx >= 0.0) {
+            const float gx = (float)b.getX() + (float)frame_.previewPx;
+            g.setColour(col(p.playhead).withAlpha(0.45f));
+            g.drawVerticalLine((int)std::lround(gx), (float)b.getY(),
+                               (float)b.getBottom());
+        }
         paintJumpFlashes(g, b, p);
         paintPhrases(g, b, p);
         paintBadges(g, b, p);
@@ -340,10 +360,13 @@ private:
             g.drawVerticalLine((int)std::lround(x0),
                                midY - c.env * halfH,
                                midY + c.env * halfH);
-            g.setColour(col(p.waveRms).withAlpha(played ? 0.9f : 0.35f));
-            g.drawVerticalLine((int)std::lround(x0),
-                               midY - c.rms * halfH * 0.8f,
-                               midY + c.rms * halfH * 0.8f);
+            if (engine_.vis.showRms && !engine_.vis.perfMode) {
+                g.setColour(col(p.waveRms).withAlpha(
+                    played ? 0.9f : 0.35f));
+                g.drawVerticalLine((int)std::lround(x0),
+                                   midY - c.rms * halfH * 0.8f,
+                                   midY + c.rms * halfH * 0.8f);
+            }
         }
         // beat/bar/downbeat ticks + bar numbers (§12-14)
         g.setFont(juce::Font(juce::FontOptions(9.0f)));
@@ -372,9 +395,12 @@ private:
                                              juce::Font::bold)));
         for (const auto& cf : frame_.cues) {
             const float x = (float)b.getX() + cf.px;
-            juce::Colour cc = col(cf.argb);
-            // memory cues drawn hollow (non-color distinction, §47)
-            const bool mem = cf.type == 1;
+            // §25 — the primary cue uses the playhead/readout colour
+            // (never a pad colour) so it can't be mistaken for a hot
+            // cue; §28 memory cues stay hollow.
+            const bool primary = cf.type == 3;
+            const bool mem     = cf.type == 1;
+            juce::Colour cc = primary ? col(p.text) : col(cf.argb);
             g.setColour(cc.withAlpha(cf.armedDelete ? 0.9f : 0.8f));
             g.drawVerticalLine((int)std::lround(x), (float)b.getY(),
                                (float)b.getBottom());
@@ -382,11 +408,24 @@ private:
             tri.addTriangle(x, (float)b.getY(), x + 7.0f,
                             (float)b.getY(), x + 3.5f,
                             (float)b.getY() + 6.0f);
-            if (mem) g.strokePath(tri,
-                juce::PathStrokeType(1.4f));
-            else     g.fillPath(tri);
+            if (primary) {
+                // diamond glyph — distinct shape, not just colour
+                juce::Path dia;
+                dia.addQuadrilateral(x, (float)b.getY(),
+                                     x + 4.0f, (float)b.getY() + 4.0f,
+                                     x, (float)b.getY() + 8.0f,
+                                     x - 4.0f, (float)b.getY() + 4.0f);
+                g.fillPath(dia);
+            } else if (mem) {
+                g.strokePath(tri, juce::PathStrokeType(1.4f));
+            } else {
+                g.fillPath(tri);
+            }
+            // §33 — collision tier offsets the label vertically; the
+            // marker line itself never moves.
+            const int ly = b.getY() + 3 + cf.tier * 11;
             g.drawText(cf.armedDelete ? "×" : cf.label,
-                       (int)x + 5, b.getY() + 3, 60, 12,
+                       (int)x + 5, ly, 60, 12,
                        juce::Justification::left);
             if (cf.armedDelete) {          // armed → strike cue line
                 g.setColour(col(p.danger));
@@ -553,8 +592,12 @@ private:
     // ---------------- helpers ----------------
     void emit(const WaveCmd& c) {
         if (c.kind == WaveCmdKind::None) return;
+        // §53 — SeekCommit lands the scrub's final position through
+        // the same transport path; Begin/Cancel only reach onWaveCmd
+        // so the host can bracket the transaction.
         if ((c.kind == WaveCmdKind::Seek ||
-             c.kind == WaveCmdKind::ScrubSeek) && onSeek) {
+             c.kind == WaveCmdKind::ScrubSeek ||
+             c.kind == WaveCmdKind::SeekCommit) && onSeek) {
             onSeek(c.a);                          // fast path → rt queue
         }
         if (onWaveCmd) onWaveCmd(c);

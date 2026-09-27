@@ -168,6 +168,14 @@ public:
     }
 
     bool keyPressed(const juce::KeyPress& kp) override {
+        // §53 — Escape aborts an in-flight waveform scrub before the
+        // shortcut table sees it (the session owns the key first).
+        if (kp.getKeyCode() == juce::KeyPress::escapeKey)
+            for (auto& w : waves_)
+                if (w && w->seekActive()) {
+                    w->cancelSeekDrag();
+                    return true;
+                }
         const KeyDesc k = toKeyDesc(kp);
         const uint32_t id = shortcuts_->lookup(k);
         if (id == cmd::Invalid) return false;
@@ -390,6 +398,14 @@ private:
                                   c.slot,
                                   c.type == CueType::Memory ? 1 : 0 });
             }
+        }
+        // §25 — transport's primary cue: own type (3) so the view
+        // draws a distinct glyph with no pad colour; slot -1 keeps it
+        // out of hit-test/delete-arm zones.
+        const int64_t cueFr = perf_->cuePoint(d);
+        if (cueFr >= 0 && wfRate_[(size_t)d] > 0.0) {
+            marks.push_back({ cueFr / wfRate_[(size_t)d], 0u,
+                              "CUE", -1, 3 });
         }
         decks_[(size_t)d]->setCuePads(cols, set);
         waves_[(size_t)d]->setMarkers(marks, loops);
